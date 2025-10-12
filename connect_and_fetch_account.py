@@ -6,10 +6,12 @@ from twisted.internet import reactor
 from ctrader_open_api import Client, Protobuf, TcpProtocol
 from ctrader_open_api.endpoints import EndPoints
 from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import ProtoErrorRes
+from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATrader
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAApplicationAuthReq,
-    ProtoOAGetAccountListByAccessTokenReq,
-    ProtoOAGetAccountListByAccessTokenRes
+    ProtoOAAccountAuthReq,
+    ProtoOATraderReq,
+    ProtoOATraderRes
 )
 
 # Load environment variables
@@ -48,40 +50,43 @@ def on_disconnected(client_instance, reason):
 
 def on_app_auth_response(response):
     """Callback for application authentication response."""
-    logging.info("Application authorized. Fetching account list...")
-    request = ProtoOAGetAccountListByAccessTokenReq()
+    logging.info("Application authorized. Authorizing account...")
+    request = ProtoOAAccountAuthReq()
+    request.ctidTraderAccountId = int(ACCOUNT_ID)
     request.accessToken = ACCESS_TOKEN
     deferred = client.send(request)
-    deferred.addCallbacks(on_account_list_response, on_error)
+    deferred.addCallbacks(on_account_auth_response, on_error)
 
-def on_account_list_response(response):
-    """Callback for account list response."""
-    logging.info("Received account list.")
-    account_list_res = ProtoOAGetAccountListByAccessTokenRes()
-    account_list_res.ParseFromString(response.payload)
+def on_account_auth_response(response):
+    """Callback for account authentication response."""
+    logging.info("Account authorized. Fetching trader information...")
+    request = ProtoOATraderReq()
+    request.ctidTraderAccountId = int(ACCOUNT_ID)
+    deferred = client.send(request)
+    deferred.addCallbacks(on_trader_response, on_error)
 
-    account_found = False
-    for account in account_list_res.ctidTraderAccount:
-        if account.ctidTraderAccountId == int(ACCOUNT_ID):
-            account_info = {
-                "accountId": account.ctidTraderAccountId,
-                "balance": account.balance,
-                "leverage": account.leverageInCents / 100,
-                "marginLevel": account.marginLevel,
-                "accountType": "real" if account.isLive else "demo"
-            }
-            logging.info(f"Account Info: {account_info}")
+def on_trader_response(response):
+    """Callback for trader response."""
+    logging.info("Received trader information.")
+    trader_res = ProtoOATraderRes()
+    trader_res.ParseFromString(response.payload)
 
-            # Log the full response to a JSON file
-            with open("logs/account_info.json", "w") as f:
-                json.dump(account_info, f, indent=4)
-            logging.info("Account information saved to logs/account_info.json")
-            logging.info("✅ Connected successfully to cTrader — Account info fetched.")
-            account_found = True
-            break
+    trader = trader_res.trader
 
-    if not account_found:
-        logging.warning(f"The specified account ID ({ACCOUNT_ID}) was not found.")
+    account_info = {
+        "accountId": trader.ctidTraderAccountId,
+        "balance": trader.balance,
+        "leverage": trader.leverageInCents / 100,
+        "marginLevel": trader.marginLevel,
+        "accountType": "real" if trader.isLive else "demo"
+    }
+    logging.info(f"Account Info: {account_info}")
+
+    # Log the full response to a JSON file
+    with open("logs/account_info.json", "w") as f:
+        json.dump(account_info, f, indent=4)
+    logging.info("Account information saved to logs/account_info.json")
+    logging.info("✅ Connected successfully to cTrader — Account info fetched.")
 
     if reactor.running:
         reactor.stop()
