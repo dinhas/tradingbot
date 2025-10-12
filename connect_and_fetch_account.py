@@ -5,9 +5,13 @@ from dotenv import load_dotenv
 from twisted.internet import reactor
 from ctrader_open_api import Client, Protobuf, TcpProtocol
 from ctrader_open_api.endpoints import EndPoints
-from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import *
-from ctrader_open_api.messages.OpenApiMessages_pb2 import *
-from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
+from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import ProtoErrorRes
+from ctrader_open_api.messages.OpenApiMessages_pb2 import (
+    ProtoOAApplicationAuthReq,
+    ProtoOAAccountAuthReq,
+    ProtoOAGetAccountListByAccessTokenReq,
+    ProtoOAGetAccountListByAccessTokenRes
+)
 
 # Load environment variables
 load_dotenv()
@@ -48,17 +52,8 @@ def on_disconnected(client_instance, reason):
 
 def on_app_auth_response(response):
     """Callback for application authentication response."""
-    logging.info("Application authorized. Authorizing account...")
-    request = ProtoOAAccountAuthReq()
-    request.ctidTraderAccountId = int(ACCOUNT_ID)
-    request.accessToken = ACCESS_TOKEN
-    deferred = client.send(request)
-    deferred.addCallbacks(on_account_auth_response, on_error)
-
-def on_account_auth_response(response):
-    """Callback for account authentication response."""
-    logging.info("Account authorized. Fetching account list...")
-    request = ProtoOAGetAccountListReq()
+    logging.info("Application authorized. Fetching account list...")
+    request = ProtoOAGetAccountListByAccessTokenReq()
     request.accessToken = ACCESS_TOKEN
     deferred = client.send(request)
     deferred.addCallbacks(on_account_list_response, on_error)
@@ -66,7 +61,7 @@ def on_account_auth_response(response):
 def on_account_list_response(response):
     """Callback for account list response."""
     logging.info("Received account list.")
-    account_list_res = ProtoOAGetAccountListRes()
+    account_list_res = ProtoOAGetAccountListByAccessTokenRes()
     response.payload.Unpack(account_list_res)
 
     account_found = False
