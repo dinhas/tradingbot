@@ -19,27 +19,30 @@ ACCOUNT_ID = os.getenv("CTRADER_ACCOUNT_ID")
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Global client variable
+# Global state variables
 client = None
+is_connected = False
 
 def on_error(failure):
     """Callback for handling errors."""
     logging.error(f"An error occurred: {failure}")
-    reactor.stop()
-
-def on_disconnected(client_instance, reason):
-    """Callback for when the client disconnects."""
-    logging.info(f"Client disconnected: {reason}")
+    if reactor.running:
+        reactor.stop()
 
 def on_connected(client_instance):
     """Callback for when the client connects."""
-    client.factory.clientConnected = True # Mark as connected
+    global is_connected
+    is_connected = True
     logging.info("Client connected. Authorizing application...")
     request = ProtoOAApplicationAuthReq()
     request.clientId = CLIENT_ID
     request.clientSecret = CLIENT_SECRET
     deferred = client_instance.send(request)
     deferred.addCallbacks(on_app_auth_response, on_error)
+
+def on_disconnected(client_instance, reason):
+    """Callback for when the client disconnects."""
+    logging.info(f"Client disconnected: {reason}")
 
 def on_app_auth_response(response):
     """Callback for application authentication response."""
@@ -87,7 +90,8 @@ def on_account_list_response(response):
     if not account_found:
         logging.warning(f"The specified account ID ({ACCOUNT_ID}) was not found.")
 
-    reactor.stop()
+    if reactor.running:
+        reactor.stop()
 
 def main():
     """Main function to start the client."""
@@ -95,6 +99,9 @@ def main():
     if not all([CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN, ACCOUNT_ID]):
         logging.error("Missing required environment variables. Please check your .env file.")
         return
+
+    # Ensure logs directory exists
+    os.makedirs('logs', exist_ok=True)
 
     # Create and configure the client
     host = EndPoints.PROTOBUF_DEMO_HOST
@@ -106,14 +113,10 @@ def main():
     logging.info("Starting cTrader client...")
     client.startService()
 
-    # Ensure logs directory exists
-    os.makedirs('logs', exist_ok=True)
-
     # Add a connection timeout
     timeout_seconds = 20
     def connection_timeout():
-        # A simple check to see if the client has connected.
-        if not getattr(client.factory, 'clientConnected', False):
+        if not is_connected:
             logging.error(f"Connection timed out after {timeout_seconds} seconds. Please check network connectivity and credentials.")
             if reactor.running:
                 reactor.stop()
