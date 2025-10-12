@@ -8,7 +8,6 @@ from ctrader_open_api.endpoints import EndPoints
 from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import ProtoErrorRes
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAApplicationAuthReq,
-    ProtoOAAccountAuthReq,
     ProtoOAGetAccountListByAccessTokenReq,
     ProtoOAGetAccountListByAccessTokenRes
 )
@@ -62,7 +61,7 @@ def on_account_list_response(response):
     """Callback for account list response."""
     logging.info("Received account list.")
     account_list_res = ProtoOAGetAccountListByAccessTokenRes()
-    response.payload.Unpack(account_list_res)
+    account_list_res.ParseFromString(response.payload)
 
     account_found = False
     for account in account_list_res.ctidTraderAccount:
