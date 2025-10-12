@@ -22,9 +22,8 @@ ACCOUNT_ID = os.getenv("CTRADER_ACCOUNT_ID")
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Global state variables
+# Global client variable
 client = None
-is_connected = False
 
 def on_error(failure):
     """Callback for handling errors."""
@@ -34,8 +33,6 @@ def on_error(failure):
 
 def on_connected(client_instance):
     """Callback for when the client connects."""
-    global is_connected
-    is_connected = True
     logging.info("Client connected. Authorizing application...")
     request = ProtoOAApplicationAuthReq()
     request.clientId = CLIENT_ID
@@ -108,16 +105,6 @@ def main():
     # Start the client and the reactor
     logging.info("Starting cTrader client...")
     client.startService()
-
-    # Add a connection timeout
-    timeout_seconds = 90
-    def connection_timeout():
-        if not is_connected:
-            logging.error(f"Connection timed out after {timeout_seconds} seconds. Please check network connectivity and credentials.")
-            if reactor.running:
-                reactor.stop()
-
-    reactor.callLater(timeout_seconds, connection_timeout)
     reactor.run()
 
 if __name__ == "__main__":
