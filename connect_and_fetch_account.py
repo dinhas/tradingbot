@@ -43,6 +43,8 @@ def on_connected(client_instance):
 def on_disconnected(client_instance, reason):
     """Callback for when the client disconnects."""
     logging.info(f"Client disconnected: {reason}")
+    if reactor.running:
+        reactor.stop()
 
 def on_app_auth_response(response):
     """Callback for application authentication response."""
@@ -114,7 +116,7 @@ def main():
     client.startService()
 
     # Add a connection timeout
-    timeout_seconds = 20
+    timeout_seconds = 90
     def connection_timeout():
         if not is_connected:
             logging.error(f"Connection timed out after {timeout_seconds} seconds. Please check network connectivity and credentials.")
