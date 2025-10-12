@@ -1,118 +1,68 @@
 import os
 import json
-import asyncio
 import logging
 from dotenv import load_dotenv
+from twisted.internet import reactor
 from ctrader_open_api import Client, Protobuf, TcpProtocol
+from ctrader_open_api.endpoints import EndPoints
 from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import *
-from ctrader_open_api.messages.OpenApiCommonModelMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
-
-# cTrader credentials and endpoint
 CLIENT_ID = os.getenv("CTRADER_CLIENT_ID")
 CLIENT_SECRET = os.getenv("CTRADER_CLIENT_SECRET")
 ACCESS_TOKEN = os.getenv("CTRADER_ACCESS_TOKEN")
 ACCOUNT_ID = os.getenv("CTRADER_ACCOUNT_ID")
-CTRADING_API_HOST = "demo.ctraderapi.com"
-CTRADING_API_PORT = 5035
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Create logs directory if it doesn't exist
-if not os.path.exists('logs'):
-    os.makedirs('logs')
+# Global client variable
+client = None
 
-async def connect_and_fetch():
-    """
-    Connects to cTrader Open API, authenticates, and fetches account information.
-    """
-    logging.info("Starting connection to cTrader...")
-    task_completed_event = asyncio.Event()
+def on_error(failure):
+    """Callback for handling errors."""
+    logging.error(f"An error occurred: {failure}")
+    reactor.stop()
 
-    client = Client(CTRADING_API_HOST, CTRADING_API_PORT, TcpProtocol)
+def on_disconnected(client_instance, reason):
+    """Callback for when the client disconnects."""
+    logging.info(f"Client disconnected: {reason}")
 
-    async def on_message(message: Protobuf):
-        logging.info(f"Received message with payload type: {message.payloadType}")
-        if message.payloadType == ProtoOAGetAccountListRes().payloadType:
-            logging.info("Received account list response.")
-            process_account_list(message, task_completed_event)
-        elif message.payloadType == ProtoOAApplicationAuthRes().payloadType:
-            logging.info("Application authenticated successfully.")
-            await authorize_account(client)
-        elif message.payloadType == ProtoOAAccountAuthRes().payloadType:
-            logging.info("Account authenticated successfully.")
-            await get_account_list(client)
-        elif message.payloadType == ProtoHeartbeatEvent().payloadType:
-            logging.info("Heartbeat received.")
-        elif message.payloadType == ProtoErrorRes().payloadType:
-            error_res = ProtoErrorRes()
-            message.payload.Unpack(error_res)
-            logging.error(f"An error occurred: {error_res.description} ({error_res.errorCode})")
-            task_completed_event.set()
-
-    client.setMessageReceivedCallback(on_message)
-
-    def on_connect():
-        logging.info("Connected to cTrader API.")
-        asyncio.create_task(authorize_application(client))
-
-    def on_error(reason):
-        logging.error(f"Connection error: {reason}")
-        task_completed_event.set()
-
-    client.setConnectedCallback(on_connect)
-    client.setDisconnectedCallback(on_error)
-
-    # Start the client
-    client.startService()
-    try:
-        await asyncio.wait_for(task_completed_event.wait(), timeout=30)
-    except asyncio.TimeoutError:
-        logging.error("Timed out waiting for a response from the server. This might be due to incorrect credentials or network issues.")
-    finally:
-        client.stopService()
-        logging.info("Client stopped.")
-
-async def authorize_application(client: Client):
-    """
-    Sends an application authorization request.
-    """
-    logging.info("Authorizing application...")
+def on_connected(client_instance):
+    """Callback for when the client connects."""
+    client.factory.clientConnected = True # Mark as connected
+    logging.info("Client connected. Authorizing application...")
     request = ProtoOAApplicationAuthReq()
     request.clientId = CLIENT_ID
     request.clientSecret = CLIENT_SECRET
-    await client.send(request)
+    deferred = client_instance.send(request)
+    deferred.addCallbacks(on_app_auth_response, on_error)
 
-async def authorize_account(client: Client):
-    """
-    Sends an account authorization request.
-    """
-    logging.info("Authorizing account...")
+def on_app_auth_response(response):
+    """Callback for application authentication response."""
+    logging.info("Application authorized. Authorizing account...")
     request = ProtoOAAccountAuthReq()
     request.ctidTraderAccountId = int(ACCOUNT_ID)
     request.accessToken = ACCESS_TOKEN
-    await client.send(request)
+    deferred = client.send(request)
+    deferred.addCallbacks(on_account_auth_response, on_error)
 
-async def get_account_list(client: Client):
-    """
-    Sends a request to get the list of accounts.
-    """
-    logging.info("Fetching account list...")
+def on_account_auth_response(response):
+    """Callback for account authentication response."""
+    logging.info("Account authorized. Fetching account list...")
     request = ProtoOAGetAccountListReq()
     request.accessToken = ACCESS_TOKEN
-    await client.send(request)
+    deferred = client.send(request)
+    deferred.addCallbacks(on_account_list_response, on_error)
 
-def process_account_list(message: Protobuf, task_completed_event: asyncio.Event):
-    """
-    Processes the account list response and logs the details.
-    """
+def on_account_list_response(response):
+    """Callback for account list response."""
+    logging.info("Received account list.")
     account_list_res = ProtoOAGetAccountListRes()
-    message.payload.Unpack(account_list_res)
+    response.payload.Unpack(account_list_res)
 
     account_found = False
     for account in account_list_res.ctidTraderAccount:
@@ -135,15 +85,41 @@ def process_account_list(message: Protobuf, task_completed_event: asyncio.Event)
             break
 
     if not account_found:
-        logging.warning(f"The specified account ID ({ACCOUNT_ID}) was not found in the list of accounts returned by the server.")
+        logging.warning(f"The specified account ID ({ACCOUNT_ID}) was not found.")
 
-    task_completed_event.set()
+    reactor.stop()
 
-if __name__ == "__main__":
+def main():
+    """Main function to start the client."""
+    global client
     if not all([CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN, ACCOUNT_ID]):
         logging.error("Missing required environment variables. Please check your .env file.")
-    else:
-        try:
-            asyncio.run(connect_and_fetch())
-        except Exception as e:
-            logging.error(f"An error occurred during the process: {e}")
+        return
+
+    # Create and configure the client
+    host = EndPoints.PROTOBUF_DEMO_HOST
+    client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
+    client.setConnectedCallback(on_connected)
+    client.setDisconnectedCallback(on_disconnected)
+
+    # Start the client and the reactor
+    logging.info("Starting cTrader client...")
+    client.startService()
+
+    # Ensure logs directory exists
+    os.makedirs('logs', exist_ok=True)
+
+    # Add a connection timeout
+    timeout_seconds = 20
+    def connection_timeout():
+        # A simple check to see if the client has connected.
+        if not getattr(client.factory, 'clientConnected', False):
+            logging.error(f"Connection timed out after {timeout_seconds} seconds. Please check network connectivity and credentials.")
+            if reactor.running:
+                reactor.stop()
+
+    reactor.callLater(timeout_seconds, connection_timeout)
+    reactor.run()
+
+if __name__ == "__main__":
+    main()
