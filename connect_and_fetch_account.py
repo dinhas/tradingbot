@@ -68,34 +68,27 @@ def on_account_auth_response(response):
 def on_trader_response(response):
     """Callback for trader response."""
     logging.info("Received trader information.")
-    try:
-        trader_res = ProtoOATraderRes()
-        trader_res.ParseFromString(response.payload)
 
-        trader = trader_res.trader
+    trader_res = ProtoOATraderRes()
+    trader_res.ParseFromString(response.payload)
+    trader = trader_res.trader
 
-        account_info = {
-            "accountId": trader.ctidTraderAccountId,
-            "balance": trader.balance,
-            "leverage": trader.leverageInCents / 100,
-            "marginLevel": trader.marginLevel,
-            "accountType": "real" if trader.isLive else "demo"
-        }
-        logging.info(f"Account Info: {account_info}")
+    account_info = {
+        "accountId": trader.ctidTraderAccountId,
+        "balance": trader.balance,
+        "leverage": trader.leverageInCents / 100
+    }
+    logging.info(f"Account Info: {account_info}")
 
-        # Log the full response to a JSON file
-        with open("logs/account_info.json", "w") as f:
-            json.dump(account_info, f, indent=4)
-        logging.info("Account information saved to logs/account_info.json")
-        logging.info("✅ Connected successfully to cTrader — Account info fetched.")
-    except AttributeError as e:
-        logging.error(f"An attribute error occurred while processing the trader response: {e}")
-        logging.error("This may be due to a missing attribute in the ProtoOATrader message.")
-        logging.error(f"Received response payload: {response.payload}")
+    # Log the full response to a JSON file
+    os.makedirs('logs', exist_ok=True)
+    with open("logs/account_info.json", "w") as f:
+        json.dump(account_info, f, indent=4)
+    logging.info("Account information saved to logs/account_info.json")
+    logging.info("✅ Connected successfully to cTrader — Account info fetched.")
 
-    finally:
-        if reactor.running:
-            reactor.stop()
+    if reactor.running:
+        reactor.stop()
 
 def main():
     """Main function to start the client."""
@@ -103,9 +96,6 @@ def main():
     if not all([CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN, ACCOUNT_ID]):
         logging.error("Missing required environment variables. Please check your .env file.")
         return
-
-    # Ensure logs directory exists
-    os.makedirs('logs', exist_ok=True)
 
     # Create and configure the client
     host = EndPoints.PROTOBUF_DEMO_HOST
