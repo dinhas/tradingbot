@@ -1,0 +1,1094 @@
+[
+    {
+        "symbolId": 18,
+        "symbolName": "AUDCAD",
+        "baseAssetId": 1,
+        "quoteAssetId": 2
+    },
+    {
+        "symbolId": 1314,
+        "symbolName": "BITCOINCASH",
+        "baseAssetId": 237,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1061,
+        "symbolName": "CADCHF",
+        "baseAssetId": 2,
+        "quoteAssetId": 3
+    },
+    {
+        "symbolId": 1100,
+        "symbolName": "#ChinaA50",
+        "baseAssetId": 31,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1109,
+        "symbolName": "XAGEUR",
+        "baseAssetId": 19,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1117,
+        "symbolName": "BRENT",
+        "baseAssetId": 46,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1430,
+        "symbolName": "ALUMINIUM",
+        "baseAssetId": 1000,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1274,
+        "symbolName": "#AUS200",
+        "baseAssetId": 200,
+        "quoteAssetId": 1
+    },
+    {
+        "symbolId": 1038,
+        "symbolName": "AUDCHF",
+        "baseAssetId": 1,
+        "quoteAssetId": 3
+    },
+    {
+        "symbolId": 15,
+        "symbolName": "CADJPY",
+        "baseAssetId": 2,
+        "quoteAssetId": 10
+    },
+    {
+        "symbolId": 1310,
+        "symbolName": "BITCOIN",
+        "baseAssetId": 233,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 42,
+        "symbolName": "XAGUSD",
+        "baseAssetId": 19,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1103,
+        "symbolName": "#Euro50",
+        "baseAssetId": 34,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1115,
+        "symbolName": "#ChinaHShar",
+        "baseAssetId": 44,
+        "quoteAssetId": 8
+    },
+    {
+        "symbolId": 1118,
+        "symbolName": "NAT.GAS",
+        "baseAssetId": 47,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1431,
+        "symbolName": "COPPER",
+        "baseAssetId": 1001,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1289,
+        "symbolName": "AUDDKK",
+        "baseAssetId": 1,
+        "quoteAssetId": 5
+    },
+    {
+        "symbolId": 13,
+        "symbolName": "CHFJPY",
+        "baseAssetId": 3,
+        "quoteAssetId": 10
+    },
+    {
+        "symbolId": 1311,
+        "symbolName": "ETHEREUM",
+        "baseAssetId": 234,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1098,
+        "symbolName": "#France120",
+        "baseAssetId": 29,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1104,
+        "symbolName": "#France40",
+        "baseAssetId": 35,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1108,
+        "symbolName": "XAUEUR",
+        "baseAssetId": 20,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1116,
+        "symbolName": "WTI",
+        "baseAssetId": 45,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1432,
+        "symbolName": "LEAD",
+        "baseAssetId": 1002,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 11,
+        "symbolName": "AUDJPY",
+        "baseAssetId": 1,
+        "quoteAssetId": 10
+    },
+    {
+        "symbolId": 17,
+        "symbolName": "EURCAD",
+        "baseAssetId": 6,
+        "quoteAssetId": 2
+    },
+    {
+        "symbolId": 1312,
+        "symbolName": "LITECOIN",
+        "baseAssetId": 235,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 41,
+        "symbolName": "XAUUSD",
+        "baseAssetId": 20,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1093,
+        "symbolName": "#GerTech30",
+        "baseAssetId": 24,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1106,
+        "symbolName": "#Germany40",
+        "baseAssetId": 37,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1433,
+        "symbolName": "ZINC",
+        "baseAssetId": 1003,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 10,
+        "symbolName": "EURCHF",
+        "baseAssetId": 6,
+        "quoteAssetId": 3
+    },
+    {
+        "symbolId": 1293,
+        "symbolName": "#Japan225",
+        "baseAssetId": 216,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1315,
+        "symbolName": "XRP",
+        "baseAssetId": 238,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1060,
+        "symbolName": "AUDNZD",
+        "baseAssetId": 1,
+        "quoteAssetId": 13
+    },
+    {
+        "symbolId": 1096,
+        "symbolName": "#Germany50",
+        "baseAssetId": 27,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1110,
+        "symbolName": "XAUUSDgr",
+        "baseAssetId": 39,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 9,
+        "symbolName": "EURGBP",
+        "baseAssetId": 6,
+        "quoteAssetId": 7
+    },
+    {
+        "symbolId": 1290,
+        "symbolName": "AUDPLN",
+        "baseAssetId": 1,
+        "quoteAssetId": 14
+    },
+    {
+        "symbolId": 1298,
+        "symbolName": "XPDUSD",
+        "baseAssetId": 221,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1317,
+        "symbolName": "STELLAR",
+        "baseAssetId": 243,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1094,
+        "symbolName": "#Holland25",
+        "baseAssetId": 25,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1105,
+        "symbolName": "#UK100",
+        "baseAssetId": 36,
+        "quoteAssetId": 7
+    },
+    {
+        "symbolId": 3,
+        "symbolName": "EURJPY",
+        "baseAssetId": 6,
+        "quoteAssetId": 10
+    },
+    {
+        "symbolId": 1287,
+        "symbolName": "#US30",
+        "baseAssetId": 213,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1297,
+        "symbolName": "XPTUSD",
+        "baseAssetId": 220,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1318,
+        "symbolName": "POLKADOT",
+        "baseAssetId": 244,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1085,
+        "symbolName": "AUDSGD",
+        "baseAssetId": 1,
+        "quoteAssetId": 16
+    },
+    {
+        "symbolId": 1114,
+        "symbolName": "#HongKong50",
+        "baseAssetId": 43,
+        "quoteAssetId": 8
+    },
+    {
+        "symbolId": 1,
+        "symbolName": "EURUSD",
+        "baseAssetId": 6,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1285,
+        "symbolName": "#Spain35",
+        "baseAssetId": 211,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 5,
+        "symbolName": "AUDUSD",
+        "baseAssetId": 1,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1319,
+        "symbolName": "EOS",
+        "baseAssetId": 245,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1107,
+        "symbolName": "#USNDAQ100",
+        "baseAssetId": 38,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1286,
+        "symbolName": "#Swiss20",
+        "baseAssetId": 212,
+        "quoteAssetId": 3
+    },
+    {
+        "symbolId": 1288,
+        "symbolName": "#USSPX500",
+        "baseAssetId": 214,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1040,
+        "symbolName": "GBPCAD",
+        "baseAssetId": 7,
+        "quoteAssetId": 2
+    },
+    {
+        "symbolId": 1320,
+        "symbolName": "CHAINLINK",
+        "baseAssetId": 246,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1086,
+        "symbolName": "CHFPLN",
+        "baseAssetId": 3,
+        "quoteAssetId": 14
+    },
+    {
+        "symbolId": 1291,
+        "symbolName": "CHFSGD",
+        "baseAssetId": 3,
+        "quoteAssetId": 16
+    },
+    {
+        "symbolId": 1296,
+        "symbolName": "#US2000",
+        "baseAssetId": 219,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 40,
+        "symbolName": "GBPCHF",
+        "baseAssetId": 7,
+        "quoteAssetId": 3
+    },
+    {
+        "symbolId": 1321,
+        "symbolName": "DOGECOIN",
+        "baseAssetId": 247,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 7,
+        "symbolName": "GBPJPY",
+        "baseAssetId": 7,
+        "quoteAssetId": 10
+    },
+    {
+        "symbolId": 14,
+        "symbolName": "EURAUD",
+        "baseAssetId": 6,
+        "quoteAssetId": 1
+    },
+    {
+        "symbolId": 1322,
+        "symbolName": "IOTA",
+        "baseAssetId": 248,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 2,
+        "symbolName": "GBPUSD",
+        "baseAssetId": 7,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1323,
+        "symbolName": "DASH",
+        "baseAssetId": 249,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1080,
+        "symbolName": "EURCZK",
+        "baseAssetId": 6,
+        "quoteAssetId": 4
+    },
+    {
+        "symbolId": 8,
+        "symbolName": "USDCAD",
+        "baseAssetId": 18,
+        "quoteAssetId": 2
+    },
+    {
+        "symbolId": 1062,
+        "symbolName": "EURDKK",
+        "baseAssetId": 6,
+        "quoteAssetId": 5
+    },
+    {
+        "symbolId": 1324,
+        "symbolName": "ZCASH",
+        "baseAssetId": 250,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 6,
+        "symbolName": "USDCHF",
+        "baseAssetId": 18,
+        "quoteAssetId": 3
+    },
+    {
+        "symbolId": 1051,
+        "symbolName": "EURHKD",
+        "baseAssetId": 6,
+        "quoteAssetId": 8
+    },
+    {
+        "symbolId": 1326,
+        "symbolName": "NEO",
+        "baseAssetId": 252,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 4,
+        "symbolName": "USDJPY",
+        "baseAssetId": 18,
+        "quoteAssetId": 10
+    },
+    {
+        "symbolId": 1063,
+        "symbolName": "EURHUF",
+        "baseAssetId": 6,
+        "quoteAssetId": 9
+    },
+    {
+        "symbolId": 1327,
+        "symbolName": "BAT",
+        "baseAssetId": 253,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1064,
+        "symbolName": "EURMXN",
+        "baseAssetId": 6,
+        "quoteAssetId": 11
+    },
+    {
+        "symbolId": 1328,
+        "symbolName": "ETHCLASSIC",
+        "baseAssetId": 254,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1039,
+        "symbolName": "EURNOK",
+        "baseAssetId": 6,
+        "quoteAssetId": 12
+    },
+    {
+        "symbolId": 1329,
+        "symbolName": "MONERO",
+        "baseAssetId": 255,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1065,
+        "symbolName": "EURNZD",
+        "baseAssetId": 6,
+        "quoteAssetId": 13
+    },
+    {
+        "symbolId": 1435,
+        "symbolName": "AAVE",
+        "baseAssetId": 1004,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1066,
+        "symbolName": "EURPLN",
+        "baseAssetId": 6,
+        "quoteAssetId": 14
+    },
+    {
+        "symbolId": 1436,
+        "symbolName": "CARDANO",
+        "baseAssetId": 1005,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1083,
+        "symbolName": "EURRUB",
+        "baseAssetId": 6,
+        "quoteAssetId": 23
+    },
+    {
+        "symbolId": 1437,
+        "symbolName": "FILECOIN",
+        "baseAssetId": 1006,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1067,
+        "symbolName": "EURSEK",
+        "baseAssetId": 6,
+        "quoteAssetId": 15
+    },
+    {
+        "symbolId": 1438,
+        "symbolName": "SOLANA",
+        "baseAssetId": 1007,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1087,
+        "symbolName": "EURSGD",
+        "baseAssetId": 6,
+        "quoteAssetId": 16
+    },
+    {
+        "symbolId": 1439,
+        "symbolName": "SUSHISWAP",
+        "baseAssetId": 1008,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1440,
+        "symbolName": "THETA",
+        "baseAssetId": 1009,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1001,
+        "symbolName": "EURTRY",
+        "baseAssetId": 6,
+        "quoteAssetId": 17
+    },
+    {
+        "symbolId": 1052,
+        "symbolName": "EURZAR",
+        "baseAssetId": 6,
+        "quoteAssetId": 21
+    },
+    {
+        "symbolId": 1441,
+        "symbolName": "TRON",
+        "baseAssetId": 1010,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 16,
+        "symbolName": "GBPAUD",
+        "baseAssetId": 7,
+        "quoteAssetId": 1
+    },
+    {
+        "symbolId": 1442,
+        "symbolName": "UNISWAP",
+        "baseAssetId": 1011,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1088,
+        "symbolName": "GBPDKK",
+        "baseAssetId": 7,
+        "quoteAssetId": 5
+    },
+    {
+        "symbolId": 1443,
+        "symbolName": "VECHAIN",
+        "baseAssetId": 1012,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1041,
+        "symbolName": "GBPNOK",
+        "baseAssetId": 7,
+        "quoteAssetId": 12
+    },
+    {
+        "symbolId": 1444,
+        "symbolName": "TEZOS",
+        "baseAssetId": 1013,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1042,
+        "symbolName": "GBPNZD",
+        "baseAssetId": 7,
+        "quoteAssetId": 13
+    },
+    {
+        "symbolId": 1445,
+        "symbolName": "POLYGON",
+        "baseAssetId": 1014,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1089,
+        "symbolName": "GBPPLN",
+        "baseAssetId": 7,
+        "quoteAssetId": 14
+    },
+    {
+        "symbolId": 1516,
+        "symbolName": "BINANCECOIN",
+        "baseAssetId": 1085,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1090,
+        "symbolName": "GBPSEK",
+        "baseAssetId": 7,
+        "quoteAssetId": 15
+    },
+    {
+        "symbolId": 1603,
+        "symbolName": "TRUMP",
+        "baseAssetId": 1179,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1043,
+        "symbolName": "GBPSGD",
+        "baseAssetId": 7,
+        "quoteAssetId": 16
+    },
+    {
+        "symbolId": 1625,
+        "symbolName": "HEDERA",
+        "baseAssetId": 1201,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1068,
+        "symbolName": "GBPZAR",
+        "baseAssetId": 7,
+        "quoteAssetId": 21
+    },
+    {
+        "symbolId": 1626,
+        "symbolName": "GRAPH",
+        "baseAssetId": 1202,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1092,
+        "symbolName": "NOKSEK",
+        "baseAssetId": 12,
+        "quoteAssetId": 15
+    },
+    {
+        "symbolId": 1627,
+        "symbolName": "ALGORAND",
+        "baseAssetId": 1203,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1044,
+        "symbolName": "NZDCAD",
+        "baseAssetId": 13,
+        "quoteAssetId": 2
+    },
+    {
+        "symbolId": 1628,
+        "symbolName": "TONCOIN",
+        "baseAssetId": 1204,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1045,
+        "symbolName": "NZDCHF",
+        "baseAssetId": 13,
+        "quoteAssetId": 3
+    },
+    {
+        "symbolId": 1629,
+        "symbolName": "IMMUTABLE",
+        "baseAssetId": 1205,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1046,
+        "symbolName": "NZDJPY",
+        "baseAssetId": 13,
+        "quoteAssetId": 10
+    },
+    {
+        "symbolId": 1630,
+        "symbolName": "NEAR",
+        "baseAssetId": 1206,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1069,
+        "symbolName": "NZDSGD",
+        "baseAssetId": 13,
+        "quoteAssetId": 16
+    },
+    {
+        "symbolId": 1631,
+        "symbolName": "INTERNET",
+        "baseAssetId": 1207,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 12,
+        "symbolName": "NZDUSD",
+        "baseAssetId": 13,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1632,
+        "symbolName": "APTOS",
+        "baseAssetId": 1208,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1091,
+        "symbolName": "PLNJPY",
+        "baseAssetId": 14,
+        "quoteAssetId": 10
+    },
+    {
+        "symbolId": 1633,
+        "symbolName": "COSMOS",
+        "baseAssetId": 1209,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1053,
+        "symbolName": "SGDJPY",
+        "baseAssetId": 16,
+        "quoteAssetId": 10
+    },
+    {
+        "symbolId": 1634,
+        "symbolName": "AVALANCHE",
+        "baseAssetId": 1210,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1082,
+        "symbolName": "USDCNH",
+        "baseAssetId": 18,
+        "quoteAssetId": 22
+    },
+    {
+        "symbolId": 1081,
+        "symbolName": "USDCZK",
+        "baseAssetId": 18,
+        "quoteAssetId": 4
+    },
+    {
+        "symbolId": 1070,
+        "symbolName": "USDDKK",
+        "baseAssetId": 18,
+        "quoteAssetId": 5
+    },
+    {
+        "symbolId": 1054,
+        "symbolName": "USDHKD",
+        "baseAssetId": 18,
+        "quoteAssetId": 8
+    },
+    {
+        "symbolId": 1071,
+        "symbolName": "USDHUF",
+        "baseAssetId": 18,
+        "quoteAssetId": 9
+    },
+    {
+        "symbolId": 1292,
+        "symbolName": "USDILS",
+        "baseAssetId": 18,
+        "quoteAssetId": 215
+    },
+    {
+        "symbolId": 1047,
+        "symbolName": "USDMXN",
+        "baseAssetId": 18,
+        "quoteAssetId": 11
+    },
+    {
+        "symbolId": 1048,
+        "symbolName": "USDNOK",
+        "baseAssetId": 18,
+        "quoteAssetId": 12
+    },
+    {
+        "symbolId": 1049,
+        "symbolName": "USDPLN",
+        "baseAssetId": 18,
+        "quoteAssetId": 14
+    },
+    {
+        "symbolId": 1084,
+        "symbolName": "USDRUB",
+        "baseAssetId": 18,
+        "quoteAssetId": 23
+    },
+    {
+        "symbolId": 1050,
+        "symbolName": "USDSEK",
+        "baseAssetId": 18,
+        "quoteAssetId": 15
+    },
+    {
+        "symbolId": 28,
+        "symbolName": "USDSGD",
+        "baseAssetId": 18,
+        "quoteAssetId": 16
+    },
+    {
+        "symbolId": 1313,
+        "symbolName": "USDTHB",
+        "baseAssetId": 18,
+        "quoteAssetId": 236
+    },
+    {
+        "symbolId": 1000,
+        "symbolName": "USDTRY",
+        "baseAssetId": 18,
+        "quoteAssetId": 17
+    },
+    {
+        "symbolId": 1055,
+        "symbolName": "USDZAR",
+        "baseAssetId": 18,
+        "quoteAssetId": 21
+    },
+    {
+        "symbolId": 1434,
+        "symbolName": "EURCNH",
+        "baseAssetId": 6,
+        "quoteAssetId": 22
+    },
+    {
+        "symbolId": 1477,
+        "symbolName": "USDRON",
+        "baseAssetId": 18,
+        "quoteAssetId": 1046
+    },
+    {
+        "symbolId": 1542,
+        "symbolName": "USDNGN",
+        "baseAssetId": 18,
+        "quoteAssetId": 1111
+    },
+    {
+        "symbolId": 1543,
+        "symbolName": "USDVND",
+        "baseAssetId": 18,
+        "quoteAssetId": 1115
+    },
+    {
+        "symbolId": 1544,
+        "symbolName": "USDIDR",
+        "baseAssetId": 18,
+        "quoteAssetId": 1117
+    },
+    {
+        "symbolId": 1545,
+        "symbolName": "USDMYR",
+        "baseAssetId": 18,
+        "quoteAssetId": 1116
+    },
+    {
+        "symbolId": 1599,
+        "symbolName": "USDNGNc",
+        "baseAssetId": 18,
+        "quoteAssetId": 1128
+    },
+    {
+        "symbolId": 1654,
+        "symbolName": "#Cotton_V25",
+        "baseAssetId": 1239,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1658,
+        "symbolName": "#Sugar_V25",
+        "baseAssetId": 1240,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1677,
+        "symbolName": "#NGas_V25",
+        "baseAssetId": 1254,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1678,
+        "symbolName": "#UKOil_X25",
+        "baseAssetId": 1255,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1679,
+        "symbolName": "#USOil_X25",
+        "baseAssetId": 1256,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1680,
+        "symbolName": "#NGas_X25",
+        "baseAssetId": 1257,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1681,
+        "symbolName": "#UKOil_Z25",
+        "baseAssetId": 1258,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1682,
+        "symbolName": "#SBean_X25",
+        "baseAssetId": 1259,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1683,
+        "symbolName": "#JP225_Z25",
+        "baseAssetId": 1260,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1684,
+        "symbolName": "#UKOil_F26",
+        "baseAssetId": 1261,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1685,
+        "symbolName": "#USOil_F26",
+        "baseAssetId": 1262,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1686,
+        "symbolName": "#USOil_Z25",
+        "baseAssetId": 1263,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1687,
+        "symbolName": "#NGas_F26",
+        "baseAssetId": 1264,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1688,
+        "symbolName": "#NGas_Z25",
+        "baseAssetId": 1265,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1689,
+        "symbolName": "#Cocoa_Z25",
+        "baseAssetId": 1266,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1690,
+        "symbolName": "#Coffee_Z25",
+        "baseAssetId": 1267,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1691,
+        "symbolName": "#Sugar_H26",
+        "baseAssetId": 1268,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1692,
+        "symbolName": "#Cotton_Z25",
+        "baseAssetId": 1269,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1693,
+        "symbolName": "#Wheat_Z25",
+        "baseAssetId": 1270,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1694,
+        "symbolName": "#SBean_F26",
+        "baseAssetId": 1271,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1695,
+        "symbolName": "#Corn_Z25",
+        "baseAssetId": 1272,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1696,
+        "symbolName": "#US2000_Z25",
+        "baseAssetId": 1273,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1697,
+        "symbolName": "#FRA40_Z25",
+        "baseAssetId": 1274,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1698,
+        "symbolName": "#SWI20_Z25",
+        "baseAssetId": 1275,
+        "quoteAssetId": 3
+    },
+    {
+        "symbolId": 1699,
+        "symbolName": "#GER40_Z25",
+        "baseAssetId": 1276,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1700,
+        "symbolName": "#EUR50_Z25",
+        "baseAssetId": 1277,
+        "quoteAssetId": 6
+    },
+    {
+        "symbolId": 1701,
+        "symbolName": "#UK100_Z25",
+        "baseAssetId": 1278,
+        "quoteAssetId": 7
+    },
+    {
+        "symbolId": 1702,
+        "symbolName": "#US$idx_Z25",
+        "baseAssetId": 1279,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1703,
+        "symbolName": "#US500_Z25",
+        "baseAssetId": 1280,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1704,
+        "symbolName": "#DJ30_Z25",
+        "baseAssetId": 1281,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1705,
+        "symbolName": "#UKOil_G26",
+        "baseAssetId": 1282,
+        "quoteAssetId": 18
+    },
+    {
+        "symbolId": 1706,
+        "symbolName": "#US100_Z25",
+        "baseAssetId": 1283,
+        "quoteAssetId": 18
+    }
+]
