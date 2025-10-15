@@ -25,7 +25,12 @@ ACCOUNT_ID = os.getenv("CTRADER_ACCOUNT_ID")
 
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("ctrader_symbols.log"),
+        logging.StreamHandler()
+    ]
 )
 
 # Global client variable
@@ -94,10 +99,10 @@ def on_symbols_list_response(response):
         ]
 
         # Ensure the 'logs' directory exists
-        os.makedirs("logs", exist_ok=True)
+        os.makedirs("cTrader/logs", exist_ok=True)
 
         # Save symbols data to a JSON file
-        file_path = "logs/symbols.json"
+        file_path = "cTrader/logs/symbols.json"
         with open(file_path, "w") as f:
             json.dump(symbols_data, f, indent=4)
         logging.info(f"Symbols data saved to {file_path}")
