@@ -3,16 +3,16 @@ import json
 import logging
 from dotenv import load_dotenv
 from twisted.internet import reactor
-from ctrader_open_api import Client, Protobuf, TcpProtocol
+from ctrader_open_api import Client, TcpProtocol
 from ctrader_open_api.endpoints import EndPoints
-from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import ProtoErrorRes
-from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATrader
+from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATrendbarPeriod
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAApplicationAuthReq,
     ProtoOAAccountAuthReq,
-    ProtoOATraderReq,
-    ProtoOATraderRes
+    ProtoOAGetTrendbarsReq,
+    ProtoOAGetTrendbarsRes,
 )
+from datetime import datetime, timedelta
 
 # Load environment variables
 load_dotenv()
@@ -26,7 +26,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("ctrader_connect.log"),
+        logging.FileHandler("ctrader_market_data.log"),
         logging.StreamHandler()
     ]
 )
@@ -66,33 +66,55 @@ def on_app_auth_response(response):
 
 def on_account_auth_response(response):
     """Callback for account authentication response."""
-    logging.info("Account authorized. Fetching trader information...")
-    request = ProtoOATraderReq()
+    logging.info("Account authorized. Fetching market data...")
+    # Load symbol from account_info.json
+    try:
+        with open("cTrader/logs/account_info.json", "r") as f:
+            account_info = json.load(f)
+            symbol_id = account_info.get("symbolId")
+            if not symbol_id:
+                logging.error("symbolId not found in account_info.json")
+                if reactor.running:
+                    reactor.stop()
+                return
+    except FileNotFoundError:
+        logging.error("account_info.json not found. Please run connect_and_fetch_account.py first.")
+        if reactor.running:
+            reactor.stop()
+        return
+
+    # Request trendbars for the last 30 days
+    now = datetime.utcnow()
+    thirty_days_ago = now - timedelta(days=30)
+    request = ProtoOAGetTrendbarsReq()
     request.ctidTraderAccountId = int(ACCOUNT_ID)
+    request.symbolId = symbol_id
+    request.period = ProtoOATrendbarPeriod.D1
+    request.fromTimestamp = int(thirty_days_ago.timestamp() * 1000)
+    request.toTimestamp = int(now.timestamp() * 1000)
+
     deferred = client.send(request)
-    deferred.addCallbacks(on_trader_response, on_error)
+    deferred.addCallbacks(on_market_data_response, on_error)
 
-def on_trader_response(response):
-    """Callback for trader response."""
-    logging.info("Received trader information.")
+def on_market_data_response(response):
+    """Callback for market data response."""
+    market_data_res = ProtoOAGetTrendbarsRes()
+    market_data_res.ParseFromString(response.payload)
+    logging.info("Received market data.")
 
-    trader_res = ProtoOATraderRes()
-    trader_res.ParseFromString(response.payload)
-    trader = trader_res.trader
+    trendbars = [{
+        "timestamp": bar.utcTimestampInMinutes * 60 * 1000,
+        "open": bar.low + bar.deltaOpen,
+        "high": bar.low + bar.deltaHigh,
+        "low": bar.low,
+        "close": bar.low + bar.deltaClose,
+        "volume": bar.volume
+    } for bar in market_data_res.trendbar]
 
-    account_info = {
-        "accountId": trader.ctidTraderAccountId,
-        "balance": trader.balance,
-        "leverage": trader.leverageInCents / 100
-    }
-    logging.info(f"Account Info: {account_info}")
-
-    # Log the full response to a JSON file
     os.makedirs('cTrader/logs', exist_ok=True)
-    with open("cTrader/logs/account_info.json", "w") as f:
-        json.dump(account_info, f, indent=4)
-    logging.info("Account information saved to cTrader/logs/account_info.json")
-    logging.info("✅ Connected successfully to cTrader — Account info fetched.")
+    with open("cTrader/logs/market_data.json", "w") as f:
+        json.dump(trendbars, f, indent=4)
+    logging.info("Market data saved to cTrader/logs/market_data.json")
 
     if reactor.running:
         reactor.stop()
@@ -114,7 +136,7 @@ def main():
     reactor.callLater(60, on_error, "Timeout: The script ran for more than 60 seconds.")
 
     # Start the client and the reactor
-    logging.info("Starting cTrader client...")
+    logging.info("Starting cTrader client for market data...")
     client.startService()
     reactor.run()
 
