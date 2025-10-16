@@ -21,12 +21,19 @@ CLIENT_SECRET = os.getenv("CTRADER_CLIENT_SECRET")
 ACCESS_TOKEN = os.getenv("CTRADER_ACCESS_TOKEN")
 ACCOUNT_ID = os.getenv("CTRADER_ACCOUNT_ID")
 
+# Define the root directory of the project
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOGS_DIR = os.path.join(ROOT_DIR, 'logs')
+
+# Create directories if they don't exist
+os.makedirs(LOGS_DIR, exist_ok=True)
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("../ctrader_market_data.log"),
+        logging.FileHandler(os.path.join(LOGS_DIR, "ctrader_market_data.log")),
         logging.StreamHandler()
     ]
 )
@@ -69,7 +76,8 @@ def on_account_auth_response(response):
     logging.info("Account authorized. Fetching market data...")
     # Load symbol from account_info.json
     try:
-        with open("cTrader/logs/account_info.json", "r") as f:
+        account_info_path = os.path.join(LOGS_DIR, "account_info.json")
+        with open(account_info_path, "r") as f:
             account_info = json.load(f)
             symbol_id = account_info.get("symbolId")
             if not symbol_id:
@@ -107,10 +115,10 @@ def on_market_data_response(response):
         "volume": bar.volume
     } for bar in market_data_res.trendbar]
 
-    os.makedirs('cTrader/logs', exist_ok=True)
-    with open("cTrader/logs/market_data.json", "w") as f:
+    market_data_path = os.path.join(LOGS_DIR, "market_data.json")
+    with open(market_data_path, "w") as f:
         json.dump(trendbars, f, indent=4)
-    logging.info("Market data saved to cTrader/logs/market_data.json")
+    logging.info(f"Market data saved to {market_data_path}")
 
     if reactor.running:
         reactor.stop()
