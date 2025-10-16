@@ -26,7 +26,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("ctrader_market_data.log"),
+        logging.FileHandler("../ctrader_market_data.log"),
         logging.StreamHandler()
     ]
 )
@@ -73,15 +73,11 @@ def on_account_auth_response(response):
             account_info = json.load(f)
             symbol_id = account_info.get("symbolId")
             if not symbol_id:
-                logging.error("symbolId not found in account_info.json")
-                if reactor.running:
-                    reactor.stop()
-                return
+                logging.warning("symbolId not found in account_info.json, using placeholder 1 (EURUSD).")
+                symbol_id = 1
     except FileNotFoundError:
-        logging.error("account_info.json not found. Please run connect_and_fetch_account.py first.")
-        if reactor.running:
-            reactor.stop()
-        return
+        logging.warning("account_info.json not found. Using placeholder symbolId 1 (EURUSD).")
+        symbol_id = 1
 
     # Request trendbars for the last 30 days
     now = datetime.utcnow()
