@@ -21,12 +21,19 @@ CLIENT_SECRET = os.getenv("CTRADER_CLIENT_SECRET")
 ACCESS_TOKEN = os.getenv("CTRADER_ACCESS_TOKEN")
 ACCOUNT_ID = os.getenv("CTRADER_ACCOUNT_ID")
 
+# Define the root directory of the project
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOGS_DIR = os.path.join(ROOT_DIR, 'logs')
+
+# Create directories if they don't exist
+os.makedirs(LOGS_DIR, exist_ok=True)
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("../ctrader_connect.log"),
+        logging.FileHandler(os.path.join(LOGS_DIR, "ctrader_connect.log")),
         logging.StreamHandler()
     ]
 )
@@ -88,10 +95,10 @@ def on_trader_response(response):
     logging.info(f"Account Info: {account_info}")
 
     # Log the full response to a JSON file
-    os.makedirs('cTrader/logs', exist_ok=True)
-    with open("cTrader/logs/account_info.json", "w") as f:
+    account_info_path = os.path.join(LOGS_DIR, "account_info.json")
+    with open(account_info_path, "w") as f:
         json.dump(account_info, f, indent=4)
-    logging.info("Account information saved to cTrader/logs/account_info.json")
+    logging.info(f"Account information saved to {account_info_path}")
     logging.info("✅ Connected successfully to cTrader — Account info fetched.")
 
     if reactor.running:

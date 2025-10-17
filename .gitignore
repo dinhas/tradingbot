@@ -1,8 +1,3 @@
-
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
+# Ignore generated log files and data
+logs/
+.env

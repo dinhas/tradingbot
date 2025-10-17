@@ -23,12 +23,19 @@ CLIENT_SECRET = os.getenv("CTRADER_CLIENT_SECRET")
 ACCESS_TOKEN = os.getenv("CTRADER_ACCESS_TOKEN")
 ACCOUNT_ID = os.getenv("CTRADER_ACCOUNT_ID")
 
+# Define the root directory of the project
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOGS_DIR = os.path.join(ROOT_DIR, 'logs')
+
+# Create directories if they don't exist
+os.makedirs(LOGS_DIR, exist_ok=True)
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("../ctrader_symbols.log"),
+        logging.FileHandler(os.path.join(LOGS_DIR, "ctrader_symbols.log")),
         logging.StreamHandler()
     ]
 )
@@ -98,11 +105,8 @@ def on_symbols_list_response(response):
             for symbol in symbols_res.symbol
         ]
 
-        # Ensure the 'logs' directory exists
-        os.makedirs("cTrader/logs", exist_ok=True)
-
         # Save symbols data to a JSON file
-        file_path = "cTrader/logs/symbols.json"
+        file_path = os.path.join(LOGS_DIR, "symbols.json")
         with open(file_path, "w") as f:
             json.dump(symbols_data, f, indent=4)
         logging.info(f"Symbols data saved to {file_path}")
