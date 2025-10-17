@@ -33,13 +33,16 @@ class TradingBot:
         deferred.addCallbacks(self.on_auth_success, self.on_auth_error)
 
     def stop(self):
-        """Stops the bot and disconnects."""
+        """Stops the bot and disconnects. This method is idempotent."""
+        if not self.is_running:
+            return  # Already stopping or stopped
         log.info("Stopping the AI Trading Bot...")
         self.is_running = False
         if self.client:
             self.client.disconnect()
         if reactor.running:
-            # This will stop the reactor, ending the script
+            # This will trigger the 'shutdown' event, which might call this method again.
+            # The is_running flag prevents re-entry.
             reactor.stop()
 
     def on_auth_success(self, client_instance):
@@ -100,6 +103,8 @@ if __name__ == "__main__":
         try:
             # Start the bot, which in turn will start the reactor if not running
             bot.start()
+            # Schedule the bot to stop after 60 seconds
+            reactor.callLater(60, bot.stop)
             if not reactor.running:
                 reactor.run()
         except Exception as e:
