@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from twisted.internet import reactor
+from twisted.internet.defer import Deferred, succeed
 from ctrader_open_api import Client, TcpProtocol
 from ctrader_open_api.endpoints import EndPoints
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
@@ -97,9 +98,9 @@ class CTraderClient:
         if not self._is_connected:
             log.info(f"Connecting to {self.host}:{self.port}...")
             self._client.startService()
-            self._auth_deferred = reactor.deferred()
+            self._auth_deferred = Deferred()
             return self._auth_deferred
-        return reactor.deferred.succeed(self)
+        return succeed(self)
 
     def disconnect(self):
         if self._is_connected:

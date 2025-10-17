@@ -2,6 +2,7 @@ import os
 import json
 from datetime import datetime, timedelta
 from twisted.internet import reactor
+from twisted.internet.defer import Deferred
 from services.cTrader.client import create_ctrader_client
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATrendbarPeriod
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
@@ -36,7 +37,7 @@ class MarketDataService:
 
     def get_symbols(self):
         log.info("Requesting all symbols...")
-        self.symbols_deferred = reactor.deferred()
+        self.symbols_deferred = Deferred()
         request = ProtoOASymbolsListReq()
         request.ctidTraderAccountId = self._client.account_id
         self._client.send(request)
