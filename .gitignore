@@ -2,5 +2,9 @@
 logs/
 .env
 
+<<<<<<< HEAD
 *.pyc
+=======
+.pyc
+>>>>>>> main
 __pycache__/
