@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv() # Load environment variables from .env file
 
 async def fetch_symbols():
+    client = None
     try:
         # Load config
         with open("config.json", "r") as f:
@@ -21,7 +22,7 @@ async def fetch_symbols():
         print("cTrader client connected and authorized.")
 
         # Create MarketDataService
-        market_data_service = MarketDataService(client, config)
+        market_data_service = MarketDataService(client)
 
         # Fetch symbols
         print("Fetching symbols...")
@@ -30,19 +31,21 @@ async def fetch_symbols():
         for symbol in symbols:
             print(f"  Symbol ID: {symbol['symbolId']}, Name: {symbol['symbolName']}")
 
-        # Disconnect
-        client.disconnect()
-        print("cTrader client disconnected.")
-
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
+        if client:
+            client.disconnect()
+            print("cTrader client disconnected.")
         if reactor.running:
             reactor.stop()
 
 if __name__ == "__main__":
-    # Twisted's reactor.run() is blocking, so we need to schedule our async function
-    # to run after the reactor starts.
-    reactor.callWhenRunning(lambda: defer.ensureDeferred(fetch_symbols()))
+    deferred = defer.ensureDeferred(fetch_symbols())
+    # Add a timeout to the operation
+    reactor.callLater(60, deferred.cancel)
+    deferred.addErrback(lambda f: print(f"Operation timed out or failed: {f.value}"))
+
+    reactor.callWhenRunning(lambda: deferred)
     if not reactor.running:
         reactor.run()
