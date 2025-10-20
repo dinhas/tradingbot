@@ -2,6 +2,9 @@
 logs/
 .env
 
-# Ignore Python bytecode files
+<<<<<<< HEAD
 *.pyc
+=======
+.pyc
+>>>>>>> main
 __pycache__/

@@ -36,7 +36,7 @@ class CTraderClient:
         """Adds a listener for incoming messages."""
         if listener not in self._message_listeners:
             self._message_listeners.append(listener)
-            log.info(f"Added message listener: {getattr(listener, '__qualname__', listener.__class__.__name__)}")
+            log.info(f"Added message listener: {listener.__class__.__name__}")
 
     def _dispatch_message(self, client, message):
         """Dispatches incoming messages to all registered listeners."""

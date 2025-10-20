@@ -1,5 +1,7 @@
 import os
 import json
+import sys
+from multiprocessing import Process
 from twisted.internet import reactor, defer
 from services.cTrader.client import create_ctrader_client
 from services.market_data import MarketDataService
@@ -40,12 +42,25 @@ async def fetch_symbols():
         if reactor.running:
             reactor.stop()
 
-if __name__ == "__main__":
+def run_fetch_process():
     deferred = defer.ensureDeferred(fetch_symbols())
-    # Add a timeout to the operation
-    reactor.callLater(60, deferred.cancel)
-    deferred.addErrback(lambda f: print(f"Operation timed out or failed: {f.value}"))
-
     reactor.callWhenRunning(lambda: deferred)
     if not reactor.running:
         reactor.run()
+
+if __name__ == "__main__":
+    process = Process(target=run_fetch_process)
+    process.start()
+    process.join(timeout=120) # 120-second timeout
+
+    if process.is_alive():
+        print("Script execution timed out after 120 seconds. Terminating...")
+        process.terminate()
+        process.join()
+        sys.exit(1)
+
+    if process.exitcode != 0:
+        print(f"Script exited with error code: {process.exitcode}")
+        sys.exit(process.exitcode)
+
+    print("Script finished successfully.")
