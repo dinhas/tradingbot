@@ -68,7 +68,7 @@ class MarketDataService:
             log.error(f"Failed to save symbols data: {e}")
 
         if self.symbols_deferred:
-            self.symbols_deferred.callback(symbols_data)
+            self.symbols_deferred.callback(file_path)
             self.symbols_deferred = None
 
     def _on_trendbars_response(self, message):
