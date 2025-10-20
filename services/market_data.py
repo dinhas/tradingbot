@@ -19,9 +19,9 @@ class MarketDataService:
 
     def on_message(self, client, message):
         """Callback for received messages."""
-        if message.payloadType == ProtoOAGetTrendbarsRes.payloadType:
+        if message.payloadType == ProtoOAGetTrendbarsRes.payload_type:
             self._on_trendbars_response(message)
-        elif message.payloadType == ProtoOASymbolsListRes.payloadType:
+        elif message.payloadType == ProtoOASymbolsListRes.payload_type:
             self._on_symbols_list_response(message)
 
     def get_trendbars(self, symbol_id, period, start_date, end_date):
