@@ -11,6 +11,8 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOASubscribeSpotsReq, ProtoOASubscribeSpotsRes, ProtoOASpotEvent
 )
 from utils.logger import system_logger as log
+from utils.indicators import calculate_scalping_indicators
+from collections import deque
 
 class MarketDataService:
     def __init__(self, client):
@@ -19,6 +21,8 @@ class MarketDataService:
         self.symbols_deferred = None
         self.spot_subscriptions = {}
         self.live_candles = {}
+        # Store the last 50 candles for indicator calculation
+        self.historical_candles = {}
 
     def on_message(self, client, message):
         """Callback for received messages."""
@@ -126,28 +130,49 @@ class MarketDataService:
         current_minute = (now.minute // 5) * 5
         candle_timestamp = now.replace(minute=current_minute, second=0, microsecond=0)
 
+        self._initialize_historical_candles(event.symbolId)
         candle = self.live_candles.get(event.symbolId)
 
         if not candle or candle['timestamp'] != candle_timestamp:
-            # New candle
+            # Finalize the previous candle by calculating its indicators
+            if candle:
+                self.historical_candles[event.symbolId].append(candle)
+                indicators = calculate_scalping_indicators(
+                    list(self.historical_candles[event.symbolId])
+                )
+                if indicators:
+                    candle['indicators'] = indicators
+                    log.info(f"New 5-min candle for symbol {event.symbolId} with indicators: {candle}")
+                else:
+                    log.info(f"New 5-min candle for symbol {event.symbolId}. Not enough data for indicators.")
+
+            # Start a new candle
             new_candle = {
                 "timestamp": candle_timestamp,
                 "open": price,
                 "high": price,
                 "low": price,
-                "close": price
+                "close": price,
+                "volume": 0 # Assuming volume starts at 0 for a new candle
             }
             self.live_candles[event.symbolId] = new_candle
-            if candle:
-                log.info(f"New 5-min candle for symbol {event.symbolId}. Previous candle: {candle}")
         else:
             # Update existing candle
             candle['high'] = max(candle['high'], price)
             candle['low'] = min(candle['low'], price)
             candle['close'] = price
+            # In a real scenario, you'd increment volume based on tick data.
+            # Here, we'll just increment it by 1 for demonstration.
+            candle['volume'] = candle.get('volume', 0) + 1
 
         log.debug(f"Spot Event: Symbol={event.symbolId}, Price={price}, "
                   f"Candle={self.live_candles[event.symbolId]}")
+
+    def _initialize_historical_candles(self, symbol_id):
+        """Initializes the historical candle deque for a symbol if not present."""
+        if symbol_id not in self.historical_candles:
+            self.historical_candles[symbol_id] = deque(maxlen=50)
+            log.info(f"Initialized historical candle buffer for symbol {symbol_id}.")
 
 
 if __name__ == '__main__':
