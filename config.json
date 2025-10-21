@@ -61,5 +61,9 @@
     "enable_telegram": true,
     "telegram_bot_token": "",
     "telegram_chat_id": ""
+  },
+  "symbol_ids": {
+    "EURUSD": 1,
+    "BITCOIN": 1310
   }
 }
