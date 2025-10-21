@@ -2,5 +2,10 @@
 logs/
 .env
 
-.pyc
+# Ignore Python bytecode files
+*.pyc
+*.pyo
+*.pyd
 __pycache__/
+**/__pycache__/
+*.so

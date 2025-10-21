@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from twisted.internet import reactor
 from twisted.internet.defer import Deferred
 from services.cTrader.client import create_ctrader_client
-from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATrendbarPeriod
+from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATrendbarPeriod, ProtoOAPayloadType
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAGetTrendbarsReq, ProtoOAGetTrendbarsRes,
     ProtoOASymbolsListReq, ProtoOASymbolsListRes
@@ -19,9 +19,9 @@ class MarketDataService:
 
     def on_message(self, client, message):
         """Callback for received messages."""
-        if message.payloadType == ProtoOAGetTrendbarsRes.payloadType:
+        if message.payloadType == ProtoOAPayloadType.PROTO_OA_GET_TRENDBARS_RES:
             self._on_trendbars_response(message)
-        elif message.payloadType == ProtoOASymbolsListRes.payloadType:
+        elif message.payloadType == ProtoOAPayloadType.PROTO_OA_SYMBOLS_LIST_RES:
             self._on_symbols_list_response(message)
 
     def get_trendbars(self, symbol_id, period, start_date, end_date):
@@ -68,7 +68,7 @@ class MarketDataService:
             log.error(f"Failed to save symbols data: {e}")
 
         if self.symbols_deferred:
-            self.symbols_deferred.callback(symbols_data)
+            self.symbols_deferred.callback(file_path)
             self.symbols_deferred = None
 
     def _on_trendbars_response(self, message):
