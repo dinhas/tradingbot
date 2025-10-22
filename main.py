@@ -49,6 +49,8 @@ class TradingBot:
         """Callback for successful authentication."""
         log.info("Authentication successful. Bot is now running.")
         self.is_running = True
+        # Subscribe to symbols from config
+        self._subscribe_to_all_symbols()
         # Start the main decision loop
         self.main_loop()
 
@@ -56,6 +58,20 @@ class TradingBot:
         """Callback for authentication failure."""
         log.error(f"Authentication failed: {failure}. Shutting down.")
         self.stop()
+
+    def _subscribe_to_all_symbols(self):
+        """Subscribes to spot data for all symbols in the config."""
+        # This is a simplified approach. A robust implementation would
+        # fetch all available symbols and match them against the config.
+        # For this example, we'll assume a 'symbol_ids' dictionary in the config.
+        symbol_ids = self.config.get("symbol_ids", {})
+        if not symbol_ids:
+            log.warning("No symbol_ids found in config.json. Cannot subscribe to symbols.")
+            return
+
+        for symbol_name, symbol_id in symbol_ids.items():
+            log.info(f"Subscribing to {symbol_name} (ID: {symbol_id})")
+            self.market_data_service.subscribe_to_spots(symbol_id)
 
     def main_loop(self):
         """The main decision-making loop, compatible with Twisted."""
@@ -66,12 +82,12 @@ class TradingBot:
         try:
             log.info("Executing 5-minute decision cycle...")
 
-            # This is a placeholder for the real logic.
-            # In a real implementation, you would trigger data fetching,
-            # AI analysis, and potential trade execution here.
-            # For example:
-            # self.market_data_service.get_symbols().addCallback(self.process_symbols)
-
+            for symbol_id, candle in self.market_data_service.live_candles.items():
+                log.info(f"Latest candle for symbol {symbol_id}: {candle}")
+                # Placeholder for AI decision logic
+                # ai_decision = self.ai_engine.get_decision(candle)
+                # if self.risk_manager.validate_trade(ai_decision):
+                #     self.executor.execute_trade(ai_decision)
             log.info("AI decision is 'PASS' (placeholder). No action taken.")
 
         except Exception as e:

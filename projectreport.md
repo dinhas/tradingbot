@@ -74,7 +74,7 @@ An autonomous scalping system that leverages Google Gemini 2.5 for rapid trading
 
 2. **AI Layer (Rapid Decision):**
    - Gemini 2.5 analyzes technical data + price action
-   - Makes quick decisions (must respond in <3 seconds)
+   - Makes quick decisions (must respond in <1 minute)
    - Focuses on momentum and short-term patterns
    - Provides reasoning for each decision (logged)
    - Prioritizes quick profits over holding
@@ -147,7 +147,7 @@ Lot Size = (Account Balance × 0.5-1%) / (Stop Loss in pips × Pip Value)
     │  Market Data     │         │   AI Decision   │
     │    Service       │────────▶│     Engine      │
     │  (Real-time)     │         │  (Gemini 2.5)   │
-    │  WebSocket       │         │  <3sec response │
+    │  WebSocket       │         │  <1min response │
     └────────┬─────────┘         └───────┬────────┘
              │                            │
              │                   ┌────────▼────────┐
@@ -188,7 +188,7 @@ Lot Size = (Account Balance × 0.5-1%) / (Stop Loss in pips × Pip Value)
     "close": 1.0853,
     "volume": 1250
   },
-  "last_50_candles": [...],  # Minimal history for speed
+  "last_100_candles": [...],  # Minimal history for speed
   "indicators": {
     "ema_8": 1.0850,
     "ema_21": 1.0848,
@@ -212,7 +212,7 @@ Lot Size = (Account Balance × 0.5-1%) / (Stop Loss in pips × Pip Value)
 **Update Frequency:**
 - Real-time tick data via WebSocket
 - Process indicators on every 5min candle close
-- Cache last 50 candles only (speed optimization)
+- Cache last 100 candles only (speed optimization)
 - Spread monitoring: Continuous
 
 **Spread Filter:**
@@ -230,7 +230,7 @@ def is_spread_acceptable(pair):
 #### 4.2.2 AI Decision Engine (`ai_engine.py`)
 **Responsibilities:**
 - Interface with Gemini 2.5 API
-- **CRITICAL:** Get response in <3 seconds
+- **CRITICAL:** Get response in <1 minute
 - Format minimal data for AI (reduce tokens)
 - Parse AI responses into structured decisions
 - Maintain minimal context (last 10 trades only)
@@ -277,7 +277,7 @@ def is_spread_acceptable(pair):
 - Minimal context (cut prompt size by 70%)
 - Cache API connection
 - Parallel requests for multiple pairs
-- Timeout: 3 seconds (fail fast, skip trade)
+- Timeout: 1 minute (fail fast, skip trade)
 - Fallback: If Gemini slow, use simple technical rules
 
 **Decision Frequency:**
@@ -447,7 +447,7 @@ Goals:
 - Trade with momentum
 - Avoid ranging markets
 
-Respond in JSON format within 2 seconds.
+Respond in JSON format within 1 minute.
 ```
 
 **Decision Prompt Template (Minimal):**
@@ -490,12 +490,12 @@ JSON only.
 | Component | Max Latency | Critical? |
 |-----------|-------------|-----------|
 | Market data | 500ms | Yes |
-| Gemini API | 3 seconds | Yes |
+| Gemini API | 1 minute | Yes |
 | Risk validation | 100ms | Yes |
 | Order execution | 1 second | Yes |
-| **Total decision → order** | **<5 seconds** | **CRITICAL** |
+| **Total decision → order** | **<62 seconds** | **CRITICAL** |
 
-If Gemini takes >3 seconds, skip the trade and log timeout.
+If Gemini takes >1 minute, skip the trade and log timeout.
 
 ---
 
@@ -557,7 +557,7 @@ If Gemini takes >3 seconds, skip the trade and log timeout.
       "api_key": "YOUR_GEMINI_API_KEY",
       "model": "gemini-2.5-pro",
       "max_tokens": 500,
-      "timeout_seconds": 3
+      "timeout_seconds": 60
     }
   },
   "monitoring": {
@@ -630,7 +630,7 @@ If Gemini takes >3 seconds, skip the trade and log timeout.
 ### 7.3 Monitoring & Alerts (Scalping)
 
 **Critical Alerts (Immediate Action):**
-- Latency spike (>3 seconds to Gemini)
+- Latency spike (>1 minute to Gemini)
 - Connection lost
 - 3 consecutive losses
 - Daily loss approaching 4%
@@ -802,7 +802,7 @@ If Gemini takes >3 seconds, skip the trade and log timeout.
 
 ### Appendix A: Technology Stack (Scalping Optimized)
 - **Language:** Python 3.10+ (with asyncio)
-- **AI API:** Google Gemini 2.5 (timeout: 3s)
+- **AI API:** Google Gemini 2.5 (timeout: 1min)
 - **Broker API:** cTrader WebSocket (real-time)
 - **Database:** SQLite (async writes)
 - **Web Framework:** FastAPI (async)
@@ -829,10 +829,10 @@ python-dotenv        # Environment variables
 **Target latencies for scalping:**
 - Market data update: <500ms
 - Indicator calculation: <200ms
-- Gemini API call: <3s
+- Gemini API call: <1min
 - Risk validation: <100ms
 - Order placement: <1s
-- **Total pipeline: <5s**
+- **Total pipeline: <62s**
 
 ### Appendix D: File Structure
 ```
@@ -919,7 +919,7 @@ async def scalping_main_loop():
                 try:
                     ai_decision = await asyncio.wait_for(
                         get_ai_decision(market_data),
-                        timeout=3.0
+                        timeout=60.0
                     )
                 except asyncio.TimeoutError:
                     log(f"AI timeout for {pair} - skipping")
@@ -967,9 +967,9 @@ import pandas_ta as ta
 def calculate_scalping_indicators(candles):
     """
     Fast indicator calculation for 5-min scalping
-    Only last 50 candles needed
+    Only last 100 candles needed
     """
-    df = pd.DataFrame(candles[-50:])
+    df = pd.DataFrame(candles[-100:])
     
     # EMAs (fast)
     df['ema_8'] = ta.ema(df['close'], length=8)
@@ -1040,7 +1040,7 @@ JSON response:
 }}
 """
 
-async def get_gemini_decision(prompt, timeout=3):
+async def get_gemini_decision(prompt, timeout=60):
     """
     Call Gemini with strict timeout
     """

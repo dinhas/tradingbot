@@ -52,7 +52,7 @@
       "api_key": "YOUR_GEMINI_API_KEY",
       "model": "gemini-2.5-pro",
       "max_tokens": 500,
-      "timeout_seconds": 3
+      "timeout_seconds": 60
     }
   },
   "monitoring": {
@@ -61,5 +61,9 @@
     "enable_telegram": true,
     "telegram_bot_token": "",
     "telegram_chat_id": ""
+  },
+  "symbol_ids": {
+    "EURUSD": 1,
+    "BITCOIN": 1310
   }
 }
