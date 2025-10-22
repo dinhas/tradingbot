@@ -52,7 +52,7 @@
       "api_key": "YOUR_GEMINI_API_KEY",
       "model": "gemini-2.5-pro",
       "max_tokens": 500,
-      "timeout_seconds": 3
+      "timeout_seconds": 60
     }
   },
   "monitoring": {
