@@ -4,11 +4,20 @@ from typing import List, Dict, Tuple, Callable
 import logging
 from dataclasses import dataclass
 import random
+from multiprocessing import Pool
+import os
 from src.backtest import backtest_method1_donchian, backtest_method2_atr, backtest_method3_volume
 from src.config import *
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Helper function for multiprocessing - must be defined at the top level
+def _run_backtest_for_individual(args: Tuple) -> Dict:
+    """Wrapper to run a backtest for a single set of genes."""
+    backtest_func, data, genes = args
+    metrics = backtest_func(data, *genes)
+    return metrics
 
 @dataclass
 class Individual:
@@ -115,12 +124,27 @@ class GeneticAlgorithm:
         return fitness
 
     def evaluate_population(self):
-        """Evaluate fitness for all individuals in population."""
-        for i, individual in enumerate(self.population):
-            if individual.fitness == 0.0:  # Only evaluate if not already evaluated
-                logger.info(f"  - Backtesting individual {i+1}/{len(self.population)} with params {[f'{g:.2f}' for g in individual.genes]}...")
-                # Run backtest with this individual's parameters
-                metrics = self.backtest_func(self.data, *individual.genes)
+        """Evaluate fitness for all individuals in population using multiprocessing."""
+
+        # Get individuals that need evaluation
+        unevaluated_individuals = [ind for ind in self.population if ind.fitness == 0.0]
+
+        if not unevaluated_individuals:
+            # All individuals have been evaluated, just sort and update history
+            self.population.sort(key=lambda x: x.fitness, reverse=True)
+        else:
+            logger.info(f"Backtesting {len(unevaluated_individuals)} new individuals using {os.cpu_count()} CPU cores...")
+
+            # Prepare arguments for multiprocessing
+            # Note: We pass self.backtest_func and self.data to the helper function
+            tasks = [(self.backtest_func, self.data, ind.genes) for ind in unevaluated_individuals]
+
+            # Run backtests in parallel
+            with Pool(os.cpu_count()) as pool:
+                results = pool.map(_run_backtest_for_individual, tasks)
+
+            # Update individuals with results
+            for individual, metrics in zip(unevaluated_individuals, results):
                 individual.metrics = metrics
                 individual.fitness = self.calculate_fitness(metrics)
 
@@ -218,13 +242,13 @@ class GeneticAlgorithm:
 
         # Evolution loop
         for gen in range(1, self.generations + 1):
+            logger.info(f"--- Starting Generation {gen}/{self.generations} ---")
             self.evolve_generation()
             self.evaluate_population()
 
-            if gen % 10 == 0:
-                logger.info(f"Generation {gen}: Best Fitness = {self.population[0].fitness:.4f}, "
-                          f"Avg Fitness = {self.avg_fitness_history[-1]:.4f}, "
-                          f"Best Params = {[f'{g:.2f}' for g in self.population[0].genes]}")
+            logger.info(f"Generation {gen}: Best Fitness = {self.population[0].fitness:.4f}, "
+                      f"Avg Fitness = {self.avg_fitness_history[-1]:.4f}, "
+                      f"Best Params = {[f'{g:.2f}' for g in self.population[0].genes]}")
 
         logger.info("="*80)
         logger.info("Optimization Complete!")
