@@ -2,3 +2,5 @@ ctrader-open-api
 python-dotenv
 protobuf
 service_identity
+pandas
+pytest

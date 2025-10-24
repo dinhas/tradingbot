@@ -1,5 +1,6 @@
 import os
 import json
+import pandas as pd
 from datetime import datetime, timedelta
 from twisted.internet import reactor
 from twisted.internet.defer import Deferred
@@ -13,7 +14,6 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOASubscribeSpotsReq, ProtoOASubscribeSpotsRes, ProtoOASpotEvent
 )
 from utils.logger import system_logger as log
-from utils.indicators import calculate_scalping_indicators
 from collections import deque
 
 class MarketDataService:
@@ -21,6 +21,9 @@ class MarketDataService:
         self._client = client
         self._client.add_message_listener(self.on_message)
         self.symbols_deferred = None
+        self.trendbars_deferred = None
+        self.all_trendbars = []
+        self._trendbar_request_context = {}
         self.spot_subscriptions = {}
         self.live_candles = {}
         # Store the last 100 candles for indicator calculation
@@ -39,6 +42,14 @@ class MarketDataService:
 
     def get_trendbars(self, symbol_id, period, start_date, end_date):
         log.info(f"Requesting trendbars for symbol {symbol_id} from {start_date} to {end_date}.")
+        self.trendbars_deferred = Deferred()
+        self.all_trendbars = []
+        self._trendbar_request_context = {
+            "symbolId": symbol_id,
+            "period": period,
+            "toTimestamp": int(end_date.timestamp() * 1000)
+        }
+
         request = ProtoOAGetTrendbarsReq()
         request.ctidTraderAccountId = self._client.account_id
         request.symbolId = symbol_id
@@ -47,6 +58,7 @@ class MarketDataService:
         request.toTimestamp = int(end_date.timestamp() * 1000)
 
         self._client.send(request)
+        return self.trendbars_deferred
 
     def get_symbols(self):
         log.info("Requesting all symbols...")
@@ -88,22 +100,62 @@ class MarketDataService:
         response = ProtoOAGetTrendbarsRes()
         response.ParseFromString(message.payload)
 
-        log.info(f"Received {len(response.trendbar)} trendbars.")
+        num_trendbars = len(response.trendbar)
+        log.info(f"Received {num_trendbars} trendbars.")
 
-        trendbars = [{
-            "timestamp": bar.utcTimestampInMinutes * 60 * 1000,
-            "open": bar.low + bar.deltaOpen,
-            "high": bar.low + bar.deltaHigh,
-            "low": bar.low,
-            "close": bar.low + bar.deltaClose,
-            "volume": bar.volume
-        } for bar in response.trendbar]
+        self.all_trendbars.extend(response.trendbar)
 
-        # For now, we'll just log the data. Later, this will be processed.
-        log.info(f"Sample trendbar data: {trendbars[0] if trendbars else 'No data'}")
+        # The API returns a max of 1000 bars per request. If we get 1000, there's likely more data.
+        if num_trendbars > 0 and num_trendbars == 1000:
+            last_bar = response.trendbar[-1]
+            next_from_timestamp = last_bar.utcTimestampInMinutes * 60 * 1000 + 1
 
-        # In a real scenario, you would process or store this data.
-        reactor.callLater(2, self._client.disconnect)
+            log.info(f"Requesting next chunk of data from {datetime.fromtimestamp(next_from_timestamp / 1000)}...")
+
+            request = ProtoOAGetTrendbarsReq()
+            request.ctidTraderAccountId = self._client.account_id
+            request.symbolId = self._trendbar_request_context["symbolId"]
+            request.period = self._trendbar_request_context["period"]
+            request.fromTimestamp = next_from_timestamp
+            request.toTimestamp = self._trendbar_request_context["toTimestamp"]
+
+            self._client.send(request)
+        else:
+            log.info(f"Finished fetching all {len(self.all_trendbars)} trendbars.")
+
+            # Convert to DataFrame and save
+            if self.all_trendbars:
+                df = pd.DataFrame([{
+                    "timestamp": bar.utcTimestampInMinutes * 60 * 1000,
+                    "open": (bar.low + bar.deltaOpen) / 100000.0,
+                    "high": (bar.low + bar.deltaHigh) / 100000.0,
+                    "low": bar.low / 100000.0,
+                    "close": (bar.low + bar.deltaClose) / 100000.0,
+                    "volume": bar.volume
+                } for bar in self.all_trendbars])
+
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.sort_values(by='timestamp', inplace=True)
+                df.drop_duplicates(subset=['timestamp'], keep='first', inplace=True)
+
+                data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+                os.makedirs(data_dir, exist_ok=True)
+                file_path = os.path.join(data_dir, "eurusd_5min_clean.csv")
+
+                df.to_csv(file_path, index=False)
+                log.info(f"Cleaned data saved to {file_path}")
+
+                if self.trendbars_deferred:
+                    self.trendbars_deferred.callback(file_path)
+            else:
+                log.warning("No trendbar data was fetched.")
+                if self.trendbars_deferred:
+                    self.trendbars_deferred.callback(None)
+
+            self.trendbars_deferred = None
+
+            # Disconnect after finishing
+            reactor.callLater(2, self._client.disconnect)
 
     def subscribe_to_spots(self, symbol_id):
         log.info(f"Subscribing to spot data for symbol {symbol_id}.")
@@ -135,14 +187,7 @@ class MarketDataService:
         if not candle or candle['timestamp'] != candle_timestamp:
             if candle:
                 self.historical_candles[event.symbolId].append(candle)
-                indicators = calculate_scalping_indicators(
-                    list(self.historical_candles[event.symbolId])
-                )
-                if indicators:
-                    candle['indicators'] = indicators
-                    log.info(f"New 5-min candle for symbol {event.symbolId} with indicators: {candle}")
-                else:
-                    log.info(f"New 5-min candle for symbol {event.symbolId}. Not enough data for indicators.")
+                log.info(f"New 5-min candle for symbol {event.symbolId}.")
 
             new_candle = {
                 "timestamp": candle_timestamp, "open": price, "high": price, "low": price, "close": price, "volume": 0
