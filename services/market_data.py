@@ -13,7 +13,6 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOASubscribeSpotsReq, ProtoOASubscribeSpotsRes, ProtoOASpotEvent
 )
 from utils.logger import system_logger as log
-from utils.indicators import calculate_scalping_indicators
 from collections import deque
 
 class MarketDataService:
@@ -135,14 +134,7 @@ class MarketDataService:
         if not candle or candle['timestamp'] != candle_timestamp:
             if candle:
                 self.historical_candles[event.symbolId].append(candle)
-                indicators = calculate_scalping_indicators(
-                    list(self.historical_candles[event.symbolId])
-                )
-                if indicators:
-                    candle['indicators'] = indicators
-                    log.info(f"New 5-min candle for symbol {event.symbolId} with indicators: {candle}")
-                else:
-                    log.info(f"New 5-min candle for symbol {event.symbolId}. Not enough data for indicators.")
+                log.info(f"New 5-min candle for symbol {event.symbolId}.")
 
             new_candle = {
                 "timestamp": candle_timestamp, "open": price, "high": price, "low": price, "close": price, "volume": 0

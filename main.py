@@ -2,9 +2,6 @@ import json
 from twisted.internet import reactor
 from services.cTrader.client import create_ctrader_client
 from services.market_data import MarketDataService
-from services.ai_engine import AIEngine
-from services.risk_manager import RiskManager
-from services.executor import TradeExecutor
 from utils.logger import system_logger as log
 
 class TradingBot:
@@ -12,21 +9,15 @@ class TradingBot:
         self.config = config
         self.client = None
         self.market_data_service = None
-        self.ai_engine = None
-        self.risk_manager = None
-        self.executor = None
         self.is_running = False
 
     def start(self):
         """Initializes services and starts the bot."""
-        log.info("Starting the AI Trading Bot...")
+        log.info("Starting the cTrader Client...")
 
         # Initialize services
         self.client = create_ctrader_client()
         self.market_data_service = MarketDataService(self.client)
-        self.ai_engine = AIEngine(self.config)
-        self.risk_manager = RiskManager(self.config)
-        self.executor = TradeExecutor(self.client, self.config)
 
         # Connect to cTrader
         deferred = self.client.connect()
@@ -36,7 +27,7 @@ class TradingBot:
         """Stops the bot and disconnects. This method is idempotent."""
         if not self.is_running:
             return  # Already stopping or stopped
-        log.info("Stopping the AI Trading Bot...")
+        log.info("Stopping the cTrader Client...")
         self.is_running = False
         if self.client:
             self.client.disconnect()
@@ -51,8 +42,6 @@ class TradingBot:
         self.is_running = True
         # Subscribe to symbols from config
         self._subscribe_to_all_symbols()
-        # Start the main decision loop
-        self.main_loop()
 
     def on_auth_error(self, failure):
         """Callback for authentication failure."""
@@ -72,30 +61,6 @@ class TradingBot:
         for symbol_name, symbol_id in symbol_ids.items():
             log.info(f"Subscribing to {symbol_name} (ID: {symbol_id})")
             self.market_data_service.subscribe_to_spots(symbol_id)
-
-    def main_loop(self):
-        """The main decision-making loop, compatible with Twisted."""
-        if not self.is_running:
-            log.info("Main loop stopped.")
-            return
-
-        try:
-            log.info("Executing 5-minute decision cycle...")
-
-            for symbol_id, candle in self.market_data_service.live_candles.items():
-                log.info(f"Latest candle for symbol {symbol_id}: {candle}")
-                # Placeholder for AI decision logic
-                # ai_decision = self.ai_engine.get_decision(candle)
-                # if self.risk_manager.validate_trade(ai_decision):
-                #     self.executor.execute_trade(ai_decision)
-            log.info("AI decision is 'PASS' (placeholder). No action taken.")
-
-        except Exception as e:
-            log.error(f"Error in main loop: {e}")
-
-        # Schedule the next run of the loop
-        loop_interval_seconds = 300 # 5 minutes
-        reactor.callLater(loop_interval_seconds, self.main_loop)
 
 
 def load_config(file_path='config.json'):
