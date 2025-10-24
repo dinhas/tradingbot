@@ -229,6 +229,7 @@ class GeneticAlgorithm:
         """Run the genetic algorithm for specified generations."""
         logger.info("="*80)
         logger.info("Starting Genetic Algorithm Optimization")
+        logger.info(f"Early stopping enabled: will stop if no improvement after {EARLY_STOPPING_ROUNDS} generations.")
         logger.info("="*80)
 
         # Initialize
@@ -240,15 +241,31 @@ class GeneticAlgorithm:
         logger.info(f"Generation 0: Best Fitness = {self.population[0].fitness:.4f}, "
                    f"Avg Fitness = {self.avg_fitness_history[-1]:.4f}")
 
+        generations_without_improvement = 0
+
         # Evolution loop
         for gen in range(1, self.generations + 1):
             logger.info(f"--- Starting Generation {gen}/{self.generations} ---")
+
+            last_best_fitness = self.best_individual.fitness
+
             self.evolve_generation()
             self.evaluate_population()
 
             logger.info(f"Generation {gen}: Best Fitness = {self.population[0].fitness:.4f}, "
                       f"Avg Fitness = {self.avg_fitness_history[-1]:.4f}, "
                       f"Best Params = {[f'{g:.2f}' for g in self.population[0].genes]}")
+
+            # Check for improvement for early stopping
+            if self.best_individual.fitness > last_best_fitness:
+                generations_without_improvement = 0
+            else:
+                generations_without_improvement += 1
+                logger.info(f"No improvement in best fitness for {generations_without_improvement} generation(s).")
+
+            if generations_without_improvement >= EARLY_STOPPING_ROUNDS:
+                logger.warning(f"Stopping early after {gen} generations due to no improvement in best fitness.")
+                break
 
         logger.info("="*80)
         logger.info("Optimization Complete!")
