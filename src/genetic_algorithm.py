@@ -118,6 +118,7 @@ class GeneticAlgorithm:
         """Evaluate fitness for all individuals in population."""
         for i, individual in enumerate(self.population):
             if individual.fitness == 0.0:  # Only evaluate if not already evaluated
+                logger.info(f"  - Backtesting individual {i+1}/{len(self.population)} with params {[f'{g:.2f}' for g in individual.genes]}...")
                 # Run backtest with this individual's parameters
                 metrics = self.backtest_func(self.data, *individual.genes)
                 individual.metrics = metrics
