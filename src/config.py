@@ -11,7 +11,7 @@ PIP_VALUE = 0.0001  # For 4-decimal pairs like EUR/USD
 MIN_TRADES_REQUIRED = 30  # Minimum trades for valid strategy
 MAX_DRAWDOWN_THRESHOLD = 0.30  # 30% max drawdown limit
 LONDON_SESSION_START_HOUR = 8   # 8:00 AM UTC
-LONDON_SESSION_END_HOUR = 16  # 4:00 PM UTC (16:00)
+LONDON_SESSION_END_HOUR = 17  # 5:00 PM UTC (17:00)
 
 # Data Split
 TRAIN_TEST_SPLIT = 0.70  # 70% training, 30% testing

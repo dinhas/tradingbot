@@ -56,8 +56,8 @@ def main():
     # Load data
     logger.info("Loading EUR/USD data...")
     df = pd.read_csv('data/eurusd_5min_clean.csv')
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    logger.info(f"Loaded {len(df)} bars from {df['timestamp'].min()} to {df['timestamp'].max()}")
+    df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize('UTC')
+    logger.info(f"Loaded {len(df)} bars from {df['timestamp'].min()} to {df['timestamp'].max()} (UTC)")
 
     # Split data
     train_data, test_data = split_data(df)
