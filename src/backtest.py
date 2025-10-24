@@ -181,128 +181,23 @@ class BacktestEngine:
         }
 
 
+def is_in_london_session(timestamp: pd.Timestamp) -> bool:
+    """Check if a timestamp is within the London trading session."""
+    return LONDON_SESSION_START_HOUR <= timestamp.hour < LONDON_SESSION_END_HOUR
+
+
 def backtest_method1_donchian(df: pd.DataFrame, lookback_period: int) -> Dict:
     """
-    Method 1: Donchian Channel Breakout
-
-    Long Entry: close > highest_high(lookback_period)
-    Short Entry: close < lowest_low(lookback_period)
-    Exit: On opposite signal
-
-    Args:
-        df: OHLCV DataFrame with 'timestamp' column
-        lookback_period: Period for Donchian channels (10-100)
-
-    Returns:
-        Dict with performance metrics, trades list, and equity curve
+    Method 1: Donchian Channel Breakout (with London Session filter)
     """
     engine = BacktestEngine()
     df = df.copy()
+    df['hour'] = df['timestamp'].dt.hour
 
-    # Calculate indicators
     df = calculate_donchian_channels(df, int(lookback_period))
-
-    # Drop NaN rows
     df = df.dropna().reset_index(drop=True)
 
     if len(df) < 50:
-        logger.warning(f"Insufficient data after indicator calculation: {len(df)} bars")
-        return engine.calculate_metrics()
-
-    position = None  # None, 'long', or 'short'
-    entry_idx = None
-
-    for i in range(1, len(df)):
-        current = df.iloc[i]
-        previous = df.iloc[i-1]
-
-        # Generate signals
-        long_signal = current['close'] > previous['donchian_high']
-        short_signal = current['close'] < previous['donchian_low']
-
-        if position is None:
-            # Enter new position
-            if long_signal:
-                position = 'long'
-                entry_idx = i
-            elif short_signal:
-                position = 'short'
-                entry_idx = i
-
-        elif position == 'long' and short_signal:
-            # Exit long on short signal, enter short
-            engine.execute_trade(
-                entry_time=df.iloc[entry_idx]['timestamp'],
-                exit_time=current['timestamp'],
-                direction='long',
-                entry_price=df.iloc[entry_idx]['close'],
-                exit_price=current['close']
-            )
-            position = 'short'
-            entry_idx = i
-
-        elif position == 'short' and long_signal:
-            # Exit short on long signal, enter long
-            engine.execute_trade(
-                entry_time=df.iloc[entry_idx]['timestamp'],
-                exit_time=current['timestamp'],
-                direction='short',
-                entry_price=df.iloc[entry_idx]['close'],
-                exit_price=current['close']
-            )
-            position = 'long'
-            entry_idx = i
-
-    # Close final position if open
-    if position is not None and entry_idx is not None:
-        engine.execute_trade(
-            entry_time=df.iloc[entry_idx]['timestamp'],
-            exit_time=df.iloc[-1]['timestamp'],
-            direction=position,
-            entry_price=df.iloc[entry_idx]['close'],
-            exit_price=df.iloc[-1]['close']
-        )
-
-    metrics = engine.calculate_metrics()
-    metrics['trades'] = engine.trades
-    metrics['equity_curve'] = engine.equity_curve
-    metrics['method'] = 'Donchian Channel'
-    metrics['parameters'] = {'lookback_period': lookback_period}
-
-    return metrics
-
-
-def backtest_method2_atr(df: pd.DataFrame, atr_period: int, atr_multiplier: float) -> Dict:
-    """
-    Method 2: ATR Volatility Breakout
-
-    Long Entry: close > (previous_high + ATR * multiplier)
-    Short Entry: close < (previous_low - ATR * multiplier)
-    Exit: On opposite signal
-
-    Args:
-        df: OHLCV DataFrame with 'timestamp' column
-        atr_period: Period for ATR calculation (10-50)
-        atr_multiplier: Multiplier for ATR threshold (0.5-3.0)
-
-    Returns:
-        Dict with performance metrics, trades list, and equity curve
-    """
-    engine = BacktestEngine()
-    df = df.copy()
-
-    # Calculate indicators
-    df = calculate_atr(df, int(atr_period))
-
-    # Calculate breakout levels
-    df['long_threshold'] = df['high'].shift(1) + (df['atr'] * atr_multiplier)
-    df['short_threshold'] = df['low'].shift(1) - (df['atr'] * atr_multiplier)
-
-    # Drop NaN rows
-    df = df.dropna().reset_index(drop=True)
-
-    if len(df) < 50:
-        logger.warning(f"Insufficient data after indicator calculation: {len(df)} bars")
         return engine.calculate_metrics()
 
     position = None
@@ -310,16 +205,18 @@ def backtest_method2_atr(df: pd.DataFrame, atr_period: int, atr_multiplier: floa
 
     for i in range(1, len(df)):
         current = df.iloc[i]
+        previous = df.iloc[i-1]
 
-        # Generate signals
-        long_signal = current['close'] > current['long_threshold']
-        short_signal = current['close'] < current['short_threshold']
+        in_session = is_in_london_session(current['timestamp'])
+
+        long_signal = current['close'] > previous['donchian_high']
+        short_signal = current['close'] < previous['donchian_low']
 
         if position is None:
-            if long_signal:
+            if in_session and long_signal:
                 position = 'long'
                 entry_idx = i
-            elif short_signal:
+            elif in_session and short_signal:
                 position = 'short'
                 entry_idx = i
 
@@ -331,8 +228,12 @@ def backtest_method2_atr(df: pd.DataFrame, atr_period: int, atr_multiplier: floa
                 entry_price=df.iloc[entry_idx]['close'],
                 exit_price=current['close']
             )
-            position = 'short'
-            entry_idx = i
+            if in_session:
+                position = 'short'
+                entry_idx = i
+            else:
+                position = None
+                entry_idx = None
 
         elif position == 'short' and long_signal:
             engine.execute_trade(
@@ -342,10 +243,13 @@ def backtest_method2_atr(df: pd.DataFrame, atr_period: int, atr_multiplier: floa
                 entry_price=df.iloc[entry_idx]['close'],
                 exit_price=current['close']
             )
-            position = 'long'
-            entry_idx = i
+            if in_session:
+                position = 'long'
+                entry_idx = i
+            else:
+                position = None
+                entry_idx = None
 
-    # Close final position
     if position is not None and entry_idx is not None:
         engine.execute_trade(
             entry_time=df.iloc[entry_idx]['timestamp'],
@@ -358,42 +262,102 @@ def backtest_method2_atr(df: pd.DataFrame, atr_period: int, atr_multiplier: floa
     metrics = engine.calculate_metrics()
     metrics['trades'] = engine.trades
     metrics['equity_curve'] = engine.equity_curve
-    metrics['method'] = 'ATR Volatility'
-    metrics['parameters'] = {'atr_period': atr_period, 'atr_multiplier': atr_multiplier}
+    return metrics
 
+
+def backtest_method2_atr(df: pd.DataFrame, atr_period: int, atr_multiplier: float) -> Dict:
+    """
+    Method 2: ATR Volatility Breakout (with London Session filter)
+    """
+    engine = BacktestEngine()
+    df = df.copy()
+    df['hour'] = df['timestamp'].dt.hour
+
+    df = calculate_atr(df, int(atr_period))
+    df['long_threshold'] = df['high'].shift(1) + (df['atr'] * atr_multiplier)
+    df['short_threshold'] = df['low'].shift(1) - (df['atr'] * atr_multiplier)
+    df = df.dropna().reset_index(drop=True)
+
+    if len(df) < 50:
+        return engine.calculate_metrics()
+
+    position = None
+    entry_idx = None
+
+    for i in range(1, len(df)):
+        current = df.iloc[i]
+        in_session = is_in_london_session(current['timestamp'])
+
+        long_signal = current['close'] > current['long_threshold']
+        short_signal = current['close'] < current['short_threshold']
+
+        if position is None:
+            if in_session and long_signal:
+                position = 'long'
+                entry_idx = i
+            elif in_session and short_signal:
+                position = 'short'
+                entry_idx = i
+
+        elif position == 'long' and short_signal:
+            engine.execute_trade(
+                entry_time=df.iloc[entry_idx]['timestamp'],
+                exit_time=current['timestamp'],
+                direction='long',
+                entry_price=df.iloc[entry_idx]['close'],
+                exit_price=current['close']
+            )
+            if in_session:
+                position = 'short'
+                entry_idx = i
+            else:
+                position = None
+                entry_idx = None
+
+        elif position == 'short' and long_signal:
+            engine.execute_trade(
+                entry_time=df.iloc[entry_idx]['timestamp'],
+                exit_time=current['timestamp'],
+                direction='short',
+                entry_price=df.iloc[entry_idx]['close'],
+                exit_price=current['close']
+            )
+            if in_session:
+                position = 'long'
+                entry_idx = i
+            else:
+                position = None
+                entry_idx = None
+
+    if position is not None and entry_idx is not None:
+        engine.execute_trade(
+            entry_time=df.iloc[entry_idx]['timestamp'],
+            exit_time=df.iloc[-1]['timestamp'],
+            direction=position,
+            entry_price=df.iloc[entry_idx]['close'],
+            exit_price=df.iloc[-1]['close']
+        )
+
+    metrics = engine.calculate_metrics()
+    metrics['trades'] = engine.trades
+    metrics['equity_curve'] = engine.equity_curve
     return metrics
 
 
 def backtest_method3_volume(df: pd.DataFrame, lookback_period: int,
                            volume_threshold: float, volume_ma_period: int) -> Dict:
     """
-    Method 3: Volume-Confirmed Channel Breakout
-
-    Long Entry: close > highest_high AND volume > volume_ma * threshold
-    Short Entry: close < lowest_low AND volume > volume_ma * threshold
-    Exit: On opposite signal
-
-    Args:
-        df: OHLCV DataFrame with 'timestamp' column
-        lookback_period: Period for Donchian channels (10-100)
-        volume_threshold: Volume multiplier for confirmation (1.0-3.0)
-        volume_ma_period: Period for volume MA (10-50)
-
-    Returns:
-        Dict with performance metrics, trades list, and equity curve
+    Method 3: Volume-Confirmed Channel Breakout (with London Session filter)
     """
     engine = BacktestEngine()
     df = df.copy()
+    df['hour'] = df['timestamp'].dt.hour
 
-    # Calculate indicators
     df = calculate_donchian_channels(df, int(lookback_period))
     df = calculate_volume_ma(df, int(volume_ma_period))
-
-    # Drop NaN rows
     df = df.dropna().reset_index(drop=True)
 
     if len(df) < 50:
-        logger.warning(f"Insufficient data after indicator calculation: {len(df)} bars")
         return engine.calculate_metrics()
 
     position = None
@@ -402,19 +366,17 @@ def backtest_method3_volume(df: pd.DataFrame, lookback_period: int,
     for i in range(1, len(df)):
         current = df.iloc[i]
         previous = df.iloc[i-1]
+        in_session = is_in_london_session(current['timestamp'])
 
-        # Volume confirmation
         volume_confirmed = current['volume'] > (current['volume_ma'] * volume_threshold)
-
-        # Generate signals with volume filter
         long_signal = (current['close'] > previous['donchian_high']) and volume_confirmed
         short_signal = (current['close'] < previous['donchian_low']) and volume_confirmed
 
         if position is None:
-            if long_signal:
+            if in_session and long_signal:
                 position = 'long'
                 entry_idx = i
-            elif short_signal:
+            elif in_session and short_signal:
                 position = 'short'
                 entry_idx = i
 
@@ -426,8 +388,12 @@ def backtest_method3_volume(df: pd.DataFrame, lookback_period: int,
                 entry_price=df.iloc[entry_idx]['close'],
                 exit_price=current['close']
             )
-            position = 'short'
-            entry_idx = i
+            if in_session:
+                position = 'short'
+                entry_idx = i
+            else:
+                position = None
+                entry_idx = None
 
         elif position == 'short' and long_signal:
             engine.execute_trade(
@@ -437,10 +403,13 @@ def backtest_method3_volume(df: pd.DataFrame, lookback_period: int,
                 entry_price=df.iloc[entry_idx]['close'],
                 exit_price=current['close']
             )
-            position = 'long'
-            entry_idx = i
+            if in_session:
+                position = 'long'
+                entry_idx = i
+            else:
+                position = None
+                entry_idx = None
 
-    # Close final position
     if position is not None and entry_idx is not None:
         engine.execute_trade(
             entry_time=df.iloc[entry_idx]['timestamp'],
@@ -453,11 +422,4 @@ def backtest_method3_volume(df: pd.DataFrame, lookback_period: int,
     metrics = engine.calculate_metrics()
     metrics['trades'] = engine.trades
     metrics['equity_curve'] = engine.equity_curve
-    metrics['method'] = 'Volume-Confirmed'
-    metrics['parameters'] = {
-        'lookback_period': lookback_period,
-        'volume_threshold': volume_threshold,
-        'volume_ma_period': volume_ma_period
-    }
-
     return metrics
