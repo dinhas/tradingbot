@@ -23,7 +23,7 @@ CROSSOVER_RATE = 0.70
 MUTATION_RATE = 0.15
 ELITISM_COUNT = 5
 TOURNAMENT_SIZE = 3
-EARLY_STOPPING_ROUNDS = 25  # Stop if no improvement after 25 generations
+EARLY_STOPPING_ROUNDS = 15 # Stop if no improvement after 25 generations
 
 # Parameter Ranges for Optimization
 # Method 1: Donchian Channel Breakout
