@@ -289,7 +289,7 @@ class TradingEnv(gym.Env):
         
         raw_reward = 0.9 * portfolio_return + 0.1 * sharpe
         normalized_reward = raw_reward / (port_vol + 1e-9)
-        final_reward = normalized_reward * 100
+        final_reward = normalized_reward * 10  # Reduced from 100 to prevent value explosion
         
         # 6. Check Termination
         terminated = False

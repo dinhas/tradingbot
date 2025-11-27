@@ -1,5 +1,5 @@
 import gymnasium as gym
-from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 from stable_baselines3.common.callbacks import CheckpointCallback
 from sb3_contrib import RecurrentPPO
 from trading_env import TradingEnv
@@ -30,6 +30,17 @@ if __name__ == "__main__":
     print(f"Initializing {NUM_CPU} parallel environments...")
     # SubprocVecEnv runs environments in separate processes for true parallelism
     env = SubprocVecEnv([make_env(i) for i in range(NUM_CPU)])
+    
+    # CRITICAL FIX: Wrap with VecNormalize for reward stabilization
+    print("Wrapping with VecNormalize (reward normalization)...")
+    env = VecNormalize(
+        env,
+        norm_obs=False,      # We already normalize observations in TradingEnv
+        norm_reward=True,    # CRITICAL: Normalize rewards to prevent value explosion
+        clip_obs=10.0,
+        clip_reward=10.0,
+        gamma=0.99
+    )
 
     print("Setting up RecurrentPPO model with LSTM Policy...")
     
@@ -59,9 +70,10 @@ if __name__ == "__main__":
 
     # Checkpoint Callback (PRD Section 7.4)
     checkpoint_callback = CheckpointCallback(
-        save_freq=50_000, 
+        save_freq=50_000 // NUM_CPU,  # Adjust for parallel envs
         save_path='./models/',
-        name_prefix='recurrent_ppo_trading'
+        name_prefix='recurrent_ppo_trading',
+        save_vecnormalize=True  # Save normalization stats
     )
 
     print(f"Starting training for {TOTAL_TIMESTEPS} steps on {model.device}...")
@@ -75,7 +87,9 @@ if __name__ == "__main__":
         
         # Save Final Model
         model.save("models/recurrent_ppo_final")
+        env.save("models/recurrent_ppo_final_vecnormalize.pkl")  # Save normalization stats
         print("Final model saved to models/recurrent_ppo_final.zip")
+        print("VecNormalize stats saved to models/recurrent_ppo_final_vecnormalize.pkl")
         
     except Exception as e:
         print(f"❌ Training failed: {e}")
