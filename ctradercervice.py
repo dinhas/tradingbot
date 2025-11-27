@@ -1,5 +1,9 @@
 import pandas as pd
-import pandas_ta as ta
+try:
+    import pandas_ta as ta
+except ImportError:
+    # Fallback for Kaggle/Offline environments
+    from technical_indicators import TechnicalIndicators as ta
 import numpy as np
 import logging
 import json

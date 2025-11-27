@@ -2,7 +2,7 @@ ctrader_open_api
 gymnasium
 numpy
 pandas
-pandas_ta
+
 sb3_contrib
 stable_baselines3
 torch
