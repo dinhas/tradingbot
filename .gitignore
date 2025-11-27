@@ -1,0 +1,5 @@
+*.json
+*.parquet
+
+__pycache__/
+*.pyc
