@@ -74,9 +74,21 @@ def run_data_pipeline():
     logger.info("Starting data fetch... (This may take 30-60 minutes)")
     
     try:
-        import ctradercervice
+        import subprocess
+        # Run ctradercervice.py as a separate process
+        subprocess.check_call([sys.executable, "ctradercervice.py"])
+        
+        # Verify files exist after run
+        still_missing = check_data_exists()
+        if still_missing:
+            logger.error(f"❌ Data fetch ran but files are still missing: {still_missing}")
+            return False
+            
         logger.info("✅ Data pipeline completed successfully!")
         return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"❌ Data pipeline failed with exit code {e.returncode}")
+        return False
     except Exception as e:
         logger.error(f"❌ Data pipeline failed: {e}")
         return False
@@ -175,8 +187,12 @@ def run_training():
                 return TradingEnv(data_dir=DATA_DIR, volatility_file="volatility_baseline.json")
             return _init
         
-        logger.info("Creating 8 parallel environments...")
-        n_envs = 8
+        import multiprocessing
+        
+        # Dynamically use all available CPU cores
+        n_envs = multiprocessing.cpu_count()
+        logger.info(f"Detected {n_envs} CPU cores. Creating {n_envs} parallel environments...")
+        
         vec_env = SubprocVecEnv([make_env(i) for i in range(n_envs)])
         
         # CRITICAL FIX: Wrap with VecNormalize for reward stabilization

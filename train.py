@@ -24,10 +24,11 @@ def make_env(rank, seed=0):
 
 if __name__ == "__main__":
     # --- Configuration matches PRD Section 7.3 & 7.4 ---
-    NUM_CPU = 8  # Use more cores on Cloud (e.g., Colab Pro usually has 2-4, but we can request more)
+    import multiprocessing
+    NUM_CPU = multiprocessing.cpu_count()
     TOTAL_TIMESTEPS = 2_000_000  # Phase 3: 2M steps
     
-    print(f"Initializing {NUM_CPU} parallel environments...")
+    print(f"Initializing {NUM_CPU} parallel environments (using all available cores)...")
     # SubprocVecEnv runs environments in separate processes for true parallelism
     env = SubprocVecEnv([make_env(i) for i in range(NUM_CPU)])
     
