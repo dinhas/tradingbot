@@ -292,6 +292,13 @@ def run_training():
         
         return True, model, vec_env
         
+    except KeyboardInterrupt:
+        logger.warning("\n⚠️  Training interrupted by user! Saving emergency checkpoint...")
+        model.save("./models/interrupted_model")
+        vec_env.save("./models/interrupted_model_vecnormalize.pkl")
+        logger.info("✅ Interrupted model saved to ./models/interrupted_model")
+        raise
+
     except Exception as e:
         logger.error(f"❌ Training failed: {e}")
         import traceback

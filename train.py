@@ -92,6 +92,12 @@ if __name__ == "__main__":
         print("Final model saved to models/recurrent_ppo_final.zip")
         print("VecNormalize stats saved to models/recurrent_ppo_final_vecnormalize.pkl")
         
+    except KeyboardInterrupt:
+        print("\n⚠️  Training interrupted by user! Saving emergency checkpoint...")
+        model.save("models/recurrent_ppo_interrupted")
+        env.save("models/recurrent_ppo_interrupted_vecnormalize.pkl")
+        print("✅ Interrupted model saved to models/recurrent_ppo_interrupted.zip")
+        
     except Exception as e:
         print(f"❌ Training failed: {e}")
         import traceback
