@@ -170,7 +170,7 @@ def run_training():
     apply_critical_fixes()
     
     try:
-        from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
+        from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
         from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
         from sb3_contrib import RecurrentPPO
         from trading_env import TradingEnv
@@ -214,7 +214,18 @@ def run_training():
             save_vecnormalize=True
         )
         
-        eval_env = TradingEnv(data_dir=DATA_DIR, volatility_file="volatility_baseline.json")
+        # Create eval env wrapped in VecNormalize to match training env
+        eval_env = DummyVecEnv([lambda: TradingEnv(data_dir=DATA_DIR, volatility_file="volatility_baseline.json")])
+        eval_env = VecNormalize(
+            eval_env,
+            norm_obs=False,       # Match training env
+            norm_reward=False,    # Don't normalize reward for eval (we want to see real PnL)
+            clip_obs=10.0,
+            clip_reward=10.0,
+            gamma=0.99,
+            training=False        # Do not update stats during eval
+        )
+
         eval_callback = EvalCallback(
             eval_env,
             best_model_save_path='./models/best/',
