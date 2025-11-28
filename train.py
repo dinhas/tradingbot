@@ -26,7 +26,7 @@ if __name__ == "__main__":
     # --- Configuration matches PRD Section 7.3 & 7.4 ---
     import multiprocessing
     NUM_CPU = multiprocessing.cpu_count()
-    TOTAL_TIMESTEPS = 2_000_000  # Phase 3: 2M steps
+    TOTAL_TIMESTEPS = 600_000  # Phase 3: 600k steps
     
     print(f"Initializing {NUM_CPU} parallel environments (using all available cores)...")
     # SubprocVecEnv runs environments in separate processes for true parallelism

@@ -40,7 +40,7 @@ REQUIRED_FILES = [
 
 # Training Configuration
 TRAINING_CONFIG = {
-    'total_timesteps': 2_000_000,  # 2M steps (~24 hours)
+    'total_timesteps': 600_000,  # 600k steps
     'checkpoint_freq': 50_000,     # Save every 50k steps
     'eval_freq': 10_000,           # Evaluate every 10k steps
     'n_eval_episodes': 5
