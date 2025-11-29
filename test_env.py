@@ -15,26 +15,27 @@ def test_environment():
     print("Resetting Environment...")
     obs, info = env.reset()
     print(f"Initial Observation Shape: {obs.shape}")
-    print(f"Initial Info: {info}")
+    print(f"Action Space Shape: {env.action_space.shape}")
     
-    # Verify Observation Shape
-    if obs.shape != (97,):
-        print(f"❌ Observation shape mismatch! Expected (97,), got {obs.shape}")
+    # Verify Action Space
+    if env.action_space.shape != (9,):
+        print(f"❌ Action space mismatch! Expected (9,), got {env.action_space.shape}")
+        return
     else:
-        print("✅ Observation shape correct.")
+        print("✅ Action space correct (9 dims).")
 
     print("\nRunning Simulation Loop...")
     for i in range(10):
-        # Random Action (Softmax will be applied inside)
+        # Random Action (9 dims)
         action = env.action_space.sample()
         
         obs, reward, terminated, truncated, info = env.step(action)
         
         print(f"Step {i+1}:")
+        print(f"  SL Mult: {env.sl_multiplier:.2f}x ATR | TP Mult: {env.tp_multiplier:.2f}x ATR")
         print(f"  Reward: {reward:.4f}")
         print(f"  Portfolio Value: ${info['portfolio_value']:.2f}")
         print(f"  Fees Paid: ${info['fees']:.4f}")
-        print(f"  Terminated: {terminated}")
         
         if terminated or truncated:
             print("Episode Ended.")

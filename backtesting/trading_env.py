@@ -26,10 +26,7 @@ ASSET_MAPPING = {
 class TradingEnv(gym.Env):
     """
     Multi-Asset Trading Environment for RL.
-    Action Space: Continuous (9,)
-        - 0-6: Portfolio Weights [BTC, ETH, SOL, EUR, GBP, JPY, CASH]
-        - 7: Stop Loss Multiplier (1.0 - 5.0)
-        - 8: Take Profit Multiplier (1.0 - 10.0)
+    Action Space: Continuous (7,) - Portfolio Weights [BTC, ETH, SOL, EUR, GBP, JPY, CASH]
     Observation Space: Continuous (97,) - Market Features + Portfolio State
     """
     metadata = {'render_modes': ['human']}
@@ -51,8 +48,8 @@ class TradingEnv(gym.Env):
             self.volatility_baseline = json.load(f)
             
         # Define Spaces
-        # Action: 9 dims (7 weights + 1 SL + 1 TP)
-        self.action_space = spaces.Box(low=0, high=1, shape=(9,), dtype=np.float32)
+        # Action: 7 weights (sum to 1 handled in step)
+        self.action_space = spaces.Box(low=0, high=1, shape=(self.n_assets + 1,), dtype=np.float32)
         
         # Observation: 97 features
         # 78 Market + 3 Temporal + 6 Session + 8 Portfolio + 2 Cross-Asset
@@ -65,12 +62,6 @@ class TradingEnv(gym.Env):
         self.positions = {asset: 0.0 for asset in self.assets} # In USD value
         self.holdings = {asset: 0.0 for asset in self.assets}  # In units
         self.entry_prices = {asset: 0.0 for asset in self.assets} # Weighted avg entry price
-        self.previous_weights = np.zeros(self.n_assets + 1) # Track previous weights for turnover
-        self.previous_weights[6] = 1.0 # Start with 100% cash
-        
-        # Anti-Cheat Tracking
-        self.cash_hoarding_steps = 0  # Track consecutive steps with >80% cash
-        self.stale_steps = 0  # Track steps with no significant rebalancing
         
         # History for Rendering
         self.history = []
@@ -82,11 +73,14 @@ class TradingEnv(gym.Env):
         # Load all asset files
         for asset in self.assets:
             try:
-                # Load parquet
-                df = pd.read_parquet(f"{self.data_dir}data_{asset}_final.parquet")
+                # Try backtest naming first, then fall back to training naming
+                try:
+                    df = pd.read_parquet(f"{self.data_dir}backtest_data_{asset}.parquet")
+                except FileNotFoundError:
+                    df = pd.read_parquet(f"{self.data_dir}data_{asset}_final.parquet")
                 dfs[asset] = df
             except FileNotFoundError:
-                raise FileNotFoundError(f"Data for {asset} not found. Run ctradercervice.py first.")
+                raise FileNotFoundError(f"Data for {asset} not found. Run ctradercervice.py or backtest_data_fetcher.py first.")
         
         # Find common index (intersection)
         common_index = dfs[self.assets[0]].index
@@ -163,16 +157,7 @@ class TradingEnv(gym.Env):
         self.positions = {asset: 0.0 for asset in self.assets}
         self.holdings = {asset: 0.0 for asset in self.assets}
         self.entry_prices = {asset: 0.0 for asset in self.assets}
-        self.previous_weights = np.zeros(self.n_assets + 1)
-        self.previous_weights[6] = 1.0
-        self.tp_hit_count = 0
-        self.sl_hit_count = 0
         self.peak_value = INITIAL_BALANCE
-        
-        # Anti-Cheat Tracking
-        self.cash_hoarding_steps = 0
-        self.stale_steps = 0
-        
         self.history = []
         
         return self._get_observation(), {}
@@ -181,30 +166,19 @@ class TradingEnv(gym.Env):
         # 1. Enforce Action Masking (Session Constraints)
         mask = self.action_masks()
         
-        # Extract Weights (0-6) and Risk Params (7-8)
-        raw_weights = action[0:7]
-        sl_mult_raw = action[7]
-        tp_mult_raw = action[8]
-        
-        # Decode Risk Params
-        # SL: 1.0 to 5.0 ATR
-        self.sl_multiplier = 1.0 + (sl_mult_raw * 4.0)
-        # TP: 1.5 to 10.0 ATR (minimum 1.5 to prevent exploit)
-        self.tp_multiplier = 1.5 + (tp_mult_raw * 8.5)
-
-        # Apply Softmax with Masking to Weights
+        # Apply Softmax with Masking
         # We exponentiate the action (logits)
-        exp_action = np.exp(raw_weights)
+        exp_action = np.exp(action)
         
-        # Zero out the probabilities of masked actions (only first 7 are masked)
-        masked_exp = exp_action * mask[0:7]
+        # Zero out the probabilities of masked actions
+        masked_exp = exp_action * mask
         
         # Normalize to get weights
         sum_exp = np.sum(masked_exp)
         
         if sum_exp == 0:
             # Fallback: If everything is masked (shouldn't happen as Cash is always open), go 100% Cash
-            weights = np.zeros_like(raw_weights)
+            weights = np.zeros_like(action)
             weights[6] = 1.0
         else:
             weights = masked_exp / sum_exp
@@ -247,9 +221,8 @@ class TradingEnv(gym.Env):
                 atr_norm = current_data.get(f"{asset}_atr_14_norm", 0.01)
                 atr = atr_norm * current_price
                 
-                # Use Dynamic Multipliers from Action
-                stop_loss = entry_price - (self.sl_multiplier * atr)
-                take_profit = entry_price + (self.tp_multiplier * atr)
+                stop_loss = entry_price - (2.0 * atr)
+                take_profit = entry_price + (3.0 * atr)
                 
                 if current_price <= stop_loss or current_price >= take_profit:
                     # Force Close Position
@@ -264,12 +237,6 @@ class TradingEnv(gym.Env):
                     self.holdings[asset] = 0.0
                     self.entry_prices[asset] = 0.0
                     self.portfolio_value -= fee
-                    
-                    # Track Hits
-                    if current_price <= stop_loss:
-                        self.sl_hit_count += 1
-                    elif current_price >= take_profit:
-                        self.tp_hit_count += 1
                     
                     # Override target for this asset to 0 for this step
                     weights[self.assets.index(asset)] = 0.0
@@ -315,76 +282,17 @@ class TradingEnv(gym.Env):
         # 5. Calculate Reward
         portfolio_return = (self.portfolio_value - prev_portfolio_value) / prev_portfolio_value if prev_portfolio_value > 0 else 0
         
-        # Calculate Turnover (sum of absolute weight changes)
-        turnover = np.sum(np.abs(weights - self.previous_weights))
-        self.previous_weights = weights.copy()
-        
         # Volatility Baseline
         port_vol = 0.0
         for i, asset in enumerate(self.assets):
             port_vol += weights[i] * self.volatility_baseline.get(asset, 0.01)
         port_vol += weights[6] * 0.001
         
-        # Clip volatility to prevent explosion
-        port_vol = max(port_vol, 1e-4)
+        sharpe = portfolio_return / (port_vol + 1e-9)
         
-        sharpe = portfolio_return / port_vol
-        
-        # Reward with Turnover Penalty
-        # Penalty: 0.5 * turnover (e.g., 100% rebalance = -0.5 penalty)
-        # Reward with Turnover Penalty
-        # Penalty: 0.5 * turnover (e.g., 100% rebalance = -0.5 penalty)
-        turnover_penalty = turnover * 0.5
-        
-        # TP/SL Bonuses
-        tp_bonus = self.tp_hit_count * 1.0
-        sl_penalty = self.sl_hit_count * 1.0
-        
-        # Reset counters
-        self.tp_hit_count = 0
-        self.sl_hit_count = 0
-        
-        # Risk-to-Reward Ratio Incentive
-        # Calculate R:R = TP / SL
-        rr_ratio = self.tp_multiplier / (self.sl_multiplier + 1e-9)
-        
-        # Optimal range: 1.5 to 4.0
-        if 1.5 <= rr_ratio <= 4.0:
-            rr_bonus = 0.5  # Reward for good risk management
-        elif rr_ratio < 1.5:
-            rr_bonus = -0.5  # Penalty for too much risk (SL too wide)
-        else:  # rr_ratio > 4.0
-            rr_bonus = -0.5  # Penalty for unrealistic TP (too greedy)
-        
-        # Anti-Cash-Hoarding: Penalize excessive cash holding
-        cash_weight = weights[6]
-        if cash_weight > 0.8:
-            self.cash_hoarding_steps += 1
-        else:
-            self.cash_hoarding_steps = 0
-        
-        # Penalty: -0.1 per step after 10 consecutive cash-heavy steps
-        cash_hoarding_penalty = max(0, (self.cash_hoarding_steps - 10) * 0.1)
-        
-        # Anti-Stagnation: Penalize lack of rebalancing
-        if turnover < 0.05:  # Less than 5% portfolio change
-            self.stale_steps += 1
-        else:
-            self.stale_steps = 0
-        
-        # Penalty: -0.05 per step after 20 consecutive stale steps
-        staleness_penalty = max(0, (self.stale_steps - 20) * 0.05)
-        
-        # Progressive Drawdown Penalty (start at 80% instead of 70%)
-        drawdown_penalty = 0.0
-        pct_of_initial = self.portfolio_value / INITIAL_BALANCE
-        if pct_of_initial < 0.8:
-            # Linear penalty: -1.0 for each 1% below 80%
-            drawdown_penalty = (0.8 - pct_of_initial) * 100.0
-        
-        raw_reward = (0.9 * portfolio_return + 0.1 * sharpe) - turnover_penalty + tp_bonus - sl_penalty + rr_bonus - cash_hoarding_penalty - staleness_penalty - drawdown_penalty
-        normalized_reward = raw_reward / port_vol
-        final_reward = normalized_reward * 1.0  # Reduced scaling from 10.0 to 1.0
+        raw_reward = 0.9 * portfolio_return + 0.1 * sharpe
+        normalized_reward = raw_reward / (port_vol + 1e-9)
+        final_reward = normalized_reward * 10  # Reduced from 100 to prevent value explosion
         
         # 6. Check Termination
         terminated = False
@@ -498,7 +406,7 @@ class TradingEnv(gym.Env):
         # 5: JPY (Tokyo/London: 00-16 UTC)
         # 6: Cash (Always True)
         
-        mask = np.ones(9, dtype=bool)
+        mask = np.ones(7, dtype=bool)
         
         # Forex Constraints
         is_weekend = weekday >= 5
@@ -508,16 +416,10 @@ class TradingEnv(gym.Env):
             mask[4] = False
             mask[5] = False
         else:
-            # Allow trading 1 hour BEFORE session open
-            # EUR (London/NY): 08-21 UTC -> Allow 07-21
-            if not (7 <= hour < 21): mask[3] = False 
-            # GBP (London/NY): 08-21 UTC -> Allow 07-21
-            if not (7 <= hour < 21): mask[4] = False 
-            # JPY (Tokyo/London): 00-16 UTC -> Allow 23-16 (Handle wrap around)
-            # 23 (prev day) to 16
-            if not (hour >= 23 or hour < 16): mask[5] = False
-            
-        # SL/TP actions (7, 8) are always valid
+            # Simple hour checks (UTC)
+            if not (8 <= hour < 21): mask[3] = False # EUR
+            if not (8 <= hour < 21): mask[4] = False # GBP
+            if not (0 <= hour < 16): mask[5] = False # JPY
             
         return mask
 

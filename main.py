@@ -172,6 +172,7 @@ def run_training():
     try:
         from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
         from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+        from callbacks.debug_logger import DebugLoggingCallback
         from sb3_contrib import RecurrentPPO
         from trading_env import TradingEnv
         import torch
@@ -235,6 +236,13 @@ def run_training():
             deterministic=True
         )
         
+        # Debug logging callback
+        debug_callback = DebugLoggingCallback(
+            log_freq=50000,
+            log_dir='./debuglogs/',
+            verbose=1
+        )
+        
         # Create model
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Setting up RecurrentPPO model (Device: {device})...")
@@ -274,7 +282,7 @@ def run_training():
         # TRAIN
         model.learn(
             total_timesteps=TRAINING_CONFIG['total_timesteps'],
-            callback=[checkpoint_callback, eval_callback],
+            callback=[checkpoint_callback, eval_callback, debug_callback],
             progress_bar=True
         )
         

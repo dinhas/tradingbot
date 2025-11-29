@@ -2,6 +2,7 @@ import pandas as pd
 try:
     import pandas_ta as ta
 except ImportError:
+    # Fallback for Kaggle/Offline environments
     from technical_indicators import TechnicalIndicators as ta
 import numpy as np
 import logging
@@ -25,13 +26,6 @@ CT_ACCOUNT_ID = 44663862  # Must be an integer
 CT_ACCESS_TOKEN = "INnzhrurLIS2OSQDgzzckzZr1IbSf10VkS0sDx-cEVU"
 CT_HOST_TYPE = "demo"     # "live" or "demo"
 
-# --- Configuration ---
-CT_APP_ID = "17481_ejoPRnjMkFdEkcZTHbjYt5n98n6wRE2wESCkSSHbLIvdWzRkRp"
-CT_APP_SECRET = "AaIrnTNyz47CC9t5nsCXU67sCXtKOm7samSkpNFIvqKOaz1vJ1"
-CT_ACCOUNT_ID = 44663862  # Must be an integer
-CT_ACCESS_TOKEN = "INnzhrurLIS2OSQDgzzckzZr1IbSf10VkS0sDx-cEVU"
-CT_HOST_TYPE = "demo"     # "live" or "demo"
-
 # Assets to Fetch (RPD v3.0)
 ASSETS = {
     'Crypto': ['BTC', 'ETH', 'SOL'],
@@ -39,7 +33,6 @@ ASSETS = {
 }
 
 # --- Manual Symbol ID Configuration ---
-# User must fill these in!
 SYMBOL_IDS = {
     'BTC': 1310,   # BITCOIN
     'ETH': 1311,   # ETHEREUM
@@ -49,8 +42,10 @@ SYMBOL_IDS = {
     'JPY': 4       # USDJPY
 }
 
+# Fetch enough history to calculate stats (2020-2024) + Backtest period (2025)
 START_DATE = datetime(2020, 1, 1)
-END_DATE = datetime(2024, 12, 31)
+END_DATE = datetime.now() # Fetch up to now
+TRAIN_END_DATE = datetime(2024, 12, 31) # End of training period
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -127,7 +122,7 @@ class DataProcessor:
         return df.dropna()
 
     def normalize_data(self, df_dict, train_end_date):
-        logging.info("Normalizing data (Z-Score on Training Split)...")
+        logging.info(f"Normalizing data using stats from training period (<= {train_end_date})...")
         normalized_dfs = {}
         
         # Use the first key in the dictionary to determine columns
@@ -139,15 +134,25 @@ class DataProcessor:
         feature_cols = [c for c in df_dict[first_asset].columns if c not in exclude_cols]
         
         for asset, df in df_dict.items():
+            # Calculate stats ONLY on training data
             train_df = df[df.index <= train_end_date]
+            
+            if len(train_df) == 0:
+                logging.warning(f"⚠️ No training data found for {asset} before {train_end_date}. Cannot calculate stats!")
+                continue
+
             mean = train_df[feature_cols].mean()
             std = train_df[feature_cols].std()
             self.stats[asset] = {'mean': mean, 'std': std}
             
+            # Apply normalization to the WHOLE dataset (including backtest period)
             df_norm = df.copy()
             for col in feature_cols:
                 df_norm[col] = (df[col] - mean[col]) / (std[col] + 1e-9)
-            normalized_dfs[asset] = df_norm
+            
+            # Return only the backtest portion (after train_end_date)
+            backtest_df = df_norm[df_norm.index > train_end_date]
+            normalized_dfs[asset] = backtest_df
             
         return normalized_dfs
 
@@ -211,34 +216,39 @@ class CTraderDownloader:
                         
                         processed_df = self.processor.calculate_technical_features(df)
                         
-                        # 1. Volatility
-                        train_df = processed_df[processed_df.index <= datetime(2023, 12, 31)]
-                        # Check if log_ret exists
-                        if 'log_ret' in train_df.columns:
-                            vol = train_df['log_ret'].std()
+                        # 1. Calculate Volatility (on Training Data)
+                        train_df_vol = processed_df[processed_df.index <= TRAIN_END_DATE]
+                        if 'log_ret' in train_df_vol.columns:
+                            vol = train_df_vol['log_ret'].std()
                         else:
                             vol = 0.01
-                            
                         if pd.isna(vol) or vol == 0: vol = 0.01
                         
-                        with open(f"data/volatility_{asset}.json", "w") as f:
+                        # Save Volatility
+                        vol_file = f"data/volatility_{asset}.json"
+                        with open(vol_file, "w") as f:
                             json.dump({asset: float(vol)}, f)
-                        logging.info(f"Saved data/volatility_{asset}.json")
+                        logging.info(f"Saved {vol_file}")
+
+                        # 2. Normalize using Training Stats
+                        norm_dict = self.processor.normalize_data({asset: processed_df}, TRAIN_END_DATE)
                         
-                        # 2. Normalize
-                        norm_dict = self.processor.normalize_data({asset: processed_df}, datetime(2023, 12, 31))
-                        final_df = norm_dict[asset]
-                        
-                        # 3. Save Parquet
-                        fname = f"data/data_{asset}_final.parquet"
-                        final_df.to_parquet(fname)
-                        logging.info(f"✅ Saved {fname}")
-                        
+                        if asset in norm_dict:
+                            final_df = norm_dict[asset]
+                            
+                            # Save Parquet to data folder
+                            fname = f"data/backtest_data_{asset}.parquet"
+                            final_df.to_parquet(fname)
+                            logging.info(f"✅ Saved {fname} ({len(final_df)} rows)")
+                        else:
+                            logging.warning(f"❌ Failed to normalize {asset}")
+
                         # Cleanup to save RAM
                         del self.downloaded_data[asset]
                         
                     except Exception as e:
                         logging.error(f"Error processing {asset}: {e}")
+                        traceback.print_exc()
                 
             logging.info("All downloads complete. Stopping reactor.")
             reactor.stop()
@@ -262,7 +272,7 @@ class CTraderDownloader:
         
         while current_start < END_DATE:
             # Clamp end time to avoid requesting future data
-            chunk_end = current_start + timedelta(days=60)
+            chunk_end = current_start + timedelta(days=20)
             if chunk_end > END_DATE:
                 chunk_end = END_DATE
             
@@ -344,29 +354,22 @@ class CTraderDownloader:
 if __name__ == "__main__":
     print("DEBUG: Script started")
     all_assets = ASSETS['Crypto'] + ASSETS['Forex']
-    assets_to_fetch = []
     
-    # 1. Check for existing data
-    for asset in all_assets:
-        fname = f"data/data_{asset}_final.parquet"
-        if os.path.exists(fname):
-            logging.info(f"Found existing data for {asset}. Skipping.")
-        else:
-            assets_to_fetch.append(asset)
-            
-    # 2. Fetch missing data
-    if assets_to_fetch:
-        logging.info(f"Need to fetch: {assets_to_fetch}")
-        downloader = CTraderDownloader(assets_to_fetch)
-        print("Starting cTrader Downloader... (Press Ctrl+C to stop manually)")
-        try:
-            downloader.start()
-        except KeyboardInterrupt:
-            logging.info("Interrupted.")
-    else:
-        logging.info("All assets already downloaded.")
+    # Ensure backtesting directory exists
+    if not os.path.exists("backtesting"):
+        os.makedirs("backtesting")
 
-    # 4. Aggregate Volatility Baselines
+    print(f"Fetching data from {START_DATE} to {END_DATE}")
+    print(f"Training stats will be calculated up to {TRAIN_END_DATE}")
+    
+    downloader = CTraderDownloader(all_assets)
+    print("Starting cTrader Downloader... (Press Ctrl+C to stop manually)")
+    try:
+        downloader.start()
+    except KeyboardInterrupt:
+        logging.info("Interrupted.")
+    
+    # Aggregate Volatility
     final_vol_map = {}
     for asset in all_assets:
         vol_file = f"data/volatility_{asset}.json"
@@ -375,11 +378,10 @@ if __name__ == "__main__":
                 data = json.load(f)
                 final_vol_map.update(data)
         else:
-            logging.warning(f"Missing volatility file for {asset}. Defaulting to 0.01")
             final_vol_map[asset] = 0.01
             
     with open("data/volatility_baseline.json", "w") as f:
         json.dump(final_vol_map, f, indent=4)
-    logging.info("Saved aggregated data/volatility_baseline.json")
-    
+    print("Saved data/volatility_baseline.json")
+
     print("Done.")

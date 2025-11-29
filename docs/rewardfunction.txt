@@ -1,0 +1,124 @@
+Multi-Asset AI Trading System - Reward Function Documentation (v4.0 - Anti-Cheat Edition)
+
+1. Core Components
+------------------
+The reward function balances profitability, risk management, and transaction efficiency while preventing exploitation.
+
+A. Portfolio Return
+   - Calculation: (Current Portfolio Value - Previous Portfolio Value) / Previous Portfolio Value
+   - Purpose: Direct measure of profitability.
+
+B. Volatility Baseline (Risk Metric)
+   - Calculation: Weighted average of historical volatility for each asset.
+   - Constraint: Clipped at min 1e-4.
+   - Purpose: Normalizes rewards so Crypto volatility doesn't overshadow Forex stability.
+
+C. Sharpe Component
+   - Calculation: Portfolio Return / Volatility Baseline
+   - Purpose: Rewards risk-adjusted returns.
+
+D. Turnover (Churn)
+   - Calculation: Sum of absolute weight changes.
+   - Purpose: Penalizes excessive rebalancing to reduce fees.
+
+E. AI-Driven Risk Management
+   - The AI outputs Stop Loss (SL) and Take Profit (TP) multipliers.
+   - SL Range: 1.0x - 5.0x ATR
+   - TP Range: 1.5x - 10.0x ATR (minimum enforced to prevent exploits)
+   - Hitting TP is rewarded; hitting SL is penalized.
+
+F. Risk-to-Reward (R:R) Ratio
+   - Calculation: R:R = TP Multiplier / SL Multiplier
+   - Optimal Range: 1:1.5 to 1:4
+   - Purpose: Encourages balanced risk management.
+
+2. Reward Formula
+-----------------
+The final reward is calculated as follows:
+
+Step 1: Calculate Components
+   - Turnover Penalty = Turnover * 0.5
+   - TP Bonus = +1.0 (if Take Profit hit)
+   - SL Penalty = -1.0 (if Stop Loss hit)
+   - R:R Bonus/Penalty:
+       * +0.5 if 1.5 <= R:R <= 4.0 (optimal)
+       * -0.5 if R:R < 1.5 (too risky)
+       * -0.5 if R:R > 4.0 (too greedy)
+
+Step 2: Anti-Cheat Penalties
+   A. Cash Hoarding Penalty
+      - Triggered: Cash > 80% for > 10 consecutive steps
+      - Penalty: -0.1 per step beyond threshold
+      - Purpose: Prevents AI from hiding in cash to avoid risk
+
+   B. Staleness Penalty
+      - Triggered: Turnover < 5% for > 20 consecutive steps
+      - Penalty: -0.05 per step beyond threshold
+      - Purpose: Prevents AI from "freezing" its portfolio
+
+   C. Progressive Drawdown Penalty
+      - Triggered: Portfolio < 80% of initial value
+      - Penalty: -1.0 for each 1% below 80%
+      - Purpose: Prevents cliff-diving near bankruptcy threshold
+      - Example: At 75% → Penalty = -5.0
+
+Step 3: Calculate Raw Reward
+   Raw Reward = (0.9 * Portfolio Return) 
+                + (0.1 * Sharpe Component) 
+                - Turnover Penalty 
+                + TP Bonus 
+                - SL Penalty 
+                + R:R Bonus
+                - Cash Hoarding Penalty
+                - Staleness Penalty
+                - Drawdown Penalty
+
+Step 4: Normalize Reward
+   Normalized Reward = Raw Reward / Volatility Baseline
+
+Step 5: Final Scaling
+   Final Reward = Normalized Reward * 1.0
+
+3. Terminal Penalties (Episode End)
+-----------------------------------
+A. Bankruptcy
+   - Condition: Portfolio Value < 70% of Initial Balance
+   - Penalty: -50.0
+
+B. Maximum Drawdown Breach
+   - Condition: Drawdown > 30% from Peak
+   - Penalty: -30.0
+
+4. Summary of Incentives
+------------------------
+POSITIVE Rewards:
+  - Making money (portfolio returns)
+  - Hitting Take Profits (+1.0)
+  - Using optimal R:R ratios 1:1.5 to 1:4 (+0.5)
+  - Low volatility strategies
+  - Active, responsive trading
+
+NEGATIVE Penalties:
+  - Losing money
+  - Hitting Stop Losses (-1.0)
+  - Excessive rebalancing/churning
+  - Bad R:R ratios: too risky (<1.5) or too greedy (>4.0) (-0.5 each)
+  - Cash hoarding (>80% cash for >10 steps)
+  - Portfolio stagnation (<5% turnover for >20 steps)
+  - Approaching bankruptcy (progressive penalty starting at 80%)
+
+NEUTRAL:
+  - Pre-market entries (no penalty for opening before session)
+
+5. Anti-Cheat Safeguards
+------------------------
+The following exploits are now prevented:
+
+1. ✅ Cash Hoarding - Penalty for staying >80% cash
+2. ✅ R:R Gaming - Minimum TP enforced (1.5x ATR)
+3. ✅ Extreme SL/TP - TP bounded to 1.5x-10.0x ATR
+4. ✅ Turnover Stagnation - Staleness penalty for frozen portfolio
+5. ✅ Drawdown Cliff Diving - Progressive penalties starting at 80%
+6. ✅ MIN_TRADE_SIZE Exploit - Protected by fee threshold
+7. ✅ Volatility Arbitrage - Mitigated by Sharpe component
+8. ✅ Session Boundary - Protected by SL/TP penalties
