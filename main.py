@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 ASSETS = ['BTC', 'ETH', 'SOL', 'EUR', 'GBP', 'JPY']
-DATA_DIR = "./"
+DATA_DIR = "data/"
 REQUIRED_FILES = [
     'data_BTC_final.parquet',
     'data_ETH_final.parquet', 
@@ -108,7 +108,7 @@ def run_environment_test():
         import numpy as np
         
         logger.info("Initializing environment...")
-        env = TradingEnv(data_dir=DATA_DIR, volatility_file="volatility_baseline.json")
+        env = TradingEnv(data_dir="data/", volatility_file="data/volatility_baseline.json")
         
         logger.info("Testing reset...")
         obs, info = env.reset()
@@ -185,7 +185,7 @@ def run_training():
         # Environment factory
         def make_env(rank):
             def _init():
-                return TradingEnv(data_dir=DATA_DIR, volatility_file="volatility_baseline.json")
+                return TradingEnv(data_dir="data/", volatility_file="data/volatility_baseline.json")
             return _init
         
         import multiprocessing
@@ -216,7 +216,7 @@ def run_training():
         )
         
         # Create eval env wrapped in VecNormalize to match training env
-        eval_env = DummyVecEnv([lambda: TradingEnv(data_dir=DATA_DIR, volatility_file="volatility_baseline.json")])
+        eval_env = DummyVecEnv([lambda: TradingEnv(data_dir="data/", volatility_file="data/volatility_baseline.json")])
         eval_env = VecNormalize(
             eval_env,
             norm_obs=False,       # Match training env
