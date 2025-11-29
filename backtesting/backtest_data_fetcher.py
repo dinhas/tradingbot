@@ -101,7 +101,7 @@ class DataProcessor:
 
         df = df.join(df_4h[['rsi_4h', 'dist_ema50_4h', 'atr_4h_norm']], how='left')
         df = df.join(df_1d[['dist_ema200_1d', 'rsi_1d']], how='left')
-        df.fillna(method='ffill', inplace=True)
+        df.ffill(inplace=True)
 
         # 3. Temporal Features
         df['sin_hour'] = np.sin(df.index.hour * 2 * np.pi / 24)
@@ -224,7 +224,8 @@ class CTraderDownloader:
                             vol = 0.01
                         if pd.isna(vol) or vol == 0: vol = 0.01
                         
-                        # Save Volatility
+                        # Save Volatility (ensure data directory exists)
+                        os.makedirs("data", exist_ok=True)
                         vol_file = f"data/volatility_{asset}.json"
                         with open(vol_file, "w") as f:
                             json.dump({asset: float(vol)}, f)
@@ -236,7 +237,8 @@ class CTraderDownloader:
                         if asset in norm_dict:
                             final_df = norm_dict[asset]
                             
-                            # Save Parquet to data folder
+                            # Save Parquet to data folder (ensure directory exists)
+                            os.makedirs("data", exist_ok=True)
                             fname = f"data/backtest_data_{asset}.parquet"
                             final_df.to_parquet(fname)
                             logging.info(f"✅ Saved {fname} ({len(final_df)} rows)")
@@ -272,7 +274,7 @@ class CTraderDownloader:
         
         while current_start < END_DATE:
             # Clamp end time to avoid requesting future data
-            chunk_end = current_start + timedelta(days=20)
+            chunk_end = current_start + timedelta(days=60)
             if chunk_end > END_DATE:
                 chunk_end = END_DATE
             
@@ -379,7 +381,9 @@ if __name__ == "__main__":
                 final_vol_map.update(data)
         else:
             final_vol_map[asset] = 0.01
-            
+    
+    # Ensure data directory exists before writing
+    os.makedirs("data", exist_ok=True)
     with open("data/volatility_baseline.json", "w") as f:
         json.dump(final_vol_map, f, indent=4)
     print("Saved data/volatility_baseline.json")
