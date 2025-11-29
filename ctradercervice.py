@@ -200,6 +200,9 @@ class CTraderDownloader:
             # 3. Fetch Data for All Assets
             logging.info(f"Starting data fetch for: {self.assets_to_fetch}")
             
+            # Create data directory if it doesn't exist
+            os.makedirs("data", exist_ok=True)
+            
             for asset in self.assets_to_fetch:
                 yield self.fetch_asset_history(asset)
                 
