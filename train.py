@@ -26,7 +26,7 @@ if __name__ == "__main__":
     # --- Configuration matches PRD Section 7.3 & 7.4 ---
     import multiprocessing
     NUM_CPU = multiprocessing.cpu_count()
-    TOTAL_TIMESTEPS = 600_000  # Phase 3: 600k steps
+    TOTAL_TIMESTEPS = 300000 # Phase 3: 600k steps
     
     print(f"Initializing {NUM_CPU} parallel environments (using all available cores)...")
     # SubprocVecEnv runs environments in separate processes for true parallelism
@@ -46,28 +46,37 @@ if __name__ == "__main__":
     print("Setting up RecurrentPPO model with LSTM Policy...")
     
     # Hyperparameters from PRD Section 7.3
-    model = RecurrentPPO(
-        "MlpLstmPolicy",
-        env,
-        verbose=1,
-        tensorboard_log="./logs/",
-        learning_rate=3e-4,
-        n_steps=2048,              # Rollout buffer size
-        batch_size=64,             # Mini-batch size
-        n_epochs=10,               # Epochs per rollout
-        gamma=0.99,                # Discount factor
-        gae_lambda=0.95,           # GAE
-        clip_range=0.2,            # PPO Clipping
-        ent_coef=0.01,             # Entropy coefficient
-        vf_coef=0.5,               # Value function coefficient
-        max_grad_norm=0.5,         # Gradient clipping
-        policy_kwargs=dict(
-            lstm_hidden_size=128,   # LSTM hidden units
-            n_lstm_layers=2,        # Stack 2 LSTM layers
-            enable_critic_lstm=True # Critic also uses LSTM
-        ),
-        device="cuda" if torch.cuda.is_available() else "cpu"
-    )
+model = RecurrentPPO(
+    "MlpLstmPolicy",
+    env,
+    verbose=1,
+    tensorboard_log="./logs/",
+
+    # --- Core Training Stability ---
+    learning_rate=1.5e-4,      # Lower LR = less volatility
+    n_steps=1536,              # Slightly shorter rollouts reduce pattern memorization
+    batch_size=128,            # Bigger batch = smoother gradients
+    n_epochs=8,                # Lower replay cycles = less overfitting
+
+    # --- Temporal + VA tradeoffs ---
+    gamma=0.99,                # Keep
+    gae_lambda=0.92,           # Slightly lower = less variance, more stability
+
+    # --- Regularization (very important) ---
+    clip_range=0.15,           # Tighter clip = safer learning
+    ent_coef=0.005,            # Reduced entropy = no over-exploration
+    vf_coef=0.4,               # Slightly lower = avoids value overfitting
+    max_grad_norm=0.5,         # Keep
+
+    # --- LSTM settings ---
+    policy_kwargs=dict(
+        lstm_hidden_size=96,      # Lower capacity = less memorizing noise
+        n_lstm_layers=1,          # 2 layers = high overfit risk, so reduce
+        enable_critic_lstm=True
+    ),
+
+    device="cuda" if torch.cuda.is_available() else "cpu"
+)
 
     # Checkpoint Callback (PRD Section 7.4)
     checkpoint_callback = CheckpointCallback(

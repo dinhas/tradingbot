@@ -22,38 +22,41 @@ class DebugLoggingCallback(BaseCallback):
         if self.num_timesteps % self.log_freq != 0:
             return True
         
-        # Get environment (first env from vectorized env)
-        env = self.training_env.envs[0]
-        
-        # Get current state from environment
+        # Get environment attributes using get_attr (works with SubprocVecEnv)
         try:
-            portfolio_value = env.portfolio_value
-            cash = env.cash
-            holdings = env.holdings
-            peak_value = env.peak_value
+            # Get attributes from first environment
+            portfolio_value = self.training_env.get_attr('portfolio_value')[0]
+            cash = self.training_env.get_attr('cash')[0]
+            holdings = self.training_env.get_attr('holdings')[0]
+            peak_value = self.training_env.get_attr('peak_value')[0]
+            current_step = self.training_env.get_attr('current_step')[0]
+            assets = self.training_env.get_attr('assets')[0]
             
-            # Get current prices
-            current_data = env.data.iloc[env.current_step]
-            prices = {asset: current_data[f"{asset}_close"] for asset in env.assets}
+            # Get current data
+            data = self.training_env.get_attr('data')[0]
+            current_data = data.iloc[current_step]
+            
+            # Calculate prices
+            prices = {asset: current_data[f"{asset}_close"] for asset in assets}
             
             # Calculate portfolio weights
             weights = {}
-            for asset in env.assets:
+            for asset in assets:
                 value = holdings[asset] * prices[asset]
                 weights[asset] = (value / portfolio_value * 100) if portfolio_value > 0 else 0
             weights['CASH'] = (cash / portfolio_value * 100) if portfolio_value > 0 else 0
             
             # Get risk parameters
-            sl_mult = env.sl_multiplier
-            tp_mult = env.tp_multiplier
+            sl_mult = self.training_env.get_attr('sl_multiplier')[0]
+            tp_mult = self.training_env.get_attr('tp_multiplier')[0]
             rr_ratio = tp_mult / (sl_mult + 1e-9)
             
             # Calculate drawdown
             drawdown = ((peak_value - portfolio_value) / peak_value * 100) if peak_value > 0 else 0
             
             # Get anti-cheat tracking
-            cash_hoarding_steps = env.cash_hoarding_steps
-            stale_steps = env.stale_steps
+            cash_hoarding_steps = self.training_env.get_attr('cash_hoarding_steps')[0]
+            stale_steps = self.training_env.get_attr('stale_steps')[0]
             
             # Format timestamp
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -73,7 +76,7 @@ class DebugLoggingCallback(BaseCallback):
                 
                 f.write("PORTFOLIO ALLOCATION:\n")
                 f.write("-" * 60 + "\n")
-                for asset in env.assets:
+                for asset in assets:
                     value = holdings[asset] * prices[asset]
                     f.write(f"  {asset:4s}:  {weights[asset]:5.1f}%  (${value:,.2f})\n")
                 f.write(f"  CASH:  {weights['CASH']:5.1f}%  (${cash:,.2f})\n")
@@ -92,10 +95,6 @@ class DebugLoggingCallback(BaseCallback):
                 f.write(f"  Portfolio Value: ${portfolio_value:,.2f}\n")
                 f.write(f"  Peak Value:      ${peak_value:,.2f}\n")
                 f.write(f"  Drawdown:        {drawdown:.2f}%\n")
-                
-                # Calculate total fees from history if available
-                total_fees = sum([step.get('fees', 0) for step in env.history]) if hasattr(env, 'history') else 0
-                f.write(f"  Total Fees:      ${total_fees:,.2f}\n")
                 f.write("\n")
                 
                 f.write("ANTI-CHEAT STATUS:\n")
