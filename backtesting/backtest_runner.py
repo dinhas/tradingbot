@@ -20,7 +20,7 @@ ASSET_MAPPING = {
     6: 'CASH'
 }
 
-def run_backtest(model_path="best_model.zip", stats_path="final_model_vecnormalize.pkl", data_dir="backtesting/"):
+def run_backtest(model_path="best_model.zip", stats_path="final_model_vecnormalize.pkl", data_dir="data/"):
     """
     Runs the trained model on the TradingEnv using backtest data.
     Logs all trades and creates comprehensive visualizations.
@@ -28,7 +28,7 @@ def run_backtest(model_path="best_model.zip", stats_path="final_model_vecnormali
     print(f"Loading model from {model_path}...")
     
     # 1. Load the Environment
-    env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir, volatility_file="backtesting/volatility_baseline.json")])
+    env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir, volatility_file="data/volatility_baseline.json")])
     
     # Load normalization statistics
     if os.path.exists(stats_path):
@@ -98,6 +98,8 @@ def run_backtest(model_path="best_model.zip", stats_path="final_model_vecnormali
             post_cash = base_env.cash
             
             # Detect and log trades
+            trade_events = info.get('trade_events', {})
+            
             for asset in ['BTC', 'ETH', 'SOL', 'EUR', 'GBP', 'JPY']:
                 prev_units = prev_holdings[asset]
                 current_units = post_holdings[asset]
@@ -106,6 +108,18 @@ def run_backtest(model_path="best_model.zip", stats_path="final_model_vecnormali
                     trade_type = "BUY" if current_units > prev_units else "SELL"
                     units_traded = abs(current_units - prev_units)
                     trade_value = units_traded * prices[asset]
+                    
+                    # Check for specific exit reason (SL/TP)
+                    exit_reason = None
+                    exit_pnl = 0.0
+                    
+                    if asset in trade_events:
+                        event = trade_events[asset]
+                        if event['reason'] == 'SL':
+                            exit_reason = "Stop Loss Hit"
+                        elif event['reason'] == 'TP':
+                            exit_reason = "Take Profit Hit"
+                        exit_pnl = event['pnl']
                     
                     trade_entry = {
                         'timestamp': current_timestamp,
@@ -120,7 +134,11 @@ def run_backtest(model_path="best_model.zip", stats_path="final_model_vecnormali
                         'cash_before': pre_cash,
                         'cash_after': post_cash,
                         'fees': info['fees'],
-                        'year': current_year
+                        'sl_mult': info.get('sl_multiplier', 0.0),
+                        'tp_mult': info.get('tp_multiplier', 0.0),
+                        'year': current_year,
+                        'exit_reason': exit_reason,
+                        'exit_pnl': exit_pnl
                     }
                     trade_log.append(trade_entry)
             
@@ -185,6 +203,16 @@ def run_backtest(model_path="best_model.zip", stats_path="final_model_vecnormali
                 f.write(f"  Price:        ${trade['price']:.4f}\n")
                 f.write(f"  Trade Value:  ${trade['value_usd']:.2f}\n")
                 f.write(f"  Fees:         ${trade['fees']:.4f}\n")
+                f.write(f"  SL Mult:      {trade['sl_mult']:.2f}x ATR\n")
+                f.write(f"  TP Mult:      {trade['tp_mult']:.2f}x ATR\n")
+                
+                # Add Exit Reason if applicable
+                if trade.get('exit_reason'):
+                    pnl_str = f"${trade['exit_pnl']:.2f}"
+                    if trade['exit_pnl'] > 0:
+                        pnl_str = f"+{pnl_str}"
+                    f.write(f"  Exit Result:  {trade['exit_reason']} - PnL: {pnl_str}\n")
+                
                 f.write(f"  Portfolio:    ${trade['portfolio_value_before']:.2f} → ${trade['portfolio_value_after']:.2f}\n")
                 f.write(f"  Cash:         ${trade['cash_before']:.2f} → ${trade['cash_after']:.2f}\n")
                 f.write("-" * 100 + "\n")

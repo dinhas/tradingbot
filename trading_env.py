@@ -68,6 +68,9 @@ class TradingEnv(gym.Env):
         self.previous_weights = np.zeros(self.n_assets + 1) # Track previous weights for turnover
         self.previous_weights[6] = 1.0 # Start with 100% cash
         
+        # Position Age Tracking (for holding period rewards)
+        self.position_ages = {asset: 0 for asset in self.assets}  # Track steps held
+        
         # Anti-Cheat Tracking
         self.cash_hoarding_steps = 0  # Track consecutive steps with >80% cash
         self.stale_steps = 0  # Track steps with no significant rebalancing
@@ -169,6 +172,9 @@ class TradingEnv(gym.Env):
         self.sl_hit_count = 0
         self.peak_value = INITIAL_BALANCE
         
+        # Position Age Tracking
+        self.position_ages = {asset: 0 for asset in self.assets}
+        
         # Anti-Cheat Tracking
         self.cash_hoarding_steps = 0
         self.stale_steps = 0
@@ -186,11 +192,15 @@ class TradingEnv(gym.Env):
         sl_mult_raw = action[7]
         tp_mult_raw = action[8]
         
-        # Decode Risk Params
-        # SL: 1.0 to 5.0 ATR
-        self.sl_multiplier = 1.0 + (sl_mult_raw * 4.0)
-        # TP: 1.5 to 10.0 ATR (minimum 1.5 to prevent exploit)
-        self.tp_multiplier = 1.5 + (tp_mult_raw * 8.5)
+        # Decode Risk Params with HARD ENFORCEMENT
+        # Clip inputs to force minimum values (prevents 0.00x SL exploit)
+        sl_mult_clipped = np.clip(sl_mult_raw, 0.25, 1.0)  # Force minimum 25% of range
+        tp_mult_clipped = np.clip(tp_mult_raw, 0.12, 1.0)  # Force minimum 12% of range
+        
+        # SL: 2.0 to 5.0 ATR (minimum doubled from 1.0)
+        self.sl_multiplier = 2.0 + (sl_mult_clipped * 3.0)
+        # TP: 2.0 to 10.0 ATR (minimum raised to match SL floor)
+        self.tp_multiplier = 2.0 + (tp_mult_clipped * 8.0)
 
         # Apply Softmax with Masking to Weights
         # We exponentiate the action (logits)
@@ -276,7 +286,7 @@ class TradingEnv(gym.Env):
                     # Renormalize cash
                     weights[6] += weights[self.assets.index(asset)]
         
-        # 4. Execute Rebalance
+        # 4. Execute Rebalance with Position Age Tracking
         target_values = {asset: self.portfolio_value * weights[i] for i, asset in enumerate(self.assets)}
         total_fees = 0.0
         
@@ -301,12 +311,21 @@ class TradingEnv(gym.Env):
                         
                     self.holdings[asset] += units_to_buy
                     self.cash -= diff
+                    
+                    # Reset age if opening new position
+                    if current_pos_value < 10:
+                        self.position_ages[asset] = 0
                 else: # Sell
                     units_to_sell = abs(diff) / prices[asset]
                     self.holdings[asset] -= units_to_sell
                     self.cash += abs(diff)
                     if self.holdings[asset] <= 1e-6:
                         self.entry_prices[asset] = 0.0
+                        self.position_ages[asset] = 0  # Reset age on close
+            else:
+                # Holding position: increment age
+                if current_pos_value > 10:
+                    self.position_ages[asset] += 1
         
         # Deduct Fees
         self.cash -= total_fees
@@ -330,11 +349,14 @@ class TradingEnv(gym.Env):
         
         sharpe = portfolio_return / port_vol
         
-        # Reward with Turnover Penalty
-        # Penalty: 0.5 * turnover (e.g., 100% rebalance = -0.5 penalty)
-        # Reward with Turnover Penalty
-        # Penalty: 0.5 * turnover (e.g., 100% rebalance = -0.5 penalty)
-        turnover_penalty = turnover * 0.5
+        # EXPONENTIAL Turnover Penalty (discourages high-frequency trading)
+        # Mild penalty for small adjustments, severe for excessive rebalancing
+        if turnover < 0.2:
+            turnover_penalty = turnover * 0.3  # 20% turnover = -0.06 penalty
+        elif turnover < 0.5:
+            turnover_penalty = turnover * 1.0  # 50% turnover = -0.50 penalty
+        else:
+            turnover_penalty = (turnover ** 2) * 2.0  # 100% turnover = -2.0 penalty
         
         # TP/SL Bonuses
         tp_bonus = self.tp_hit_count * 1.0
@@ -382,9 +404,17 @@ class TradingEnv(gym.Env):
             # Linear penalty: -1.0 for each 1% below 80%
             drawdown_penalty = (0.8 - pct_of_initial) * 100.0
         
-        raw_reward = (0.9 * portfolio_return + 0.1 * sharpe) - turnover_penalty + tp_bonus - sl_penalty + rr_bonus - cash_hoarding_penalty - staleness_penalty - drawdown_penalty
+        # Holding Period Bonus: Reward maintaining positions >4 steps (1 hour)
+        active_positions = sum(1 for h in self.holdings.values() if h > 0)
+        if active_positions > 0:
+            avg_holding = sum(self.position_ages.values()) / active_positions
+            holding_bonus = 0.2 if avg_holding >= 4 else 0.0  # +0.2 bonus for 1+ hour holds
+        else:
+            holding_bonus = 0.0
+        
+        raw_reward = (0.9 * portfolio_return + 0.1 * sharpe) - turnover_penalty + tp_bonus - sl_penalty + rr_bonus - cash_hoarding_penalty - staleness_penalty - drawdown_penalty + holding_bonus
         normalized_reward = raw_reward / port_vol
-        final_reward = normalized_reward * 1.0  # Reduced scaling from 10.0 to 1.0
+        final_reward = normalized_reward * 0.5  # Reduced from 1.0 to 0.5 to amplify fee impact
         
         # 6. Check Termination
         terminated = False

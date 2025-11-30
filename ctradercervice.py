@@ -49,7 +49,7 @@ SYMBOL_IDS = {
     'JPY': 4       # USDJPY
 }
 
-START_DATE = datetime(2020, 1, 1)
+START_DATE = datetime(2018, 1, 1)
 END_DATE = datetime(2024, 12, 31)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
