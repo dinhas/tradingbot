@@ -331,107 +331,147 @@ class TradingEnv(gym.Env):
         self.cash -= total_fees
         self.portfolio_value -= total_fees
         
-        # 5. Calculate Reward
-        portfolio_return = (self.portfolio_value - prev_portfolio_value) / prev_portfolio_value if prev_portfolio_value > 0 else 0
+        # 5. Calculate Reward - ENTRY QUALITY FOCUSED SYSTEM
+        # NO portfolio returns - focus purely on entry quality and risk management
         
         # Calculate Turnover (sum of absolute weight changes)
         turnover = np.sum(np.abs(weights - self.previous_weights))
         self.previous_weights = weights.copy()
         
-        # Volatility Baseline
-        port_vol = 0.0
+        # --- ENTRY QUALITY SCORING (Primary Signal: ±10.0 range) ---
+        entry_quality = 0.0
+        current_data = self.data.iloc[self.current_step]
+        
         for i, asset in enumerate(self.assets):
-            port_vol += weights[i] * self.volatility_baseline.get(asset, 0.01)
-        port_vol += weights[6] * 0.001
+            # Only score active positions (weight > 5%)
+            if weights[i] > 0.05:
+                # Get technical indicators
+                rsi = current_data.get(f"{asset}_rsi_14_norm", 0.5)  # Normalized 0-1
+                atr_norm = current_data.get(f"{asset}_atr_14_norm", 0.01)
+                dist_ema50 = current_data.get(f"{asset}_dist_ema50", 0.0)
+                macd_norm = current_data.get(f"{asset}_macd_norm", 0.0)
+                adx = current_data.get(f"{asset}_adx_norm", 0.0)
+                
+                # 1. RSI Timing Quality (+2.0 for good zones)
+                # Oversold (0.3-0.45) or neutral (0.45-0.55) is good for entries
+                if 0.30 <= rsi <= 0.55:
+                    entry_quality += 2.0
+                elif rsi > 0.70:  # Overbought entry is poor
+                    entry_quality -= 1.5
+                
+                # 2. Volatility Quality (+1.5 for calm markets)
+                # Lower ATR = safer entry conditions
+                if atr_norm < 0.015:
+                    entry_quality += 1.5
+                elif atr_norm > 0.03:  # High volatility entry is risky
+                    entry_quality -= 1.0
+                
+                # 3. Mean Reversion Quality (+1.5 for near support/resistance)
+                # Distance from EMA50: -0.02 to -0.05 = near support (good buy)
+                if -0.05 <= dist_ema50 <= -0.02:
+                    entry_quality += 1.5
+                elif dist_ema50 < -0.10:  # Too far from mean
+                    entry_quality -= 1.0
+                
+                # 4. Trend Strength Quality (+1.0 for clear trends)
+                # MACD alignment with ADX confirms trend
+                if abs(macd_norm) > 0.3 and adx > 0.5:  # Strong trend
+                    entry_quality += 1.0
+                elif adx < 0.3:  # Choppy market
+                    entry_quality -= 0.5
         
-        # Clip volatility to prevent explosion
-        port_vol = max(port_vol, 1e-4)
-        
-        sharpe = portfolio_return / port_vol
-        
-        # EXPONENTIAL Turnover Penalty (discourages high-frequency trading)
-        # Mild penalty for small adjustments, severe for excessive rebalancing
-        if turnover < 0.2:
-            turnover_penalty = turnover * 0.3  # 20% turnover = -0.06 penalty
-        elif turnover < 0.5:
-            turnover_penalty = turnover * 1.0  # 50% turnover = -0.50 penalty
+        # --- TURNOVER PENALTY (Prevent Overtrading: -1.0 to -20.0) ---
+        # CRITICAL: Current 277 trades/day must drop to <100/day
+        if turnover > 0.5:
+            turnover_penalty = turnover * 40.0  # 100% turnover = -40 (was -2)
+        elif turnover > 0.2:
+            turnover_penalty = turnover * 10.0  # 50% turnover = -5 (was -0.5)
         else:
-            turnover_penalty = (turnover ** 2) * 2.0  # 100% turnover = -2.0 penalty
+            turnover_penalty = turnover * 2.0  # 20% turnover = -0.4 (was -0.06)
         
-        # TP/SL Bonuses
-        tp_bonus = self.tp_hit_count * 1.0
-        sl_penalty = self.sl_hit_count * 1.0
+        # --- TP/SL OUTCOME BONUSES (Direct Feedback: ±1.5) ---
+        tp_bonus = self.tp_hit_count * 1.5  # Increased from 1.0
+        sl_penalty = self.sl_hit_count * 1.5  # Increased from 1.0
         
         # Reset counters
         self.tp_hit_count = 0
         self.sl_hit_count = 0
         
-        # Risk-to-Reward Ratio Incentive
-        # Calculate R:R = TP / SL
+        # --- RISK-TO-REWARD RATIO QUALITY (±5.0 range) ---
         rr_ratio = self.tp_multiplier / (self.sl_multiplier + 1e-9)
         
-        # Optimal range: 1.5 to 4.0
-        if 1.5 <= rr_ratio <= 4.0:
-            rr_bonus = 0.5  # Reward for good risk management
+        # Optimal range: 2.0 to 4.0 (tightened from 1.5-4.0)
+        if 2.0 <= rr_ratio <= 4.0:
+            rr_quality = 5.0  # Strong reward (was 0.5)
+        elif 1.5 <= rr_ratio < 2.0:
+            rr_quality = 2.0  # Acceptable but not ideal
         elif rr_ratio < 1.5:
-            rr_bonus = -0.5  # Penalty for too much risk (SL too wide)
+            rr_quality = -5.0  # Poor risk management (was -0.5)
         else:  # rr_ratio > 4.0
-            rr_bonus = -0.5  # Penalty for unrealistic TP (too greedy)
+            rr_quality = -3.0  # Too greedy (was -0.5)
         
-        # Anti-Cash-Hoarding: Penalize excessive cash holding
+        # --- ANTI-CASH-HOARDING (Encourage Deployment: -2.0 max) ---
         cash_weight = weights[6]
         if cash_weight > 0.8:
             self.cash_hoarding_steps += 1
         else:
             self.cash_hoarding_steps = 0
         
-        # Penalty: -0.1 per step after 10 consecutive cash-heavy steps
-        cash_hoarding_penalty = max(0, (self.cash_hoarding_steps - 10) * 0.1)
+        # Penalty: -0.2 per step after 10 consecutive cash-heavy steps (was -0.1)
+        cash_hoarding_penalty = max(0, (self.cash_hoarding_steps - 10) * 0.2)
         
-        # Anti-Stagnation: Penalize lack of rebalancing
+        # --- ANTI-STAGNATION (Encourage Action: -2.0 max) ---
         if turnover < 0.05:  # Less than 5% portfolio change
             self.stale_steps += 1
         else:
             self.stale_steps = 0
         
-        # Penalty: -0.05 per step after 20 consecutive stale steps
-        staleness_penalty = max(0, (self.stale_steps - 20) * 0.05)
+        # Penalty: -0.1 per step after 20 consecutive stale steps (was -0.05)
+        staleness_penalty = max(0, (self.stale_steps - 20) * 0.1)
         
-        # Progressive Drawdown Penalty (start at 80% instead of 70%)
-        drawdown_penalty = 0.0
-        pct_of_initial = self.portfolio_value / INITIAL_BALANCE
-        if pct_of_initial < 0.8:
-            # Linear penalty: -1.0 for each 1% below 80%
-            drawdown_penalty = (0.8 - pct_of_initial) * 100.0
-        
-        # Holding Period Bonus: Reward maintaining positions >4 steps (1 hour)
+        # --- HOLDING PERIOD BONUS (Reward Patience: +2.0 max) ---
         active_positions = sum(1 for h in self.holdings.values() if h > 0)
         if active_positions > 0:
             avg_holding = sum(self.position_ages.values()) / active_positions
-            holding_bonus = 0.2 if avg_holding >= 4 else 0.0  # +0.2 bonus for 1+ hour holds
+            # Progressive bonus for longer holds
+            if avg_holding >= 16:  # 4 hours
+                holding_bonus = 2.0
+            elif avg_holding >= 8:  # 2 hours
+                holding_bonus = 1.0
+            elif avg_holding >= 4:  # 1 hour
+                holding_bonus = 0.5
+            else:
+                holding_bonus = 0.0
         else:
             holding_bonus = 0.0
         
-        raw_reward = (0.9 * portfolio_return + 0.1 * sharpe) - turnover_penalty + tp_bonus - sl_penalty + rr_bonus - cash_hoarding_penalty - staleness_penalty - drawdown_penalty + holding_bonus
-        normalized_reward = raw_reward / port_vol
-        final_reward = normalized_reward * 0.5  # Reduced from 1.0 to 0.5 to amplify fee impact
+        # --- FINAL REWARD COMPOSITION ---
+        # All components now in similar magnitude ranges (±20 max)
+        final_reward = (
+            entry_quality +           # ±10.0 (PRIMARY SIGNAL)
+            rr_quality +              # ±5.0
+            tp_bonus - sl_penalty +   # ±1.5 per hit
+            holding_bonus -           # +2.0 max
+            turnover_penalty -        # -1.0 to -40.0
+            cash_hoarding_penalty -   # -2.0 max
+            staleness_penalty         # -2.0 max
+        )
         
         # 6. Check Termination
         terminated = False
         truncated = False
         
+        # Only terminate on catastrophic loss (70% of initial capital)
+        # Removed 30% drawdown terminal - let model learn to recover from drawdowns
         if self.portfolio_value < INITIAL_BALANCE * 0.7:
             terminated = True
             final_reward = -50.0
             
+        # Track peak for info only (not for termination)
         if not hasattr(self, 'peak_value'):
             self.peak_value = INITIAL_BALANCE
         self.peak_value = max(self.peak_value, self.portfolio_value)
         drawdown = (self.peak_value - self.portfolio_value) / self.peak_value
-        
-        if drawdown > 0.30:
-            terminated = True
-            final_reward = -30.0
             
         self.current_step += 1
         if self.current_step >= self.n_steps - 1:

@@ -46,7 +46,9 @@ if __name__ == "__main__":
 
     print("Setting up RecurrentPPO model with LSTM Policy...")
     
-    # Hyperparameters from PRD Section 7.3
+    # Conservative Hyperparameters - Anti-Overfitting Focus
+    # Balanced for learning entry quality signals on 7 years of data
+    # without memorizing specific patterns
     model = RecurrentPPO(
         "MlpLstmPolicy",
         env,
@@ -54,35 +56,61 @@ if __name__ == "__main__":
         tensorboard_log="./logs/",
 
         # --- Core Training Stability & Speed ---
-        # Increased to speed up learning with the larger dataset.
-        learning_rate=3e-4, 
-        # Increased rollout length to capture longer-term dependencies in market data.
-        n_steps=2048, 
-        # Increased batch size for smoother, more representative gradient updates.
-        batch_size=256, 
-        # Slightly increased replay cycles to better utilize the collected data.
-        n_epochs=10, 
+        # CONSERVATIVE: Keep learning rate stable to prevent unstable updates
+        learning_rate=3e-4,  # Moderate LR prevents overfitting to recent data
         
-        # --- Temporal & VA Tradeoffs (Kept Stable) ---
-        gamma=0.99, 
-        gae_lambda=0.92, 
+        # Large rollout = better temporal understanding, no overfitting risk
+        n_steps=2048, 
+        
+        # LARGER batch = MORE stable gradients = LESS overfitting
+        batch_size=512,  # Was 256, larger batch reduces variance
+        
+        # CONSERVATIVE: Don't over-train on same batch (overfitting risk)
+        n_epochs=10,  # Keep at 10 - more epochs = memorization risk
+        
+        # --- Temporal & Credit Assignment ---
+        gamma=0.99,  # Standard discount factor
+        
+        # Moderate GAE lambda for good credit assignment without bias
+        gae_lambda=0.94,  # Was 0.92, slight increase for entry quality signals
+        
+        # --- Regularization (CRITICAL for Anti-Overfitting) ---
+        # Conservative clip range prevents large, unstable updates
+        clip_range=0.2,  # Keep stable - prevents overfitting to outliers
+        
+        # HIGH entropy = MORE exploration = LESS overfitting
+        # This is the MOST IMPORTANT anti-overfitting parameter
+        ent_coef=0.015,  # 15x original - strong exploration penalty
+        
+        # Moderate value coefficient
+        vf_coef=0.5,  # Prevent value function from dominating policy
+        
+        # Gradient clipping prevents exploding gradients
+        max_grad_norm=0.5,  # Keep stable
 
-        # --- Regularization ---
-        # Increased slightly to allow for larger, more impactful updates.
-        clip_range=0.2, 
-        # Significantly reduced to focus the agent on exploitation (refining the best policy).
-        ent_coef=0.001, 
-        # Kept stable to prevent value function overfitting.
-        vf_coef=0.4, 
-        max_grad_norm=0.5, 
-
-        # --- LSTM settings (Increased Capacity) ---
+        # --- LSTM settings (Conservative Size) ---
         policy_kwargs=dict(
-            # Increased capacity to better memorize and model complex market regimes over 7 years.
-            lstm_hidden_size=128, 
-            # Kept at 1 layer to minimize risk of high overfitting.
+            # CONSERVATIVE: Keep LSTM small to prevent memorization
+            # Smaller network = harder to memorize 7 years of specific patterns
+            lstm_hidden_size=128,  # Keep original - prevents overfitting
+            
+            # Single layer = less capacity = less overfitting
             n_lstm_layers=1, 
-            enable_critic_lstm=True
+            
+            # Enable critic LSTM for value estimation
+            enable_critic_lstm=True,
+            
+            # ADD DROPOUT for regularization (CRITICAL anti-overfitting)
+            lstm_dropout=0.1,  # 10% dropout prevents co-adaptation
+            
+            # Network architecture regularization
+            net_arch=dict(
+                pi=[128],  # Policy network: single 128 layer (was default 64)
+                vf=[128]   # Value network: single 128 layer
+            ),
+            
+            # Orthogonal initialization helps generalization
+            ortho_init=True
         ),
         
         device="cuda" if torch.cuda.is_available() else "cpu"
