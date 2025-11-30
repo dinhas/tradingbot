@@ -69,7 +69,10 @@ class DataProcessor:
             return pd.DataFrame()
 
         # 1. Base 15-min Features
-        df['log_ret'] = np.log(df['close'] / df['close'].shift(1))
+        # Safe log return calculation
+        prev_close = df['close'].shift(1)
+        df['log_ret'] = np.log((df['close'] / prev_close).replace(0, np.nan))
+        df['log_ret'] = df['log_ret'].fillna(0.0)
         
         ema50 = ta.ema(df['close'], length=50)
         df['dist_ema50'] = (df['close'] - ema50) / ema50
@@ -106,7 +109,7 @@ class DataProcessor:
 
         df = df.join(df_4h[['rsi_4h', 'dist_ema50_4h', 'atr_4h_norm']], how='left')
         df = df.join(df_1d[['dist_ema200_1d', 'rsi_1d']], how='left')
-        df.fillna(method='ffill', inplace=True)
+        df.ffill(inplace=True)
 
         # 3. Temporal Features
         df['sin_hour'] = np.sin(df.index.hour * 2 * np.pi / 24)
