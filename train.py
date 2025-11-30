@@ -52,31 +52,34 @@ model = RecurrentPPO(
     verbose=1,
     tensorboard_log="./logs/",
 
-    # --- Core Training Stability ---
-    learning_rate=1.5e-4,      # Lower LR = less volatility
-    n_steps=1536,              # Slightly shorter rollouts reduce pattern memorization
-    batch_size=128,            # Bigger batch = smoother gradients
-    n_epochs=8,                # Lower replay cycles = less overfitting
+    # --- Core Training ---
+    learning_rate=8e-5,        # Slightly lower but still active
+    n_steps=2048,              # Longer rollouts = more context
+    batch_size=64,             # Smaller batch = more gradient signal
+    n_epochs=12,               # More learning per rollout = real improvement
 
-    # --- Temporal + VA tradeoffs ---
-    gamma=0.99,                # Keep
-    gae_lambda=0.92,           # Slightly lower = less variance, more stability
+    # --- Exploration + Learning ---
+    ent_coef=0.02,             # Boost exploration (THIS = huge difference)
+    clip_range=0.25,           # Loosen it up so PPO can actually update
 
-    # --- Regularization (very important) ---
-    clip_range=0.15,           # Tighter clip = safer learning
-    ent_coef=0.005,            # Reduced entropy = no over-exploration
-    vf_coef=0.4,               # Slightly lower = avoids value overfitting
-    max_grad_norm=0.5,         # Keep
+    # --- Temporal weighting ---
+    gamma=0.995,               # Long-term reward matters more
+    gae_lambda=0.95,           # More consistent GAE estimates
+
+    # --- Value Loss ---
+    vf_coef=0.5,               # Standard stable baseline
+    max_grad_norm=0.7,         # Allow slightly bigger updates
 
     # --- LSTM settings ---
     policy_kwargs=dict(
-        lstm_hidden_size=96,      # Lower capacity = less memorizing noise
-        n_lstm_layers=1,          # 2 layers = high overfit risk, so reduce
+        lstm_hidden_size=128,     # More memory = more edge
+        n_lstm_layers=2,          # Deeper temporal learning
         enable_critic_lstm=True
     ),
 
     device="cuda" if torch.cuda.is_available() else "cpu"
 )
+
 
     # Checkpoint Callback (PRD Section 7.4)
     checkpoint_callback = CheckpointCallback(
