@@ -26,7 +26,7 @@ if __name__ == "__main__":
     # --- Configuration matches PRD Section 7.3 & 7.4 ---
     import multiprocessing
     NUM_CPU = multiprocessing.cpu_count()
-    TOTAL_TIMESTEPS = 2_500_000 # Increased to 1M for comprehensive learning
+    TOTAL_TIMESTEPS = 1_500_000 # Increased to 1M for comprehensive learning
 
     
     print(f"Initializing {NUM_CPU} parallel environments (using all available cores)...")
