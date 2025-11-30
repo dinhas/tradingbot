@@ -7,6 +7,7 @@ from gymnasium import spaces
 
 # --- Configuration ---
 INITIAL_BALANCE = 10000.0
+LEVERAGE = 200.0  # 1:200 leverage for forex/crypto CFDs
 TRANSACTION_FEE_CRYPTO = 0.001  # 0.1%
 TRANSACTION_FEE_FOREX = 0.0005  # 0.05%
 MIN_TRADE_SIZE = 100.0
@@ -86,7 +87,13 @@ class TradingEnv(gym.Env):
         for asset in self.assets:
             try:
                 # Load parquet
-                df = pd.read_parquet(f"{self.data_dir}data_{asset}_final.parquet")
+                try:
+                    df = pd.read_parquet(f"{self.data_dir}data_{asset}_final.parquet")
+                except FileNotFoundError:
+                    # Fallback to backtest data if training data missing (User Request)
+                    print(f"Warning: data_{asset}_final.parquet not found. Trying backtest_data_{asset}.parquet...")
+                    df = pd.read_parquet(f"{self.data_dir}backtest_data_{asset}.parquet")
+                
                 dfs[asset] = df
             except FileNotFoundError:
                 raise FileNotFoundError(f"Data for {asset} not found. Run ctradercervice.py first.")
@@ -274,35 +281,27 @@ class TradingEnv(gym.Env):
                     fee_rate = TRANSACTION_FEE_CRYPTO if asset in ['BTC', 'ETH', 'SOL'] else TRANSACTION_FEE_FOREX
                     fee = proceeds * fee_rate
                     
-                    # Compute profit of the trade (in USD)
-                    entry_value = units * entry_price
-                    gross_profit = proceeds - entry_value
-                    net_profit = gross_profit - fee
-
-                    # Scale profit into reward space:
-                    # Normalize by initial balance and scale (experiment with multiplier)
-                    profit_reward = (net_profit / INITIAL_BALANCE) * 100.0  # e.g. +1 means +1% P&L
-                    
-                    # Immediate shaping for TP/SL
-                    if current_price >= take_profit:
-                        profit_reward += 0.5   # small extra shaping for hitting TP
-                    elif current_price <= stop_loss:
-                        profit_reward -= 0.5   # small penalty for hitting SL
-                        
-                    trade_profit_reward += profit_reward
-
-                    # Update cash and holdings
                     self.cash += (proceeds - fee)
                     self.holdings[asset] = 0.0
                     self.entry_prices[asset] = 0.0
                     self.portfolio_value -= fee
                     
-                    # Track Hits (for logging only now)
+                    # Calculate LEVERAGED profit for this trade
+                    cost_basis = units * entry_price
+                    price_change_pct = (current_price - entry_price) / entry_price
+                    leveraged_profit = cost_basis * price_change_pct * LEVERAGE
+                    net_profit = leveraged_profit - fee
+                    
+                    # DYNAMIC TRADE REWARD: Scaled dollar-to-reward mapping
+                    # $100 profit = +10 reward, $500 profit = +50 reward
+                    trade_profit_reward += (net_profit / 10.0)
+                    
+                    # Track hits for logging
                     if current_price <= stop_loss:
                         self.sl_hit_count += 1
                     elif current_price >= take_profit:
                         self.tp_hit_count += 1
-                        
+                    
                     # Record trade outcome for analysis / win-rate metric
                     self.trade_history.append({
                         'asset': asset,
@@ -368,59 +367,18 @@ class TradingEnv(gym.Env):
         # NO portfolio returns - focus purely on entry quality and risk management
         
         # Calculate Turnover (sum of absolute weight changes)
-        turnover = np.sum(np.abs(weights - self.previous_weights))
+        # Standard definition: sum(|diff|) / 2.0 -> range 0.0 to 1.0
+        turnover = np.sum(np.abs(weights - self.previous_weights)) / 2.0
         self.previous_weights = weights.copy()
         
-        # --- ENTRY QUALITY SCORING (Primary Signal: ±10.0 range) ---
-        entry_quality = 0.0
-        current_data = self.data.iloc[self.current_step]
-        
-        for i, asset in enumerate(self.assets):
-            # Only score active positions (weight > 5%)
-            if weights[i] > 0.05:
-                # Get technical indicators
-                rsi = current_data.get(f"{asset}_rsi_14_norm", 0.5)  # Normalized 0-1
-                atr_norm = current_data.get(f"{asset}_atr_14_norm", 0.01)
-                dist_ema50 = current_data.get(f"{asset}_dist_ema50", 0.0)
-                macd_norm = current_data.get(f"{asset}_macd_norm", 0.0)
-                adx = current_data.get(f"{asset}_adx_norm", 0.0)
-                
-                # 1. RSI Timing Quality (+2.0 for good zones)
-                # Oversold (0.3-0.45) or neutral (0.45-0.55) is good for entries
-                if 0.30 <= rsi <= 0.55:
-                    entry_quality += 2.0
-                elif rsi > 0.70:  # Overbought entry is poor
-                    entry_quality -= 1.5
-                
-                # 2. Volatility Quality (+1.5 for calm markets)
-                # Lower ATR = safer entry conditions
-                if atr_norm < 0.015:
-                    entry_quality += 1.5
-                elif atr_norm > 0.03:  # High volatility entry is risky
-                    entry_quality -= 1.0
-                
-                # 3. Mean Reversion Quality (+1.5 for near support/resistance)
-                # Distance from EMA50: -0.02 to -0.05 = near support (good buy)
-                if -0.05 <= dist_ema50 <= -0.02:
-                    entry_quality += 1.5
-                elif dist_ema50 < -0.10:  # Too far from mean
-                    entry_quality -= 1.0
-                
-                # 4. Trend Strength Quality (+1.0 for clear trends)
-                # MACD alignment with ADX confirms trend
-                if abs(macd_norm) > 0.3 and adx > 0.5:  # Strong trend
-                    entry_quality += 1.0
-                elif adx < 0.3:  # Choppy market
-                    entry_quality -= 0.5
-        
-        # --- TURNOVER PENALTY (Prevent Overtrading: -1.0 to -6.0) ---
-        # Gentler schedule
+        # --- TURNOVER PENALTY (Prevent Overtrading) ---
+        # Stricter schedule to prevent churning
         if turnover > 0.5:
-            turnover_penalty = turnover * 6.0   # was *40.0
-        elif turnover > 0.2:
-            turnover_penalty = turnover * 3.0   # was *10.0
+            turnover_penalty = turnover * 20.0  # Massive penalty for flipping portfolio
+        elif turnover > 0.1:
+            turnover_penalty = turnover * 5.0   # Strong penalty for significant rebalance
         else:
-            turnover_penalty = turnover * 1.5   # was *2.0
+            turnover_penalty = turnover * 1.0   # Small cost for minor adjustments
         
         # --- TP/SL COUNTERS (Reset but not used directly in reward anymore) ---
         # We used trade_profit_reward instead
@@ -442,10 +400,10 @@ class TradingEnv(gym.Env):
         else:
             winrate_bonus = 0.0
 
-        # --- PORTFOLIO RETURN REWARD (Short-term stability) ---
+        # --- PORTFOLIO RETURN REWARD (Secondary Signal) ---
         # Calculate portfolio return for info dict AND reward
         portfolio_return = (self.portfolio_value - prev_portfolio_value) / (prev_portfolio_value + 1e-9)
-        return_reward = portfolio_return * 50.0   # 1% portfolio increase -> +0.5 reward (tune)
+        return_reward = portfolio_return * 500.0   # 1% portfolio increase -> +5.0 reward
 
         # --- ANTI-CASH-HOARDING (Encourage Deployment: -2.0 max) ---
         cash_weight = weights[6]
@@ -484,19 +442,18 @@ class TradingEnv(gym.Env):
         
         # --- FINAL REWARD COMPOSITION ---
         final_reward = (
-            entry_quality +           # ±10.0 (PRIMARY SIGNAL)
             rr_quality +              # ±5.0
             trade_profit_reward +     # Realized profit signal (includes TP/SL shaping)
             winrate_bonus +           # ±1.0
-            return_reward +           # Portfolio return signal
+            return_reward +           # Portfolio return signal (Primary)
             holding_bonus -           # +2.0 max
-            turnover_penalty -        # -1.5 to -6.0
+            turnover_penalty -        # -1.0 to -20.0
             cash_hoarding_penalty -   # -2.0 max
             staleness_penalty         # -2.0 max
         )
         
-        # Clip final reward
-        final_reward = float(np.clip(final_reward, -50.0, 50.0))
+        # Clip final reward to prevent extreme values
+        final_reward = float(np.clip(final_reward, -500.0, 500.0))
         
         # Debug Logging
         if self.current_step % 500 == 0:
