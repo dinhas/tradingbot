@@ -1,0 +1,84 @@
+##Claude 4.5 opus
+
+https://lmarena.ai/c/019ad312-cd71-72de-8c70-5d02a93b7662
+
+
+model = RecurrentPPO(
+    "MlpLstmPolicy",
+    env,
+    verbose=1,
+    tensorboard_log="./logs/",
+    
+    # --- Core Training Stability ---
+    learning_rate=5e-5,        # ⬇️ LOWER: 1.5e-4 was causing oscillation
+    n_steps=2048,              # ⬆️ HIGHER: More context per update (important for 7yr data)
+    batch_size=256,            # ⬆️ HIGHER: Smoother gradients, less noise
+    n_epochs=4,                # ⬇️ LOWER: 8 was overfitting each batch
+    
+    # --- Temporal + Value tradeoffs ---
+    gamma=0.995,               # ⬆️ HIGHER: Trading needs longer horizon thinking
+    gae_lambda=0.95,           # ⬆️ HIGHER: Better credit assignment for delayed rewards
+    
+    # --- Regularization ---
+    clip_range=0.1,            # ⬇️ TIGHTER: Prevent destructive updates
+    ent_coef=0.01,             # ⬆️ HIGHER: 0.005 was too low, agent got stuck
+    vf_coef=0.5,               # Standard value
+    max_grad_norm=0.3,         # ⬇️ LOWER: More gradient clipping for stability
+    
+    # --- LSTM settings ---
+    policy_kwargs=dict(
+        lstm_hidden_size=128,     # ⬆️ HIGHER: 96 may be too small for 6 pairs
+        n_lstm_layers=1,          # Keep at 1
+        enable_critic_lstm=True,
+        net_arch=dict(pi=[128, 64], vf=[128, 64])  # 🆕 ADD: Separate networks
+    ),
+    
+    device="cuda" if torch.cuda.is_available() else "cpu"
+)
+
+
+
+
+## gemini 3.0 pro 
+
+model = RecurrentPPO(
+    "MlpLstmPolicy",
+    env,
+    verbose=1,
+    tensorboard_log="./logs/",
+
+    # --- Core Training Stability & Speed ---
+    # Increased to speed up learning with the larger dataset.
+    learning_rate=3e-4, 
+    # Increased rollout length to capture longer-term dependencies in market data.
+    n_steps=2048, 
+    # Increased batch size for smoother, more representative gradient updates.
+    batch_size=256, 
+    # Slightly increased replay cycles to better utilize the collected data.
+    n_epochs=10, 
+    
+    # --- Temporal & VA Tradeoffs (Kept Stable) ---
+    gamma=0.99, 
+    gae_lambda=0.92, 
+
+    # --- Regularization ---
+    # Increased slightly to allow for larger, more impactful updates.
+    clip_range=0.2, 
+    # Significantly reduced to focus the agent on exploitation (refining the best policy).
+    ent_coef=0.001, 
+    # Kept stable to prevent value function overfitting.
+    vf_coef=0.4, 
+    max_grad_norm=0.5, 
+
+    # --- LSTM settings (Increased Capacity) ---
+    policy_kwargs=dict(
+        # Increased capacity to better memorize and model complex market regimes over 7 years.
+        lstm_hidden_size=128, 
+        # Kept at 1 layer to minimize risk of high overfitting.
+        n_lstm_layers=1, 
+        enable_critic_lstm=True
+    ),
+    
+    device="cuda" if torch.cuda.is_available() else "cpu"
+)
+

@@ -26,7 +26,8 @@ if __name__ == "__main__":
     # --- Configuration matches PRD Section 7.3 & 7.4 ---
     import multiprocessing
     NUM_CPU = multiprocessing.cpu_count()
-    TOTAL_TIMESTEPS = 1_000_000  # Increased to 1M for comprehensive learning
+    TOTAL_TIMESTEPS = 2_500_000 # Increased to 1M for comprehensive learning
+
     
     print(f"Initializing {NUM_CPU} parallel environments (using all available cores)...")
     # SubprocVecEnv runs environments in separate processes for true parallelism
@@ -46,40 +47,46 @@ if __name__ == "__main__":
     print("Setting up RecurrentPPO model with LSTM Policy...")
     
     # Hyperparameters from PRD Section 7.3
-model = RecurrentPPO(
-    "MlpLstmPolicy",
-    env,
-    verbose=1,
-    tensorboard_log="./logs/",
+    model = RecurrentPPO(
+        "MlpLstmPolicy",
+        env,
+        verbose=1,
+        tensorboard_log="./logs/",
 
-    # --- Core Training ---
-    learning_rate=8e-5,        # Slightly lower but still active
-    n_steps=2048,              # Longer rollouts = more context
-    batch_size=64,             # Smaller batch = more gradient signal
-    n_epochs=12,               # More learning per rollout = real improvement
+        # --- Core Training Stability & Speed ---
+        # Increased to speed up learning with the larger dataset.
+        learning_rate=3e-4, 
+        # Increased rollout length to capture longer-term dependencies in market data.
+        n_steps=2048, 
+        # Increased batch size for smoother, more representative gradient updates.
+        batch_size=256, 
+        # Slightly increased replay cycles to better utilize the collected data.
+        n_epochs=10, 
+        
+        # --- Temporal & VA Tradeoffs (Kept Stable) ---
+        gamma=0.99, 
+        gae_lambda=0.92, 
 
-    # --- Exploration + Learning ---
-    ent_coef=0.02,             # Boost exploration (THIS = huge difference)
-    clip_range=0.25,           # Loosen it up so PPO can actually update
+        # --- Regularization ---
+        # Increased slightly to allow for larger, more impactful updates.
+        clip_range=0.2, 
+        # Significantly reduced to focus the agent on exploitation (refining the best policy).
+        ent_coef=0.001, 
+        # Kept stable to prevent value function overfitting.
+        vf_coef=0.4, 
+        max_grad_norm=0.5, 
 
-    # --- Temporal weighting ---
-    gamma=0.995,               # Long-term reward matters more
-    gae_lambda=0.95,           # More consistent GAE estimates
-
-    # --- Value Loss ---
-    vf_coef=0.5,               # Standard stable baseline
-    max_grad_norm=0.7,         # Allow slightly bigger updates
-
-    # --- LSTM settings ---
-    policy_kwargs=dict(
-        lstm_hidden_size=128,     # More memory = more edge
-        n_lstm_layers=2,          # Deeper temporal learning
-        enable_critic_lstm=True
-    ),
-
-    device="cuda" if torch.cuda.is_available() else "cpu"
-)
-
+        # --- LSTM settings (Increased Capacity) ---
+        policy_kwargs=dict(
+            # Increased capacity to better memorize and model complex market regimes over 7 years.
+            lstm_hidden_size=128, 
+            # Kept at 1 layer to minimize risk of high overfitting.
+            n_lstm_layers=1, 
+            enable_critic_lstm=True
+        ),
+        
+        device="cuda" if torch.cuda.is_available() else "cpu"
+    )
 
     # Checkpoint Callback (PRD Section 7.4)
     checkpoint_callback = CheckpointCallback(
@@ -97,19 +104,19 @@ model = RecurrentPPO(
             progress_bar=True
         )
         print("Training complete.")
-        
+            
         # Save Final Model
         model.save("models/recurrent_ppo_final")
         env.save("models/recurrent_ppo_final_vecnormalize.pkl")  # Save normalization stats
         print("Final model saved to models/recurrent_ppo_final.zip")
         print("VecNormalize stats saved to models/recurrent_ppo_final_vecnormalize.pkl")
-        
+            
     except KeyboardInterrupt:
         print("\n⚠️  Training interrupted by user! Saving emergency checkpoint...")
         model.save("models/recurrent_ppo_interrupted")
         env.save("models/recurrent_ppo_interrupted_vecnormalize.pkl")
         print("✅ Interrupted model saved to models/recurrent_ppo_interrupted.zip")
-        
+            
     except Exception as e:
         print(f"❌ Training failed: {e}")
         import traceback
