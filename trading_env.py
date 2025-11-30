@@ -476,6 +476,9 @@ class TradingEnv(gym.Env):
         self.current_step += 1
         if self.current_step >= self.n_steps - 1:
             truncated = True
+        
+        # Calculate portfolio return for info dict (not used in reward)
+        portfolio_return = (self.portfolio_value - prev_portfolio_value) / prev_portfolio_value if prev_portfolio_value > 0 else 0
             
         info = {
             'portfolio_value': self.portfolio_value,
