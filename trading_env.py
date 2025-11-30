@@ -180,6 +180,8 @@ class TradingEnv(gym.Env):
         self.stale_steps = 0
         
         self.history = []
+        self.trade_history = []  # list of dicts with 'net_profit'
+        self.win_rate_window = 50
         
         return self._get_observation(), {}
 
@@ -248,6 +250,8 @@ class TradingEnv(gym.Env):
         self.portfolio_value = new_portfolio_value
         
         # --- AUTOMATIC STOP-LOSS & TAKE-PROFIT (RPD v3.0) ---
+        trade_profit_reward = 0.0
+        
         for asset in self.assets:
             if self.holdings[asset] > 0:
                 entry_price = self.entry_prices[asset]
@@ -270,21 +274,50 @@ class TradingEnv(gym.Env):
                     fee_rate = TRANSACTION_FEE_CRYPTO if asset in ['BTC', 'ETH', 'SOL'] else TRANSACTION_FEE_FOREX
                     fee = proceeds * fee_rate
                     
+                    # Compute profit of the trade (in USD)
+                    entry_value = units * entry_price
+                    gross_profit = proceeds - entry_value
+                    net_profit = gross_profit - fee
+
+                    # Scale profit into reward space:
+                    # Normalize by initial balance and scale (experiment with multiplier)
+                    profit_reward = (net_profit / INITIAL_BALANCE) * 100.0  # e.g. +1 means +1% P&L
+                    
+                    # Immediate shaping for TP/SL
+                    if current_price >= take_profit:
+                        profit_reward += 0.5   # small extra shaping for hitting TP
+                    elif current_price <= stop_loss:
+                        profit_reward -= 0.5   # small penalty for hitting SL
+                        
+                    trade_profit_reward += profit_reward
+
+                    # Update cash and holdings
                     self.cash += (proceeds - fee)
                     self.holdings[asset] = 0.0
                     self.entry_prices[asset] = 0.0
                     self.portfolio_value -= fee
                     
-                    # Track Hits
+                    # Track Hits (for logging only now)
                     if current_price <= stop_loss:
                         self.sl_hit_count += 1
                     elif current_price >= take_profit:
                         self.tp_hit_count += 1
+                        
+                    # Record trade outcome for analysis / win-rate metric
+                    self.trade_history.append({
+                        'asset': asset,
+                        'entry': entry_price,
+                        'exit': current_price,
+                        'net_profit': net_profit,
+                        'timestamp': self.timestamps[self.current_step]
+                    })
                     
                     # Override target for this asset to 0 for this step
-                    weights[self.assets.index(asset)] = 0.0
+                    asset_idx = self.assets.index(asset)
+                    removed_weight = weights[asset_idx]
+                    weights[asset_idx] = 0.0
                     # Renormalize cash
-                    weights[6] += weights[self.assets.index(asset)]
+                    weights[6] += removed_weight
         
         # 4. Execute Rebalance with Position Age Tracking
         target_values = {asset: self.portfolio_value * weights[i] for i, asset in enumerate(self.assets)}
@@ -380,36 +413,40 @@ class TradingEnv(gym.Env):
                 elif adx < 0.3:  # Choppy market
                     entry_quality -= 0.5
         
-        # --- TURNOVER PENALTY (Prevent Overtrading: -1.0 to -20.0) ---
-        # CRITICAL: Current 277 trades/day must drop to <100/day
+        # --- TURNOVER PENALTY (Prevent Overtrading: -1.0 to -6.0) ---
+        # Gentler schedule
         if turnover > 0.5:
-            turnover_penalty = turnover * 40.0  # 100% turnover = -40 (was -2)
+            turnover_penalty = turnover * 6.0   # was *40.0
         elif turnover > 0.2:
-            turnover_penalty = turnover * 10.0  # 50% turnover = -5 (was -0.5)
+            turnover_penalty = turnover * 3.0   # was *10.0
         else:
-            turnover_penalty = turnover * 2.0  # 20% turnover = -0.4 (was -0.06)
+            turnover_penalty = turnover * 1.5   # was *2.0
         
-        # --- TP/SL OUTCOME BONUSES (Direct Feedback: ±1.5) ---
-        tp_bonus = self.tp_hit_count * 1.5  # Increased from 1.0
-        sl_penalty = self.sl_hit_count * 1.5  # Increased from 1.0
-        
-        # Reset counters
+        # --- TP/SL COUNTERS (Reset but not used directly in reward anymore) ---
+        # We used trade_profit_reward instead
         self.tp_hit_count = 0
         self.sl_hit_count = 0
         
-        # --- RISK-TO-REWARD RATIO QUALITY (±5.0 range) ---
+        # --- RISK-TO-REWARD RATIO QUALITY (Soft reward) ---
         rr_ratio = self.tp_multiplier / (self.sl_multiplier + 1e-9)
+        # Soft reward: gaussian-like centered on 2.5
+        target_rr = 2.5
+        rr_quality = max(-3.0, 5.0 * np.exp(-((rr_ratio - target_rr)**2) / (2 * 0.8**2))) - 1.0
         
-        # Optimal range: 2.0 to 4.0 (tightened from 1.5-4.0)
-        if 2.0 <= rr_ratio <= 4.0:
-            rr_quality = 5.0  # Strong reward (was 0.5)
-        elif 1.5 <= rr_ratio < 2.0:
-            rr_quality = 2.0  # Acceptable but not ideal
-        elif rr_ratio < 1.5:
-            rr_quality = -5.0  # Poor risk management (was -0.5)
-        else:  # rr_ratio > 4.0
-            rr_quality = -3.0  # Too greedy (was -0.5)
-        
+        # --- WIN RATE BONUS (Momentum in trade outcomes) ---
+        # Keep last N trades and give a small bonus if win rate improves
+        last_trades = [1 if t['net_profit']>0 else 0 for t in self.trade_history[-self.win_rate_window:]]
+        if len(last_trades) > 0:
+            win_rate = sum(last_trades) / len(last_trades)
+            winrate_bonus = (win_rate - 0.5) * 2.0  # small bonus if >50% wins
+        else:
+            winrate_bonus = 0.0
+
+        # --- PORTFOLIO RETURN REWARD (Short-term stability) ---
+        # Calculate portfolio return for info dict AND reward
+        portfolio_return = (self.portfolio_value - prev_portfolio_value) / (prev_portfolio_value + 1e-9)
+        return_reward = portfolio_return * 50.0   # 1% portfolio increase -> +0.5 reward (tune)
+
         # --- ANTI-CASH-HOARDING (Encourage Deployment: -2.0 max) ---
         cash_weight = weights[6]
         if cash_weight > 0.8:
@@ -446,16 +483,24 @@ class TradingEnv(gym.Env):
             holding_bonus = 0.0
         
         # --- FINAL REWARD COMPOSITION ---
-        # All components now in similar magnitude ranges (±20 max)
         final_reward = (
             entry_quality +           # ±10.0 (PRIMARY SIGNAL)
             rr_quality +              # ±5.0
-            tp_bonus - sl_penalty +   # ±1.5 per hit
+            trade_profit_reward +     # Realized profit signal (includes TP/SL shaping)
+            winrate_bonus +           # ±1.0
+            return_reward +           # Portfolio return signal
             holding_bonus -           # +2.0 max
-            turnover_penalty -        # -1.0 to -40.0
+            turnover_penalty -        # -1.5 to -6.0
             cash_hoarding_penalty -   # -2.0 max
             staleness_penalty         # -2.0 max
         )
+        
+        # Clip final reward
+        final_reward = float(np.clip(final_reward, -50.0, 50.0))
+        
+        # Debug Logging
+        if self.current_step % 500 == 0:
+            print(f"step={self.current_step} pv={self.portfolio_value:.2f} reward={final_reward:.3f} turnover={turnover:.3f} trade_reward={trade_profit_reward:.3f}")
         
         # 6. Check Termination
         terminated = False
@@ -478,7 +523,7 @@ class TradingEnv(gym.Env):
             truncated = True
         
         # Calculate portfolio return for info dict (not used in reward)
-        portfolio_return = (self.portfolio_value - prev_portfolio_value) / prev_portfolio_value if prev_portfolio_value > 0 else 0
+        # portfolio_return = (self.portfolio_value - prev_portfolio_value) / prev_portfolio_value if prev_portfolio_value > 0 else 0
             
         info = {
             'portfolio_value': self.portfolio_value,
