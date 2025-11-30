@@ -283,18 +283,22 @@ class TradingEnv(gym.Env):
                     
                     self.cash += (proceeds - fee)
                     self.holdings[asset] = 0.0
-                    self.entry_prices[asset] = 0.0
                     self.portfolio_value -= fee
                     
                     # Calculate LEVERAGED profit for this trade
-                    cost_basis = units * entry_price
-                    price_change_pct = (current_price - entry_price) / entry_price
-                    leveraged_profit = cost_basis * price_change_pct * LEVERAGE
-                    net_profit = leveraged_profit - fee
+                    # Safety check: only calculate if entry_price is valid
+                    if entry_price > 0:
+                        cost_basis = units * entry_price
+                        price_change_pct = (current_price - entry_price) / entry_price
+                        leveraged_profit = cost_basis * price_change_pct * LEVERAGE
+                        net_profit = leveraged_profit - fee
+                        
+                        # DYNAMIC TRADE REWARD: Scaled dollar-to-reward mapping
+                        # $100 profit = +10 reward, $500 profit = +50 reward
+                        trade_profit_reward += (net_profit / 10.0)
                     
-                    # DYNAMIC TRADE REWARD: Scaled dollar-to-reward mapping
-                    # $100 profit = +10 reward, $500 profit = +50 reward
-                    trade_profit_reward += (net_profit / 10.0)
+                    # Reset entry price after closing
+                    self.entry_prices[asset] = 0.0
                     
                     # Track hits for logging
                     if current_price <= stop_loss:
@@ -303,13 +307,14 @@ class TradingEnv(gym.Env):
                         self.tp_hit_count += 1
                     
                     # Record trade outcome for analysis / win-rate metric
-                    self.trade_history.append({
-                        'asset': asset,
-                        'entry': entry_price,
-                        'exit': current_price,
-                        'net_profit': net_profit,
-                        'timestamp': self.timestamps[self.current_step]
-                    })
+                    if entry_price > 0:  # Only record valid trades
+                        self.trade_history.append({
+                            'asset': asset,
+                            'entry': entry_price,
+                            'exit': current_price,
+                            'net_profit': net_profit if entry_price > 0 else 0.0,
+                            'timestamp': self.timestamps[self.current_step]
+                        })
                     
                     # Override target for this asset to 0 for this step
                     asset_idx = self.assets.index(asset)
