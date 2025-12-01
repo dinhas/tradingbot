@@ -420,112 +420,113 @@ class TradingEnv(gym.Env):
         self.total_fees_paid += total_fees
         
         # ================================================================
-        # 5. CALCULATE REWARD - BALANCED SYSTEM v4.0
+        # 5. CALCULATE REWARD - FIXED SYSTEM (User Provided)
         # ================================================================
         
-        # --- TURNOVER CALCULATION ---
+        # --- Robust portfolio return ---
+        # (PV - PrevPV) / max(PrevPV, 1e-8)
+        portfolio_return = (self.portfolio_value - prev_portfolio_value) / max(prev_portfolio_value, 1e-8)
+        
+        # Use global RETURN_REWARD_SCALE (1000.0)
+        bounded_return = np.tanh(portfolio_return * RETURN_REWARD_SCALE / 10.0)
+        return_reward = float(bounded_return * 5.0)   # final range approx [-5, +5]
+        
+        # ----------------------
+        # Risk / quality shaping
+        # ----------------------
+        # rr_ratio = TP/SL
+        if self.sl_multiplier > 0:
+            rr_ratio = self.tp_multiplier / self.sl_multiplier
+        else:
+            rr_ratio = 1.0
+        
+        # scale down big impact
+        RR_QUALITY_SCALE_LOCAL = 0.2
+        rr_quality = float(np.clip((rr_ratio - 2.0) * RR_QUALITY_SCALE_LOCAL, -1.0, 1.0))
+        
+        # ------------------------
+        # Win rate reward (small)
+        # ------------------------
+        WINRATE_REWARD_SCALE_LOCAL = 0.5
+        total_trades = len(self.trade_history)
+        if total_trades > 10:
+            wins = sum(1 for t in self.trade_history if t['net_profit'] > 0)
+            winrate = wins / max(total_trades, 1)
+            winrate_reward = (winrate - 0.5) * WINRATE_REWARD_SCALE_LOCAL
+        else:
+            winrate_reward = 0.0
+            
+        # -------------------------
+        # Deployment reward (small)
+        # -------------------------
+        DEPLOYMENT_REWARD_SCALE_LOCAL = 0.5
+        cash_weight = weights[6]
+        deployment_ratio = 1.0 - cash_weight
+        deployment_reward = (deployment_ratio - 0.5) * DEPLOYMENT_REWARD_SCALE_LOCAL  # centered at 0
+        
+        # -----------------------
+        # Turnover penalty (big)
+        # -----------------------
+        WARMUP_STEPS_LOCAL = 50
+        TURNOVER_PENALTY_SCALE_LOCAL = 6.0
+        
         turnover = np.sum(np.abs(weights - self.previous_weights)) / 2.0
         self.previous_weights = weights.copy()
         
-        # --- TURNOVER PENALTY (with warmup) ---
-        if self.current_step < WARMUP_STEPS:
-            # No penalty during warmup (let agent deploy capital)
+        if self.current_step < WARMUP_STEPS_LOCAL:
             turnover_penalty = 0.0
         else:
-            if turnover > 0.5:
-                turnover_penalty = turnover * TURNOVER_PENALTY_HEAVY
-            elif turnover > 0.2:
-                turnover_penalty = turnover * TURNOVER_PENALTY_MEDIUM
-            else:
-                turnover_penalty = turnover * TURNOVER_PENALTY_LIGHT
+            turnover_penalty = (turnover ** 1.5) * TURNOVER_PENALTY_SCALE_LOCAL
+            
+        # -----------------------
+        # Cash hoarding penalty
+        # -----------------------
+        cash_ratio = cash_weight
+        cash_hoarding_penalty = max(0.0, cash_ratio - 0.8) * 1.0
         
-        # --- PORTFOLIO RETURN (PRIMARY SIGNAL) ---
-        portfolio_return = (self.portfolio_value - prev_portfolio_value) / (prev_portfolio_value + 1e-9)
-        return_reward = portfolio_return * RETURN_REWARD_SCALE
-        
-        # --- RISK-REWARD QUALITY ---
-        rr_ratio = self.tp_multiplier / (self.sl_multiplier + 1e-9)
-        # Linear reward: RR=2 -> 0, RR=3 -> +1, RR=4 -> +2, RR=1 -> -1
-        rr_quality = (rr_ratio - 2.0) * RR_QUALITY_SCALE
-        rr_quality = float(np.clip(rr_quality, -2.0, 3.0))
-        
-        # --- WIN RATE REWARD (Symmetric) ---
-        if len(self.trade_history) >= 5:
-            recent_trades = self.trade_history[-50:]  # Last 50 trades
-            wins = sum(1 for t in recent_trades if t['net_profit'] > 0)
-            win_rate = wins / len(recent_trades)
-            winrate_reward = (win_rate - 0.5) * WINRATE_REWARD_SCALE
-        else:
-            winrate_reward = 0.0
-            win_rate = 0.0
-        
-        # --- DEPLOYMENT REWARD (Symmetric) ---
-        # Target: 50% deployed. Range: -1.0 (0% deployed) to +1.0 (100% deployed)
-        # deployed_pct < 0.5: negative (underutilized capital)
-        # deployed_pct = 0.5: zero (neutral)
-        # deployed_pct > 0.5: positive (active trading)
-        cash_weight = weights[6]
-        deployed_pct = 1.0 - cash_weight
-        deployment_reward = (deployed_pct - 0.5) * 2.0 * DEPLOYMENT_REWARD_SCALE
-        deployment_reward = float(np.clip(deployment_reward, -1.0, 1.0))
-        
-        # --- ANTI-CASH-HOARDING PENALTY ---
-        if cash_weight > CASH_HOARD_THRESHOLD:
-            self.cash_hoarding_steps += 1
-        else:
-            self.cash_hoarding_steps = 0
-        
-        if self.cash_hoarding_steps > CASH_HOARD_GRACE_STEPS:
-            cash_hoarding_penalty = CASH_HOARD_PENALTY
-        else:
-            cash_hoarding_penalty = 0.0
-        
-        # --- ANTI-STALENESS PENALTY ---
-        if turnover < STALE_THRESHOLD and self.current_step >= WARMUP_STEPS:
-            self.stale_steps += 1
-        else:
-            self.stale_steps = 0
-        
-        if self.stale_steps > STALE_GRACE_STEPS:
-            staleness_penalty = STALE_PENALTY
-        else:
-            staleness_penalty = 0.0
-        
-        # --- FINAL REWARD COMPOSITION ---
+        # -----------------------
+        # Stagnation penalty
+        # -----------------------
+        staleness_penalty = 0.0
+        if abs(portfolio_return) < 0.0001:
+            staleness_penalty = 0.05
+            
+        # ==================================================
+        # 🔥 FINAL REWARD (NO DOUBLE COUNTING ANYMORE)
+        # ==================================================
         final_reward = (
-            return_reward +           # Primary: portfolio change
-            trade_profit_reward +     # Closed trade P&L
-            rr_quality +              # Risk-reward quality (symmetric)
-            winrate_reward +          # Trade win rate (symmetric)
-            deployment_reward -       # Capital utilization (symmetric)
-            turnover_penalty -        # Trading cost
-            cash_hoarding_penalty -   # Anti-hoarding
-            staleness_penalty         # Anti-stagnation
+            return_reward +
+            rr_quality +
+            winrate_reward +
+            deployment_reward -
+            turnover_penalty -
+            cash_hoarding_penalty -
+            staleness_penalty
         )
         
-        # Clip to prevent extreme values
-        final_reward = float(np.clip(final_reward, -50.0, 50.0))
-        
-        # Store reward components for debugging
+        # Store for debugging
         reward_components = {
-            'return_reward': return_reward,
-            'trade_profit': trade_profit_reward,
-            'rr_quality': rr_quality,
-            'winrate_reward': winrate_reward,
-            'deployment_reward': deployment_reward,
-            'turnover_penalty': -turnover_penalty,
-            'cash_hoard_penalty': -cash_hoarding_penalty,
-            'stale_penalty': -staleness_penalty,
-            'total': final_reward
+            "return_reward": return_reward,
+            "rr_quality": rr_quality,
+            "winrate_reward": winrate_reward,
+            "deployment_reward": deployment_reward,
+            "turnover_penalty": turnover_penalty,
+            "cash_penalty": cash_hoarding_penalty,
+            "staleness": staleness_penalty,
+            "final_reward": final_reward
         }
         self.reward_components_history.append(reward_components)
         
-        # Debug Logging
-        if self.current_step % 500 == 0:
-            print(f"step={self.current_step} pv={self.portfolio_value:.2f} "
-                  f"reward={final_reward:.3f} ret_r={return_reward:.3f} "
-                  f"turnover={turnover:.3f} to_pen={turnover_penalty:.3f} "
-                  f"deployed={deployed_pct:.1%} trades={len(self.trade_history)}")
+        # Debug print every 100 steps
+        if self.current_step % 100 == 0:
+            rc = reward_components
+            print(
+                f"[REWARD-DEBUG step={self.current_step}] PV={self.portfolio_value:.2f} "
+                f"R={rc['final_reward']:.3f} "
+                f"ret={rc['return_reward']:.3f} rrQ={rc['rr_quality']:.3f} "
+                f"win={rc['winrate_reward']:.3f} dep={rc['deployment_reward']:.3f} "
+                f"turn=-{rc['turnover_penalty']:.3f} cash=-{rc['cash_penalty']:.3f}"
+            )
         
         # 6. Check Termination
         terminated = False
