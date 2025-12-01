@@ -557,7 +557,7 @@ class TradingEnv(gym.Env):
             'n_trades': len(self.trade_history),
             'tp_hits': self.tp_hit_count,
             'sl_hits': self.sl_hit_count,
-            'deployed_pct': deployed_pct,
+            'deployed_pct': deployment_ratio,
             'reward_components': reward_components,
             # <--- ADDED for backtesting compatibility
             'trade_events': trade_events,
