@@ -1,84 +1,541 @@
-##Claude 4.5 opus
 
-https://lmarena.ai/c/019ad312-cd71-72de-8c70-5d02a93b7662
+   0% ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0/1,500,000  [ 0:00:00 < -:--:-- , ? it/s ]step=0 pv=9992.26 reward=-0.335 ret_r=-0.774 turnover=0.774 to_pen=0.000 deployed=77.4% trades=0
+step=0 pv=9994.75 reward=-0.146 ret_r=-0.525 turnover=0.525 to_pen=0.000 deployed=52.5% trades=0
+step=0 pv=9994.75 reward=-1.186 ret_r=-0.525 turnover=0.525 to_pen=0.000 deployed=52.5% trades=0
+step=0 pv=9992.53 reward=-1.297 ret_r=-0.747 turnover=0.747 to_pen=0.000 deployed=74.7% trades=0
+   0% ━━━━━━━━━━━━━━━━━━━━━━━━ 1,952/1,500,000  [ 0:00:04 < 0:49:13 , 507 it/s ]step=500 pv=8030.10 reward=-0.410 ret_r=0.053 turnover=0.161 to_pen=0.080 deployed=88.9% trades=130
+step=500 pv=7862.07 reward=-0.396 ret_r=-0.200 turnover=0.309 to_pen=0.464 deployed=89.8% trades=127
+step=500 pv=7794.50 reward=0.433 ret_r=-0.197 turnover=0.168 to_pen=0.084 deployed=91.8% trades=126
+step=500 pv=7831.94 reward=-0.583 ret_r=-0.069 turnover=0.165 to_pen=0.082 deployed=89.1% trades=132
+   0% ━━━━━━━━━━━━━━━━━━━━━━━━ 3,748/1,500,000  [ 0:00:07 < 0:48:46 , 511 it/s ]step=0 pv=9992.44 reward=1.258 ret_r=-0.756 turnover=0.756 to_pen=0.000 deployed=75.6% trades=0
+   0% ━━━━━━━━━━━━━━━━━━━━━━━━ 3,908/1,500,000  [ 0:00:07 < 0:48:48 , 511 it/s ]step=1000 pv=7166.51 reward=-0.244 ret_r=0.054 turnover=0.204 to_pen=0.306 deployed=82.5% trades=308
+step=1000 pv=7105.08 reward=-0.152 ret_r=0.087 turnover=0.195 to_pen=0.098 deployed=75.5% trades=302
+step=1000 pv=7142.88 reward=-0.344 ret_r=-0.115 turnover=0.353 to_pen=0.530 deployed=52.8% trades=291
+   0% ━━━━━━━━━━━━━━━━━━━━━━━━ 4,072/1,500,000  [ 0:00:08 < 0:48:46 , 511 it/s ]step=0 pv=9992.50 reward=1.022 ret_r=-0.750 turnover=0.750 to_pen=0.000 deployed=75.0% trades=0
+step=0 pv=9993.04 reward=-0.499 ret_r=-0.696 turnover=0.696 to_pen=0.000 deployed=69.6% trades=0
+   0% ━━━━━━━━━━━━━━━━━━━━━━━━ 4,128/1,500,000  [ 0:00:08 < 0:48:43 , 512 it/s ]step=0 pv=9993.94 reward=1.333 ret_r=-0.606 turnover=0.606 to_pen=0.000 deployed=60.6% trades=0
+   0% ━━━━━━━━━━━━━━━━━━━━━━━━ 5,768/1,500,000  [ 0:00:11 < 0:48:27 , 514 it/s ]step=500 pv=8082.47 reward=-0.225 ret_r=0.021 turnover=0.185 to_pen=0.093 deployed=90.2% trades=131
+   0% ━━━━━━━━━━━━━━━━━━━━━━━━ 6,088/1,500,000  [ 0:00:12 < 0:48:27 , 514 it/s ]step=500 pv=7974.57 reward=-0.112 ret_r=0.316 turnover=0.135 to_pen=0.067 deployed=87.2% trades=129
+   0% ━━━━━━━━━━━━━━━━━━━━━━━━ 6,144/1,500,000  [ 0:00:12 < 0:48:26 , 514 it/s ]step=500 pv=7705.45 reward=2.164 ret_r=0.309 turnover=0.251 to_pen=0.376 deployed=87.9% trades=129
+step=500 pv=7720.49 reward=-0.476 ret_r=0.011 turnover=0.167 to_pen=0.084 deployed=80.4% trades=140
+   1% ━━━━━━━━━━━━━━━━━━━━━━━━ 7,748/1,500,000  [ 0:00:15 < 0:48:14 , 516 it/s ]step=1000 pv=7299.84 reward=-0.311 ret_r=-0.015 turnover=0.221 to_pen=0.332 deployed=69.5% trades=310
+   1% ━━━━━━━━━━━━━━━━━━━━━━━━ 7,860/1,500,000  [ 0:00:15 < 0:48:13 , 516 it/s ]step=0 pv=9991.84 reward=-1.339 ret_r=-0.816 turnover=0.816 to_pen=0.000 deployed=81.6% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━━ 8,028/1,500,000  [ 0:00:15 < 0:48:11 , 516 it/s ]step=0 pv=9993.04 reward=-1.466 ret_r=-0.696 turnover=0.696 to_pen=0.000 deployed=69.6% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━━ 8,084/1,500,000  [ 0:00:15 < 0:48:11 , 516 it/s ]step=0 pv=9991.26 reward=-1.361 ret_r=-0.874 turnover=0.874 to_pen=0.000 deployed=87.4% trades=0
+step=1000 pv=7260.50 reward=1.720 ret_r=0.059 turnover=0.231 to_pen=0.346 deployed=88.1% trades=293
+-----------------------------━━━━━━━━━━━━━━━ 8,140/1,500,000  [ 0:00:15 < 0:48:10 , 516 it/s ]
+| time/              |      |
+|    fps             | 511  |
+|    iterations      | 1    |
+|    time_elapsed    | 16   |
+|    total_timesteps | 8192 |
+-----------------------------
+   1% ━━━━━━━━━━━━━━━━━━━━━━━━━ 8,360/1,500,000  [ 0:00:59 < 72:42:19 , 6 it/s ]step=0 pv=9991.34 reward=-1.356 ret_r=-0.866 turnover=0.866 to_pen=0.000 deployed=86.6% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━━ 9,912/1,500,000  [ 0:01:02 < 0:47:15 , 526 it/s ]step=500 pv=7901.86 reward=0.553 ret_r=0.119 turnover=0.365 to_pen=0.547 deployed=88.8% trades=135
+/usr/local/lib/python3.11/dist-packages/stable_baselines3/common/evaluation.py:73m0:01:02 < 0:47:16 , 525 it/s ]
+0: UserWarning: Evaluation environment is not wrapped with a ``Monitor`` 
+wrapper. This may result in reporting modified episode lengths and rewards, if 
+other wrappers happen to modify these. Consider wrapping environment first with 
+``Monitor`` wrapper.
+  warnings.warn(
+step=0 pv=9992.52 reward=-1.298 ret_r=-0.748 turnover=0.748 to_pen=0.000 0:01:02 < 0:47:16 , 525 it/s ]
+deployed=74.8% trades=0
+step=500 pv=8757.27 reward=0.815 ret_r=0.271 turnover=0.001 to_pen=0.001 m [ 0:01:04 < 0:47:16 , 525 it/s ]
+deployed=85.7% trades=191
+step=1000 pv=8731.04 reward=1.175 ret_r=0.310 turnover=0.000 to_pen=0.000  [ 0:01:05 < 0:47:16 , 525 it/s ]
+deployed=85.8% trades=410
+step=1500 pv=7831.99 reward=1.230 ret_r=1.199 turnover=0.332 to_pen=0.498  [ 0:01:06 < 0:47:16 , 525 it/s ]
+deployed=49.8% trades=683
+step=2000 pv=7511.38 reward=-0.908 ret_r=-0.215 turnover=0.248 to_pen=0.372  0:01:08 < 0:47:16 , 525 it/s ]
+deployed=74.8% trades=877
+step=0 pv=9992.52 reward=-1.298 ret_r=-0.748 turnover=0.748 to_pen=0.000 m [ 0:01:09 < 0:47:16 , 525 it/s ]
+deployed=74.8% trades=0
+step=500 pv=8757.27 reward=0.815 ret_r=0.271 turnover=0.001 to_pen=0.001 m [ 0:01:10 < 0:47:16 , 525 it/s ]
+deployed=85.7% trades=191
+step=1000 pv=8731.04 reward=1.175 ret_r=0.310 turnover=0.000 to_pen=0.000  [ 0:01:12 < 0:47:16 , 525 it/s ]
+deployed=85.8% trades=410
+step=1500 pv=7831.99 reward=1.230 ret_r=1.199 turnover=0.332 to_pen=0.498  [ 0:01:13 < 0:47:16 , 525 it/s ]
+deployed=49.8% trades=683
+step=2000 pv=7511.38 reward=-0.908 ret_r=-0.215 turnover=0.248 to_pen=0.372  0:01:15 < 0:47:16 , 525 it/s ]
+deployed=74.8% trades=877
+step=0 pv=9992.52 reward=-1.298 ret_r=-0.748 turnover=0.748 to_pen=0.000 m [ 0:01:16 < 0:47:16 , 525 it/s ]
+deployed=74.8% trades=0
+step=500 pv=8757.27 reward=0.815 ret_r=0.271 turnover=0.001 to_pen=0.001 m [ 0:01:17 < 0:47:16 , 525 it/s ]
+deployed=85.7% trades=191
+step=1000 pv=8731.04 reward=1.175 ret_r=0.310 turnover=0.000 to_pen=0.000  [ 0:01:19 < 0:47:16 , 525 it/s ]
+deployed=85.8% trades=410
+step=1500 pv=7831.99 reward=1.230 ret_r=1.199 turnover=0.332 to_pen=0.498 m [ 0:01:20 < 4:47:28 , 86 it/s ]
+deployed=49.8% trades=683
+step=2000 pv=7511.38 reward=-0.908 ret_r=-0.215 turnover=0.248 to_pen=0.372 [ 0:01:21 < 4:47:28 , 86 it/s ]
+deployed=74.8% trades=877
+step=0 pv=9992.52 reward=-1.298 ret_r=-0.748 turnover=0.748 to_pen=0.000 0m [ 0:01:22 < 4:47:28 , 86 it/s ]
+deployed=74.8% trades=0
+step=500 pv=8757.27 reward=0.815 ret_r=0.271 turnover=0.001 to_pen=0.001 0m [ 0:01:24 < 4:47:28 , 86 it/s ]
+deployed=85.7% trades=191
+step=1000 pv=8731.04 reward=1.175 ret_r=0.310 turnover=0.000 to_pen=0.000 m [ 0:01:25 < 4:47:28 , 86 it/s ]
+deployed=85.8% trades=410
+step=1500 pv=7831.99 reward=1.230 ret_r=1.199 turnover=0.332 to_pen=0.498 m [ 0:01:27 < 4:47:28 , 86 it/s ]
+deployed=49.8% trades=683
+step=2000 pv=7511.38 reward=-0.908 ret_r=-0.215 turnover=0.248 to_pen=0.372 [ 0:01:28 < 4:47:28 , 86 it/s ]
+deployed=74.8% trades=877
+step=0 pv=9992.52 reward=-1.298 ret_r=-0.748 turnover=0.748 to_pen=0.000 0m [ 0:01:29 < 4:47:28 , 86 it/s ]
+deployed=74.8% trades=0
+step=500 pv=8757.27 reward=0.815 ret_r=0.271 turnover=0.001 to_pen=0.001 0m [ 0:01:31 < 4:47:28 , 86 it/s ]
+deployed=85.7% trades=191
+step=1000 pv=8731.04 reward=1.175 ret_r=0.310 turnover=0.000 to_pen=0.000 m [ 0:01:32 < 4:47:28 , 86 it/s ]
+deployed=85.8% trades=410
+step=1500 pv=7831.99 reward=1.230 ret_r=1.199 turnover=0.332 to_pen=0.498 m [ 0:01:34 < 4:47:28 , 86 it/s ]
+deployed=49.8% trades=683
+step=2000 pv=7511.38 reward=-0.908 ret_r=-0.215 turnover=0.248 to_pen=0.372 [ 0:01:35 < 4:47:28 , 86 it/s ]
+deployed=74.8% trades=877
+Eval num_timesteps=10000, episode_reward=-564.88 +/- 0.00996/1,500,000  [ 0:01:36 < 4:47:28 , 86 it/s ]
+Episode length: 2365.00 +/- 0.00━━━━━━━━━ 9,996/1,500,000  [ 0:01:36 < 4:47:28 , 86 it/s ]
+----------------------------------------- 9,996/1,500,000  [ 0:01:36 < 4:47:28 , 86 it/s ]
+| eval/                   |             |
+|    mean_ep_length       | 2.36e+03    |
+|    mean_reward          | -565        |
+| time/                   |             |
+|    total_timesteps      | 10000       |
+| train/                  |             |
+|    approx_kl            | 0.013803208 |
+|    clip_fraction        | 0.17        |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -12.8       |
+|    explained_variance   | -0.0476     |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0725     |
+|    n_updates            | 10          |
+|    policy_gradient_loss | -0.018      |
+|    std                  | 1           |
+|    value_loss           | 0.14        |
+-----------------------------------------
+New best mean reward!━━━━━━━━━━━━━━━━━━━━ 9,996/1,500,000  [ 0:01:36 < 4:47:28 , 86 it/s ]
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 10,048/1,500,000  [ 0:01:36 < 134:40:25 , 3 it/s ]step=500 pv=7730.05 reward=-0.133 ret_r=0.157 turnover=0.215 to_pen=0.323 deployed=79.6% trades=133
+step=500 pv=7780.24 reward=-0.754 ret_r=-0.186 turnover=0.170 to_pen=0.085 deployed=74.9% trades=127
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 10,368/1,500,000  [ 0:01:37 < 19:31:01 , 21 it/s ]step=500 pv=7777.86 reward=-0.489 ret_r=-0.029 turnover=0.143 to_pen=0.072 deployed=86.0% trades=139
+   1% ━━━━━━━━━━━━━━━━━━━━━━━━ 11,920/1,500,000  [ 0:01:40 < 4:24:37 , 94 it/s ]step=1000 pv=7205.18 reward=-0.146 ret_r=0.089 turnover=0.170 to_pen=0.085 deployed=81.3% trades=310
+   1% ━━━━━━━━━━━━━━━━━━━━━━━━ 12,024/1,500,000  [ 0:01:40 < 4:13:31 , 98 it/s ]step=1000 pv=7109.72 reward=2.508 ret_r=0.014 turnover=0.289 to_pen=0.434 deployed=90.6% trades=299
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 12,076/1,500,000  [ 0:01:40 < 4:08:23 , 100 it/s ]step=0 pv=9994.42 reward=-1.687 ret_r=-0.558 turnover=0.558 to_pen=0.000 deployed=55.8% trades=0
+step=1000 pv=7050.08 reward=1.267 ret_r=0.190 turnover=0.119 to_pen=0.059 deployed=71.4% trades=290
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 12,128/1,500,000  [ 0:01:41 < 4:03:31 , 102 it/s ]step=0 pv=9993.53 reward=-1.247 ret_r=-0.647 turnover=0.647 to_pen=0.000 deployed=64.7% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 12,180/1,500,000  [ 0:01:41 < 3:58:57 , 104 it/s ]step=0 pv=9993.63 reward=-1.443 ret_r=-0.637 turnover=0.637 to_pen=0.000 deployed=63.7% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 12,344/1,500,000  [ 0:01:41 < 3:45:30 , 110 it/s ]step=1000 pv=7054.97 reward=-0.033 ret_r=0.054 turnover=0.306 to_pen=0.460 deployed=69.5% trades=306
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 12,456/1,500,000  [ 0:01:41 < 3:37:21 , 114 it/s ]step=0 pv=9992.40 reward=-1.710 ret_r=-0.760 turnover=0.760 to_pen=0.000 deployed=76.0% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 14,036/1,500,000  [ 0:01:44 < 2:31:11 , 164 it/s ]step=500 pv=8105.98 reward=-0.477 ret_r=-0.275 turnover=0.313 to_pen=0.469 deployed=74.7% trades=130
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 14,092/1,500,000  [ 0:01:44 < 2:29:46 , 165 it/s ]step=500 pv=7955.38 reward=1.638 ret_r=0.065 turnover=0.154 to_pen=0.077 deployed=77.8% trades=130
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 14,148/1,500,000  [ 0:01:44 < 2:28:23 , 167 it/s ]step=500 pv=7901.94 reward=-0.220 ret_r=0.020 turnover=0.126 to_pen=0.063 deployed=87.8% trades=135
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 14,480/1,500,000  [ 0:01:45 < 2:20:53 , 176 it/s ]step=500 pv=7866.84 reward=-1.450 ret_r=-0.046 turnover=0.280 to_pen=0.420 deployed=91.5% trades=121
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 16,068/1,500,000  [ 0:01:48 < 1:56:17 , 213 it/s ]step=1000 pv=7450.70 reward=-0.350 ret_r=-0.016 turnover=0.241 to_pen=0.361 deployed=85.4% trades=301
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 16,124/1,500,000  [ 0:01:48 < 1:55:39 , 214 it/s ]step=1000 pv=7163.63 reward=-0.380 ret_r=0.124 turnover=0.300 to_pen=0.450 deployed=89.9% trades=305
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 16,180/1,500,000  [ 0:01:48 < 1:55:02 , 215 it/s ]step=1000 pv=7287.39 reward=0.210 ret_r=0.160 turnover=0.118 to_pen=0.059 deployed=93.5% trades=296
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 16,292/1,500,000  [ 0:01:48 < 1:53:49 , 217 it/s ]step=0 pv=9992.50 reward=-1.299 ret_r=-0.750 turnover=0.750 to_pen=0.000 deployed=75.0% trades=0
+------------------------------━━━━━━━━━━━━━ 16,348/1,500,000  [ 0:01:49 < 1:53:13 , 218 it/s ]
+| time/              |       |
+|    fps             | 150   |
+|    iterations      | 2     |
+|    time_elapsed    | 109   |
+|    total_timesteps | 16384 |
+------------------------------
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 16,440/1,500,000  [ 0:02:27 < 202:39:45 , 2 it/s ]step=0 pv=9991.45 reward=-0.585 ret_r=-0.855 turnover=0.855 to_pen=0.000 deployed=85.5% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 16,496/1,500,000  [ 0:02:27 < 101:43:42 , 4 it/s ]step=1000 pv=7087.64 reward=0.298 ret_r=0.208 turnover=0.127 to_pen=0.063 deployed=85.2% trades=295
+   1% ━━━━━━━━━━━━━━━━━━━━━━━━ 16,552/1,500,000  [ 0:02:27 < 68:05:42 , 6 it/s ]step=0 pv=9992.50 reward=0.392 ret_r=-0.750 turnover=0.750 to_pen=0.000 deployed=75.0% trades=0
+step=0 pv=9992.32 reward=-1.792 ret_r=-0.768 turnover=0.768 to_pen=0.000 deployed=76.8% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 18,256/1,500,000  [ 0:02:31 < 0:47:33 , 519 it/s ]step=500 pv=7747.48 reward=-0.182 ret_r=0.255 turnover=0.105 to_pen=0.052 deployed=88.1% trades=129
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 18,416/1,500,000  [ 0:02:31 < 0:47:32 , 519 it/s ]step=500 pv=7974.58 reward=2.216 ret_r=0.231 turnover=0.210 to_pen=0.315 deployed=91.5% trades=131
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 18,584/1,500,000  [ 0:02:31 < 0:47:22 , 521 it/s ]step=500 pv=7751.50 reward=-0.829 ret_r=-0.060 turnover=0.194 to_pen=0.097 deployed=89.1% trades=126
+step=500 pv=7974.12 reward=-1.139 ret_r=-0.123 turnover=0.248 to_pen=0.373 deployed=81.1% trades=124
+step=0 pv=9992.54 reward=-1.095 ret_r=-0.746 turnover=0.746 to_pen=0.000 m [ 0:02:34 < 0:47:30 , 519 it/s ]
+deployed=74.6% trades=0
+step=500 pv=8867.59 reward=0.902 ret_r=0.267 turnover=0.002 to_pen=0.001 m [ 0:02:35 < 0:47:30 , 519 it/s ]
+deployed=85.6% trades=167
+step=1000 pv=9027.87 reward=1.203 ret_r=0.299 turnover=0.003 to_pen=0.002  [ 0:02:37 < 0:47:30 , 519 it/s ]
+deployed=85.9% trades=352
+step=1500 pv=8249.84 reward=2.057 ret_r=1.354 turnover=0.167 to_pen=0.084  [ 0:02:38 < 0:47:30 , 519 it/s ]
+deployed=66.8% trades=589
+step=2000 pv=7993.70 reward=-0.842 ret_r=-0.217 turnover=0.249 to_pen=0.373  0:02:40 < 0:47:30 , 519 it/s ]
+deployed=75.4% trades=761
+step=2500 pv=7484.19 reward=1.668 ret_r=0.972 turnover=0.197 to_pen=0.098  [ 0:02:41 < 0:47:30 , 519 it/s ]
+deployed=60.2% trades=954
+step=3000 pv=7027.64 reward=-0.003 ret_r=-0.872 turnover=0.002 to_pen=0.001  0:02:43 < 0:47:30 , 519 it/s ]
+deployed=85.5% trades=1115
+step=0 pv=9992.54 reward=-1.095 ret_r=-0.746 turnover=0.746 to_pen=0.000 m [ 0:02:44 < 0:47:30 , 519 it/s ]
+deployed=74.6% trades=0
+step=500 pv=8867.59 reward=0.902 ret_r=0.267 turnover=0.002 to_pen=0.001 m [ 0:02:45 < 0:47:30 , 519 it/s ]
+deployed=85.6% trades=167
+step=1000 pv=9027.87 reward=1.203 ret_r=0.299 turnover=0.003 to_pen=0.002  [ 0:02:47 < 0:47:30 , 519 it/s ]
+deployed=85.9% trades=352
+step=1500 pv=8249.84 reward=2.057 ret_r=1.354 turnover=0.167 to_pen=0.084  [ 0:02:48 < 0:47:30 , 519 it/s ]
+deployed=66.8% trades=589
+step=2000 pv=7993.70 reward=-0.842 ret_r=-0.217 turnover=0.249 to_pen=0.373  0:02:50 < 2:34:18 , 160 it/s ]
+deployed=75.4% trades=761
+step=2500 pv=7484.19 reward=1.668 ret_r=0.972 turnover=0.197 to_pen=0.098  [ 0:02:51 < 2:34:18 , 160 it/s ]
+deployed=60.2% trades=954
+step=3000 pv=7027.64 reward=-0.003 ret_r=-0.872 turnover=0.002 to_pen=0.001  0:02:52 < 2:34:18 , 160 it/s ]
+deployed=85.5% trades=1115
+step=0 pv=9992.54 reward=-1.095 ret_r=-0.746 turnover=0.746 to_pen=0.000 m [ 0:02:54 < 2:34:18 , 160 it/s ]
+deployed=74.6% trades=0
+step=500 pv=8867.59 reward=0.902 ret_r=0.267 turnover=0.002 to_pen=0.001 m [ 0:02:55 < 2:34:18 , 160 it/s ]
+deployed=85.6% trades=167
+step=1000 pv=9027.87 reward=1.203 ret_r=0.299 turnover=0.003 to_pen=0.002  [ 0:02:57 < 2:34:18 , 160 it/s ]
+deployed=85.9% trades=352
+step=1500 pv=8249.84 reward=2.057 ret_r=1.354 turnover=0.167 to_pen=0.084  [ 0:02:58 < 2:34:18 , 160 it/s ]
+deployed=66.8% trades=589
+step=2000 pv=7993.70 reward=-0.842 ret_r=-0.217 turnover=0.249 to_pen=0.373  0:02:59 < 2:34:18 , 160 it/s ]
+deployed=75.4% trades=761
+step=2500 pv=7484.19 reward=1.668 ret_r=0.972 turnover=0.197 to_pen=0.098  [ 0:03:01 < 2:34:18 , 160 it/s ]
+deployed=60.2% trades=954
+step=3000 pv=7027.64 reward=-0.003 ret_r=-0.872 turnover=0.002 to_pen=0.001  0:03:02 < 2:34:18 , 160 it/s ]
+deployed=85.5% trades=1115
+step=0 pv=9992.54 reward=-1.095 ret_r=-0.746 turnover=0.746 to_pen=0.000 m [ 0:03:04 < 2:34:18 , 160 it/s ]
+deployed=74.6% trades=0
+step=500 pv=8867.59 reward=0.902 ret_r=0.267 turnover=0.002 to_pen=0.001 m [ 0:03:05 < 2:34:18 , 160 it/s ]
+deployed=85.6% trades=167
+step=1000 pv=9027.87 reward=1.203 ret_r=0.299 turnover=0.003 to_pen=0.002  [ 0:03:06 < 2:34:18 , 160 it/s ]
+deployed=85.9% trades=352
+step=1500 pv=8249.84 reward=2.057 ret_r=1.354 turnover=0.167 to_pen=0.084  [ 0:03:08 < 2:34:18 , 160 it/s ]
+deployed=66.8% trades=589
+step=2000 pv=7993.70 reward=-0.842 ret_r=-0.217 turnover=0.249 to_pen=0.373  0:03:09 < 2:34:18 , 160 it/s ]
+deployed=75.4% trades=761
+step=2500 pv=7484.19 reward=1.668 ret_r=0.972 turnover=0.197 to_pen=0.098  [ 0:03:11 < 2:34:18 , 160 it/s ]
+deployed=60.2% trades=954
+step=3000 pv=7027.64 reward=-0.003 ret_r=-0.872 turnover=0.002 to_pen=0.001  0:03:12 < 2:34:18 , 160 it/s ]
+deployed=85.5% trades=1115
+step=0 pv=9992.54 reward=-1.095 ret_r=-0.746 turnover=0.746 to_pen=0.000 m [ 0:03:13 < 2:34:18 , 160 it/s ]
+deployed=74.6% trades=0
+step=500 pv=8867.59 reward=0.902 ret_r=0.267 turnover=0.002 to_pen=0.001 m [ 0:03:15 < 2:34:18 , 160 it/s ]
+deployed=85.6% trades=167
+step=1000 pv=9027.87 reward=1.203 ret_r=0.299 turnover=0.003 to_pen=0.002  [ 0:03:16 < 2:34:18 , 160 it/s ]
+deployed=85.9% trades=352
+step=1500 pv=8249.84 reward=2.057 ret_r=1.354 turnover=0.167 to_pen=0.084  [ 0:03:18 < 2:34:18 , 160 it/s ]
+deployed=66.8% trades=589
+step=2000 pv=7993.70 reward=-0.842 ret_r=-0.217 turnover=0.249 to_pen=0.373  0:03:19 < 2:34:18 , 160 it/s ]
+deployed=75.4% trades=761
+step=2500 pv=7484.19 reward=1.668 ret_r=0.972 turnover=0.197 to_pen=0.098  [ 0:03:20 < 2:34:18 , 160 it/s ]
+deployed=60.2% trades=954
+step=3000 pv=7027.64 reward=-0.003 ret_r=-0.872 turnover=0.002 to_pen=0.001  0:03:22 < 2:34:18 , 160 it/s ]
+deployed=85.5% trades=1115
+Eval num_timesteps=20000, episode_reward=531.24 +/- 0.00996/1,500,000  [ 0:03:23 < 2:34:18 , 160 it/s ]
+Episode length: 3408.00 +/- 0.00━━━━━━━ 19,996/1,500,000  [ 0:03:23 < 2:34:18 , 160 it/s ]
+-----------------------------------------0m 19,996/1,500,000  [ 0:03:23 < 2:34:18 , 160 it/s ]
+| eval/                   |             |
+|    mean_ep_length       | 3.41e+03    |
+|    mean_reward          | 531         |
+| time/                   |             |
+|    total_timesteps      | 20000       |
+| train/                  |             |
+|    approx_kl            | 0.021707466 |
+|    clip_fraction        | 0.261       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -12.8       |
+|    explained_variance   | 0.615       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.18       |
+|    n_updates            | 20          |
+|    policy_gradient_loss | -0.0302     |
+|    std                  | 1.01        |
+|    value_loss           | 0.0359      |
+-----------------------------------------
+New best mean reward!━━━━━━━━━━━━━━━━━━ 19,996/1,500,000  [ 0:03:23 < 2:34:18 , 160 it/s ]
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 20,268/1,500,000  [ 0:03:24 < 0:47:11 , 523 it/s ]step=1000 pv=7037.69 reward=2.276 ret_r=0.016 turnover=0.212 to_pen=0.319 deployed=89.7% trades=296
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 20,324/1,500,000  [ 0:03:24 < 0:47:47 , 516 it/s ]step=0 pv=9992.64 reward=-1.291 ret_r=-0.736 turnover=0.736 to_pen=0.000 deployed=73.6% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 20,436/1,500,000  [ 0:03:24 < 0:47:15 , 522 it/s ]step=1000 pv=7350.86 reward=2.904 ret_r=0.098 turnover=0.128 to_pen=0.064 deployed=90.3% trades=290
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 20,548/1,500,000  [ 0:03:24 < 0:46:59 , 525 it/s ]step=1000 pv=7205.10 reward=-0.001 ret_r=0.140 turnover=0.174 to_pen=0.087 deployed=74.6% trades=285
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 20,604/1,500,000  [ 0:03:24 < 0:47:11 , 523 it/s ]step=1000 pv=7350.35 reward=0.954 ret_r=0.155 turnover=0.128 to_pen=0.064 deployed=90.6% trades=287
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 20,828/1,500,000  [ 0:03:25 < 0:46:59 , 525 it/s ]step=0 pv=9991.37 reward=-1.617 ret_r=-0.863 turnover=0.863 to_pen=0.000 deployed=86.3% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 20,884/1,500,000  [ 0:03:25 < 0:47:00 , 525 it/s ]step=0 pv=9992.50 reward=1.261 ret_r=-0.750 turnover=0.750 to_pen=0.000 deployed=75.0% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 20,996/1,500,000  [ 0:03:25 < 0:46:55 , 525 it/s ]step=0 pv=9992.01 reward=-1.323 ret_r=-0.799 turnover=0.799 to_pen=0.000 deployed=79.9% trades=0
+   1% ━━━━━━━━━━━━━━━━━━━━━━━ 22,300/1,500,000  [ 0:03:28 < 0:47:26 , 519 it/s ]step=500 pv=7847.39 reward=0.063 ret_r=0.390 turnover=0.117 to_pen=0.059 deployed=88.7% trades=123
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 22,808/1,500,000  [ 0:03:29 < 0:47:03 , 523 it/s ]step=500 pv=7889.18 reward=1.750 ret_r=-0.037 turnover=0.302 to_pen=0.453 deployed=90.6% trades=123
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 22,864/1,500,000  [ 0:03:29 < 0:47:00 , 524 it/s ]step=500 pv=8020.37 reward=-0.516 ret_r=0.129 turnover=0.148 to_pen=0.074 deployed=79.0% trades=124
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 22,976/1,500,000  [ 0:03:29 < 0:46:57 , 524 it/s ]step=500 pv=7932.48 reward=1.062 ret_r=-0.221 turnover=0.197 to_pen=0.099 deployed=85.8% trades=127
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 24,320/1,500,000  [ 0:03:31 < 0:46:47 , 526 it/s ]step=1000 pv=7274.09 reward=-0.326 ret_r=-0.227 turnover=0.339 to_pen=0.509 deployed=89.8% trades=291
+------------------------------━━━━━━━━━━━━━ 24,488/1,500,000  [ 0:03:32 < 0:46:46 , 526 it/s ]
+| time/              |       |
+|    fps             | 115   |
+|    iterations      | 3     |
+|    time_elapsed    | 212   |
+|    total_timesteps | 24576 |
+------------------------------
+   2% ━━━━━━━━━━━━━━━━━━━━━━ 24,580/1,500,000  [ 0:04:12 < 2274:52:01 , 0 it/s ]step=0 pv=9992.97 reward=-1.275 ret_r=-0.703 turnover=0.703 to_pen=0.000 deployed=70.3% trades=0
+   2% ━━━━━━━━━━━━━━━━━━━━━━━━ 24,788/1,500,000  [ 0:04:12 < 43:42:41 , 9 it/s ]step=1000 pv=7209.03 reward=0.535 ret_r=-0.283 turnover=0.292 to_pen=0.439 deployed=80.3% trades=282
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 24,840/1,500,000  [ 0:04:12 < 35:15:38 , 12 it/s ]step=1000 pv=7344.33 reward=0.101 ret_r=0.267 turnover=0.159 to_pen=0.079 deployed=87.2% trades=285
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 24,944/1,500,000  [ 0:04:13 < 25:31:01 , 16 it/s ]step=1000 pv=7402.96 reward=0.389 ret_r=0.055 turnover=0.152 to_pen=0.076 deployed=89.5% trades=285
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 25,056/1,500,000  [ 0:04:13 < 19:44:35 , 21 it/s ]step=0 pv=9992.22 reward=-1.313 ret_r=-0.778 turnover=0.778 to_pen=0.000 deployed=77.8% trades=0
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 25,220/1,500,000  [ 0:04:13 < 14:55:18 , 27 it/s ]step=0 pv=9991.34 reward=-0.174 ret_r=-0.866 turnover=0.866 to_pen=0.000 deployed=86.6% trades=0
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 25,440/1,500,000  [ 0:04:13 < 11:19:45 , 36 it/s ]step=0 pv=9991.83 reward=-1.233 ret_r=-0.817 turnover=0.817 to_pen=0.000 deployed=81.7% trades=0
+   2% ━━━━━━━━━━━━━━━━━━━━━━━━ 26,616/1,500,000  [ 0:04:16 < 5:14:28 , 78 it/s ]step=500 pv=7897.64 reward=-0.384 ret_r=0.254 turnover=0.217 to_pen=0.326 deployed=88.6% trades=124
+   2% ━━━━━━━━━━━━━━━━━━━━━━━━ 27,060/1,500,000  [ 0:04:17 < 4:26:44 , 92 it/s ]step=500 pv=7871.88 reward=-0.903 ret_r=-0.055 turnover=0.288 to_pen=0.432 deployed=87.9% trades=123
+   2% ━━━━━━━━━━━━━━━━━━━━━━━━ 27,228/1,500,000  [ 0:04:17 < 4:12:42 , 97 it/s ]step=500 pv=7924.22 reward=0.308 ret_r=0.005 turnover=0.254 to_pen=0.382 deployed=79.7% trades=116
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 27,396/1,500,000  [ 0:04:17 < 4:00:22 , 102 it/s ]step=500 pv=7986.48 reward=-0.836 ret_r=-0.026 turnover=0.260 to_pen=0.390 deployed=89.4% trades=133
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 28,628/1,500,000  [ 0:04:19 < 3:01:04 , 135 it/s ]step=1000 pv=7256.47 reward=-0.391 ret_r=-0.205 turnover=0.347 to_pen=0.521 deployed=89.3% trades=290
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 28,952/1,500,000  [ 0:04:20 < 0:46:52 , 523 it/s ]step=0 pv=9992.03 reward=1.238 ret_r=-0.797 turnover=0.797 to_pen=0.000 deployed=79.7% trades=0
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 29,112/1,500,000  [ 0:04:20 < 0:46:55 , 523 it/s ]step=1000 pv=7181.11 reward=2.813 ret_r=0.188 turnover=0.089 to_pen=0.044 deployed=76.9% trades=271
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 29,276/1,500,000  [ 0:04:21 < 0:46:54 , 523 it/s ]step=1000 pv=7127.79 reward=1.138 ret_r=0.019 turnover=0.203 to_pen=0.304 deployed=76.1% trades=273
+step=0 pv=9991.73 reward=-1.337 ret_r=-0.827 turnover=0.827 to_pen=0.000 deployed=82.7% trades=0
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 29,380/1,500,000  [ 0:04:21 < 0:46:55 , 523 it/s ]step=0 pv=9992.34 reward=0.385 ret_r=-0.766 turnover=0.766 to_pen=0.000 deployed=76.6% trades=0
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 29,432/1,500,000  [ 0:04:21 < 0:46:56 , 522 it/s ]step=1000 pv=7190.69 reward=0.108 ret_r=-0.428 turnover=0.431 to_pen=0.647 deployed=89.9% trades=288
+   2% ━━━━━━━━━━━━━━━━━━━━━━━ 29,588/1,500,000  [ 0:04:21 < 0:47:03 , 521 it/s ]step=0 pv=9991.34 reward=-1.356 ret_r=-0.866 turnover=0.866 to_pen=0.000 deployed=86.6% trades=0
 
+..........
 
-model = RecurrentPPO(
-    "MlpLstmPolicy",
-    env,
-    verbose=1,
-    tensorboard_log="./logs/",
-    
-    # --- Core Training Stability ---
-    learning_rate=5e-5,        # ⬇️ LOWER: 1.5e-4 was causing oscillation
-    n_steps=2048,              # ⬆️ HIGHER: More context per update (important for 7yr data)
-    batch_size=256,            # ⬆️ HIGHER: Smoother gradients, less noise
-    n_epochs=4,                # ⬇️ LOWER: 8 was overfitting each batch
-    
-    # --- Temporal + Value tradeoffs ---
-    gamma=0.995,               # ⬆️ HIGHER: Trading needs longer horizon thinking
-    gae_lambda=0.95,           # ⬆️ HIGHER: Better credit assignment for delayed rewards
-    
-    # --- Regularization ---
-    clip_range=0.1,            # ⬇️ TIGHTER: Prevent destructive updates
-    ent_coef=0.01,             # ⬆️ HIGHER: 0.005 was too low, agent got stuck
-    vf_coef=0.5,               # Standard value
-    max_grad_norm=0.3,         # ⬇️ LOWER: More gradient clipping for stability
-    
-    # --- LSTM settings ---
-    policy_kwargs=dict(
-        lstm_hidden_size=128,     # ⬆️ HIGHER: 96 may be too small for 6 pairs
-        n_lstm_layers=1,          # Keep at 1
-        enable_critic_lstm=True,
-        net_arch=dict(pi=[128, 64], vf=[128, 64])  # 🆕 ADD: Separate networks
-    ),
-    
-    device="cuda" if torch.cuda.is_available() else "cpu"
-)
-
-
-
-
-## gemini 3.0 pro 
-
-model = RecurrentPPO(
-    "MlpLstmPolicy",
-    env,
-    verbose=1,
-    tensorboard_log="./logs/",
-
-    # --- Core Training Stability & Speed ---
-    # Increased to speed up learning with the larger dataset.
-    learning_rate=3e-4, 
-    # Increased rollout length to capture longer-term dependencies in market data.
-    n_steps=2048, 
-    # Increased batch size for smoother, more representative gradient updates.
-    batch_size=256, 
-    # Slightly increased replay cycles to better utilize the collected data.
-    n_epochs=10, 
-    
-    # --- Temporal & VA Tradeoffs (Kept Stable) ---
-    gamma=0.99, 
-    gae_lambda=0.92, 
-
-    # --- Regularization ---
-    # Increased slightly to allow for larger, more impactful updates.
-    clip_range=0.2, 
-    # Significantly reduced to focus the agent on exploitation (refining the best policy).
-    ent_coef=0.001, 
-    # Kept stable to prevent value function overfitting.
-    vf_coef=0.4, 
-    max_grad_norm=0.5, 
-
-    # --- LSTM settings (Increased Capacity) ---
-    policy_kwargs=dict(
-        # Increased capacity to better memorize and model complex market regimes over 7 years.
-        lstm_hidden_size=128, 
-        # Kept at 1 layer to minimize risk of high overfitting.
-        n_lstm_layers=1, 
-        enable_critic_lstm=True
-    ),
-    
-    device="cuda" if torch.cuda.is_available() else "cpu"
-)
-
+step=4500 pv=7423.00 reward=3.078 ret_r=0.771 turnover=0.002 to_pen=0.001 ,000  [ 0:11:59 < 3:47:13 , 106 it/s ]
+deployed=72.8% trades=832
+step=5000 pv=7209.05 reward=2.671 ret_r=0.316 turnover=0.008 to_pen=0.004 ,000  [ 0:12:01 < 3:47:13 , 106 it/s ]
+deployed=73.4% trades=916
+step=0 pv=9992.51 reward=0.723 ret_r=-0.749 turnover=0.749 to_pen=0.000 00,000  [ 0:12:02 < 3:47:13 , 106 it/s ]
+deployed=74.9% trades=0
+step=500 pv=9130.77 reward=2.710 ret_r=0.275 turnover=0.004 to_pen=0.002 0,000  [ 0:12:03 < 3:47:13 , 106 it/s ]
+deployed=83.6% trades=76
+step=1000 pv=9643.27 reward=1.370 ret_r=-0.008 turnover=0.144 to_pen=0.072 000  [ 0:12:05 < 3:47:13 , 106 it/s ]
+deployed=84.6% trades=188
+step=1500 pv=9103.95 reward=4.071 ret_r=1.529 turnover=0.008 to_pen=0.004 ,000  [ 0:12:06 < 3:47:13 , 106 it/s ]
+deployed=83.5% trades=328
+step=2000 pv=9081.35 reward=2.164 ret_r=-0.206 turnover=0.253 to_pen=0.379 000  [ 0:12:08 < 3:47:13 , 106 it/s ]
+deployed=75.1% trades=418
+step=2500 pv=8820.46 reward=3.636 ret_r=1.085 turnover=0.013 to_pen=0.006 ,000  [ 0:12:09 < 3:47:13 , 106 it/s ]
+deployed=80.2% trades=526
+step=3000 pv=8470.00 reward=1.610 ret_r=-0.995 turnover=0.140 to_pen=0.070 000  [ 0:12:10 < 3:47:13 , 106 it/s ]
+deployed=72.1% trades=614
+step=3500 pv=8380.84 reward=1.964 ret_r=0.088 turnover=0.002 to_pen=0.001 ,000  [ 0:12:12 < 3:47:13 , 106 it/s ]
+deployed=86.0% trades=679
+step=4000 pv=7964.50 reward=3.041 ret_r=0.966 turnover=0.245 to_pen=0.368 ,000  [ 0:12:13 < 3:47:13 , 106 it/s ]
+deployed=49.5% trades=752
+step=4500 pv=7423.00 reward=3.078 ret_r=0.771 turnover=0.002 to_pen=0.001 ,000  [ 0:12:15 < 3:47:13 , 106 it/s ]
+deployed=72.8% trades=832
+step=5000 pv=7209.05 reward=2.671 ret_r=0.316 turnover=0.008 to_pen=0.004 ,000  [ 0:12:16 < 3:47:13 , 106 it/s ]
+deployed=73.4% trades=916
+step=0 pv=9992.51 reward=0.723 ret_r=-0.749 turnover=0.749 to_pen=0.000 00,000  [ 0:12:17 < 3:47:13 , 106 it/s ]
+deployed=74.9% trades=0
+step=500 pv=9130.77 reward=2.710 ret_r=0.275 turnover=0.004 to_pen=0.002 0,000  [ 0:12:19 < 3:47:13 , 106 it/s ]
+deployed=83.6% trades=76
+step=1000 pv=9643.27 reward=1.370 ret_r=-0.008 turnover=0.144 to_pen=0.072 000  [ 0:12:20 < 3:47:13 , 106 it/s ]
+deployed=84.6% trades=188
+step=1500 pv=9103.95 reward=4.071 ret_r=1.529 turnover=0.008 to_pen=0.004 ,000  [ 0:12:22 < 3:47:13 , 106 it/s ]
+deployed=83.5% trades=328
+step=2000 pv=9081.35 reward=2.164 ret_r=-0.206 turnover=0.253 to_pen=0.379 000  [ 0:12:23 < 3:47:13 , 106 it/s ]
+deployed=75.1% trades=418
+step=2500 pv=8820.46 reward=3.636 ret_r=1.085 turnover=0.013 to_pen=0.006 ,000  [ 0:12:25 < 3:47:13 , 106 it/s ]
+deployed=80.2% trades=526
+step=3000 pv=8470.00 reward=1.610 ret_r=-0.995 turnover=0.140 to_pen=0.070 000  [ 0:12:26 < 3:47:13 , 106 it/s ]
+deployed=72.1% trades=614
+step=3500 pv=8380.84 reward=1.964 ret_r=0.088 turnover=0.002 to_pen=0.001 ,000  [ 0:12:28 < 3:47:13 , 106 it/s ]
+deployed=86.0% trades=679
+step=4000 pv=7964.50 reward=3.041 ret_r=0.966 turnover=0.245 to_pen=0.368 ,000  [ 0:12:29 < 3:47:13 , 106 it/s ]
+deployed=49.5% trades=752
+step=4500 pv=7423.00 reward=3.078 ret_r=0.771 turnover=0.002 to_pen=0.001 ,000  [ 0:12:31 < 3:47:13 , 106 it/s ]
+deployed=72.8% trades=832
+step=5000 pv=7209.05 reward=2.671 ret_r=0.316 turnover=0.008 to_pen=0.004 ,000  [ 0:12:32 < 3:47:13 , 106 it/s ]
+deployed=73.4% trades=916
+step=0 pv=9992.51 reward=0.723 ret_r=-0.749 turnover=0.749 to_pen=0.000 00,000  [ 0:12:33 < 3:47:13 , 106 it/s ]
+deployed=74.9% trades=0
+step=500 pv=9130.77 reward=2.710 ret_r=0.275 turnover=0.004 to_pen=0.002 0,000  [ 0:12:35 < 3:47:13 , 106 it/s ]
+deployed=83.6% trades=76
+step=1000 pv=9643.27 reward=1.370 ret_r=-0.008 turnover=0.144 to_pen=0.072 000  [ 0:12:36 < 3:47:13 , 106 it/s ]
+deployed=84.6% trades=188
+step=1500 pv=9103.95 reward=4.071 ret_r=1.529 turnover=0.008 to_pen=0.004 ,000  [ 0:12:38 < 3:47:13 , 106 it/s ]
+deployed=83.5% trades=328
+step=2000 pv=9081.35 reward=2.164 ret_r=-0.206 turnover=0.253 to_pen=0.379 000  [ 0:12:39 < 3:47:13 , 106 it/s ]
+deployed=75.1% trades=418
+step=2500 pv=8820.46 reward=3.636 ret_r=1.085 turnover=0.013 to_pen=0.006 ,000  [ 0:12:40 < 3:47:13 , 106 it/s ]
+deployed=80.2% trades=526
+step=3000 pv=8470.00 reward=1.610 ret_r=-0.995 turnover=0.140 to_pen=0.070 000  [ 0:12:42 < 3:47:13 , 106 it/s ]
+deployed=72.1% trades=614
+step=3500 pv=8380.84 reward=1.964 ret_r=0.088 turnover=0.002 to_pen=0.001 ,000  [ 0:12:43 < 3:47:13 , 106 it/s ]
+deployed=86.0% trades=679
+step=4000 pv=7964.50 reward=3.041 ret_r=0.966 turnover=0.245 to_pen=0.368 ,000  [ 0:12:45 < 3:47:13 , 106 it/s ]
+deployed=49.5% trades=752
+step=4500 pv=7423.00 reward=3.078 ret_r=0.771 turnover=0.002 to_pen=0.001 ,000  [ 0:12:46 < 3:47:13 , 106 it/s ]
+deployed=72.8% trades=832
+step=5000 pv=7209.05 reward=2.671 ret_r=0.316 turnover=0.008 to_pen=0.004 ,000  [ 0:12:48 < 3:47:13 , 106 it/s ]
+deployed=73.4% trades=916
+Eval num_timesteps=60000, episode_reward=11129.19 +/- 0.00[32m59,996/1,500,000  [ 0:12:49 < 3:47:13 , 106 it/s ]
+Episode length: 5349.00 +/- 0.00━━━━━━━━━━━━━━━━ 59,996/1,500,000  [ 0:12:49 < 3:47:13 , 106 it/s ]
+----------------------------------------━━━━━━━━━━━━ 59,996/1,500,000  [ 0:12:49 < 3:47:13 , 106 it/s ]
+| eval/                   |            |
+|    mean_ep_length       | 5.35e+03   |
+|    mean_reward          | 1.11e+04   |
+| time/                   |            |
+|    total_timesteps      | 60000      |
+| train/                  |            |
+|    approx_kl            | 0.03282238 |
+|    clip_fraction        | 0.372      |
+|    clip_range           | 0.2        |
+|    entropy_loss         | -12.8      |
+|    explained_variance   | 0.933      |
+|    learning_rate        | 0.0003     |
+|    loss                 | -0.156     |
+|    n_updates            | 70         |
+|    policy_gradient_loss | -0.0387    |
+|    std                  | 1          |
+|    value_loss           | 0.0255     |
+----------------------------------------
+New best mean reward!━━━━━━━━━━━━━━━━━━━━━━ 59,996/1,500,000  [ 0:12:49 < 3:47:13 , 106 it/s ]
+   4% ━╺━━━━━━━━━━━━━━━━━━━━━━━ 60,000/1,500,000  [ 0:12:49 < -:--:-- , ? it/s ]step=1000 pv=7329.89 reward=-0.251 ret_r=-0.009 turnover=0.186 to_pen=0.093 deployed=68.5% trades=236
+   4% ╸━━━━━━━━━━━━━━━━━━━━━━ 60,316/1,500,000  [ 0:12:50 < 0:47:08 , 509 it/s ]step=0 pv=9994.75 reward=1.374 ret_r=-0.525 turnover=0.525 to_pen=0.000 deployed=52.5% trades=0
+   4% ╸━━━━━━━━━━━━━━━━━━━━━━ 60,836/1,500,000  [ 0:12:51 < 0:47:51 , 501 it/s ]step=1000 pv=7449.26 reward=2.201 ret_r=-0.004 turnover=0.279 to_pen=0.418 deployed=91.1% trades=246
+   4% ╸━━━━━━━━━━━━━━━━━━━━━━ 60,940/1,500,000  [ 0:12:51 < 0:47:59 , 500 it/s ]step=1000 pv=7607.96 reward=1.037 ret_r=-0.331 turnover=0.381 to_pen=0.571 deployed=91.1% trades=245
+   4% ╸━━━━━━━━━━━━━━━━━━━━━━ 61,312/1,500,000  [ 0:12:52 < 0:47:59 , 500 it/s ]step=0 pv=9991.71 reward=0.334 ret_r=-0.829 turnover=0.829 to_pen=0.000 deployed=82.9% trades=0
+   4% ╸━━━━━━━━━━━━━━━━━━━━━━ 61,888/1,500,000  [ 0:12:53 < 0:47:42 , 503 it/s ]step=500 pv=7879.62 reward=-1.271 ret_r=-0.107 turnover=0.248 to_pen=0.372 deployed=88.9% trades=101
+step=0 pv=9993.08 reward=0.728 ret_r=-0.692 turnover=0.692 to_pen=0.000 deployed=69.2% trades=0
+   4% ╸━━━━━━━━━━━━━━━━━━━━━━ 62,300/1,500,000  [ 0:12:54 < 0:48:18 , 496 it/s ]step=500 pv=8039.35 reward=1.921 ret_r=0.453 turnover=0.277 to_pen=0.415 deployed=69.9% trades=113
+   4% ╸━━━━━━━━━━━━━━━━━━━━━━ 63,304/1,500,000  [ 0:12:56 < 0:47:57 , 499 it/s ]step=500 pv=7962.76 reward=-1.193 ret_r=-0.236 turnover=0.283 to_pen=0.424 deployed=90.6% trades=109
+   4% ╸━━━━━━━━━━━━━━━━━━━━━━ 63,876/1,500,000  [ 0:12:57 < 0:47:57 , 499 it/s ]step=1000 pv=7329.17 reward=2.259 ret_r=-0.041 turnover=0.235 to_pen=0.353 deployed=86.9% trades=233
+step=500 pv=7992.98 reward=-0.889 ret_r=-0.055 turnover=0.179 to_pen=0.089 deployed=86.3% trades=109
+   4% ╸━━━━━━━━━━━━━━━━━━━━━━ 64,240/1,500,000  [ 0:12:57 < 0:47:57 , 499 it/s ]step=0 pv=9991.63 reward=-1.342 ret_r=-0.837 turnover=0.837 to_pen=0.000 deployed=83.7% trades=0
+   4% ╸━━━━━━━━━━━━━━━━━━━━━━ 64,292/1,500,000  [ 0:12:58 < 0:47:58 , 499 it/s ]step=1000 pv=7563.05 reward=0.904 ret_r=0.066 turnover=0.249 to_pen=0.374 deployed=92.1% trades=251
+   4% ╸━━━━━━━━━━━━━━━━━━━━━━ 65,144/1,500,000  [ 0:12:59 < 0:47:45 , 501 it/s ]step=0 pv=9992.50 reward=0.401 ret_r=-0.750 turnover=0.750 to_pen=0.000 deployed=75.0% trades=0
+   4% ━╺━━━━━━━━━━━━━━━━━━━━━ 65,304/1,500,000  [ 0:13:00 < 0:47:42 , 501 it/s ]step=1000 pv=7482.62 reward=-1.053 ret_r=-0.184 turnover=0.280 to_pen=0.420 deployed=87.6% trades=247
+------------------------------╺━━━━━━━━━━━━━━━━━━━━━ 65,512/1,500,000  [ 0:13:00 < 0:47:45 , 501 it/s ]
+| time/              |       |
+|    fps             | 83    |
+|    iterations      | 8     |
+|    time_elapsed    | 780   |
+|    total_timesteps | 65536 |
+------------------------------
+   4% ━╺━━━━━━━━━━━━━━━━━━━━━ 65,856/1,500,000  [ 0:13:40 < 25:32:22 , 16 it/s ]step=1000 pv=7540.31 reward=0.999 ret_r=-0.040 turnover=0.148 to_pen=0.074 deployed=89.6% trades=238
+   4% ━╺━━━━━━━━━━━━━━━━━━━━━ 66,072/1,500,000  [ 0:13:41 < 15:33:45 , 26 it/s ]step=0 pv=9992.50 reward=-1.172 ret_r=-0.750 turnover=0.750 to_pen=0.000 deployed=75.0% trades=0
+   4% ━╺━━━━━━━━━━━━━━━━━━━━━ 66,240/1,500,000  [ 0:13:41 < 12:01:41 , 33 it/s ]step=500 pv=8219.10 reward=-0.673 ret_r=0.043 turnover=0.144 to_pen=0.072 deployed=88.2% trades=108
+   4% ━╺━━━━━━━━━━━━━━━━━━━━━━ 66,836/1,500,000  [ 0:13:42 < 6:52:09 , 58 it/s ]step=0 pv=9992.50 reward=-0.342 ret_r=-0.750 turnover=0.750 to_pen=0.000 deployed=75.0% trades=0
+   4% ━╺━━━━━━━━━━━━━━━━━━━━━━ 67,152/1,500,000  [ 0:13:43 < 5:40:41 , 70 it/s ]step=500 pv=8108.43 reward=-0.128 ret_r=0.459 turnover=0.207 to_pen=0.311 deployed=76.7% trades=110
+   5% ━╺━━━━━━━━━━━━━━━━━━━━━ 68,120/1,500,000  [ 0:13:45 < 3:50:48 , 103 it/s ]step=500 pv=8113.95 reward=0.794 ret_r=-0.125 turnover=0.373 to_pen=0.560 deployed=75.7% trades=92
+   5% ━╺━━━━━━━━━━━━━━━━━━━━━ 68,228/1,500,000  [ 0:13:45 < 3:43:22 , 107 it/s ]step=1000 pv=7672.90 reward=1.234 ret_r=0.153 turnover=0.149 to_pen=0.075 deployed=90.1% trades=231
+   5% ━╺━━━━━━━━━━━━━━━━━━━━━ 68,856/1,500,000  [ 0:13:46 < 3:09:56 , 126 it/s ]step=500 pv=7956.99 reward=-1.266 ret_r=0.208 turnover=0.361 to_pen=0.541 deployed=80.2% trades=102
+   5% ━╺━━━━━━━━━━━━━━━━━━━━━ 69,172/1,500,000  [ 0:13:47 < 2:57:30 , 134 it/s ]step=1000 pv=7690.77 reward=0.563 ret_r=-0.387 turnover=0.353 to_pen=0.529 deployed=81.9% trades=248
+   5% ━╺━━━━━━━━━━━━━━━━━━━━━ 69,224/1,500,000  [ 0:13:47 < 2:55:39 , 136 it/s ]step=0 pv=9992.22 reward=1.247 ret_r=-0.778 turnover=0.778 to_pen=0.000 deployed=77.8% trades=0
+step=0 pv=9992.50 reward=1.137 ret_r=-0.750 turnover=0.750 to_pen=0.000 9,912/1,500,000  [ 0:13:48 < 2:35:17 , 153 it/s ]
+deployed=75.0% trades=0
+step=500 pv=9142.10 reward=2.667 ret_r=0.245 turnover=0.007 to_pen=0.003 ,964/1,500,000  [ 0:13:50 < 2:34:01 , 155 it/s ]
+deployed=84.4% trades=77
+step=1000 pv=9667.10 reward=2.319 ret_r=0.154 turnover=0.164 to_pen=0.082 964/1,500,000  [ 0:13:51 < 2:34:01 , 155 it/s ]
+deployed=69.8% trades=184
+step=1500 pv=9140.42 reward=4.258 ret_r=1.530 turnover=0.007 to_pen=0.004 964/1,500,000  [ 0:13:52 < 2:34:01 , 155 it/s ]
+deployed=83.0% trades=316
+step=2000 pv=9126.34 reward=2.234 ret_r=-0.196 turnover=0.250 to_pen=0.375 64/1,500,000  [ 0:13:54 < 2:34:01 , 155 it/s ]
+deployed=75.3% trades=405
+step=2500 pv=8889.98 reward=3.661 ret_r=1.110 turnover=0.011 to_pen=0.005 964/1,500,000  [ 0:13:56 < 2:34:01 , 155 it/s ]
+deployed=79.8% trades=512
+step=3000 pv=8503.63 reward=1.909 ret_r=-0.837 turnover=0.002 to_pen=0.001 64/1,500,000  [ 0:13:57 < 2:34:01 , 155 it/s ]
+deployed=86.2% trades=601
+step=3500 pv=8439.06 reward=2.509 ret_r=0.086 turnover=0.005 to_pen=0.002 964/1,500,000  [ 0:13:58 < 2:34:01 , 155 it/s ]
+deployed=85.7% trades=660
+step=4000 pv=8036.07 reward=3.598 ret_r=1.196 turnover=0.005 to_pen=0.003 996/1,500,000  [ 0:14:00 < 1:47:37 , 221 it/s ]
+deployed=75.0% trades=730
+step=4500 pv=7503.79 reward=2.591 ret_r=0.707 turnover=0.004 to_pen=0.002 996/1,500,000  [ 0:14:01 < 1:47:37 , 221 it/s ]
+deployed=72.6% trades=810
+step=5000 pv=7306.45 reward=2.828 ret_r=0.316 turnover=0.009 to_pen=0.005 996/1,500,000  [ 0:14:03 < 1:47:37 , 221 it/s ]
+deployed=72.1% trades=890
+step=0 pv=9992.50 reward=1.137 ret_r=-0.750 turnover=0.750 to_pen=0.000 9,996/1,500,000  [ 0:14:04 < 1:47:37 , 221 it/s ]
+deployed=75.0% trades=0
+step=500 pv=9142.10 reward=2.667 ret_r=0.245 turnover=0.007 to_pen=0.003 ,996/1,500,000  [ 0:14:05 < 1:47:37 , 221 it/s ]
+deployed=84.4% trades=77
+step=1000 pv=9667.10 reward=2.319 ret_r=0.154 turnover=0.164 to_pen=0.082 996/1,500,000  [ 0:14:07 < 1:47:37 , 221 it/s ]
+deployed=69.8% trades=184
+step=1500 pv=9140.42 reward=4.258 ret_r=1.530 turnover=0.007 to_pen=0.004 996/1,500,000  [ 0:14:08 < 1:47:37 , 221 it/s ]
+deployed=83.0% trades=316
+step=2000 pv=9126.34 reward=2.234 ret_r=-0.196 turnover=0.250 to_pen=0.375 96/1,500,000  [ 0:14:10 < 1:47:37 , 221 it/s ]
+deployed=75.3% trades=405
+step=2500 pv=8889.98 reward=3.661 ret_r=1.110 turnover=0.011 to_pen=0.005 996/1,500,000  [ 0:14:11 < 1:47:37 , 221 it/s ]
+deployed=79.8% trades=512
+step=3000 pv=8503.63 reward=1.909 ret_r=-0.837 turnover=0.002 to_pen=0.001 96/1,500,000  [ 0:14:13 < 1:47:37 , 221 it/s ]
+deployed=86.2% trades=601
+step=3500 pv=8439.06 reward=2.509 ret_r=0.086 turnover=0.005 to_pen=0.002 996/1,500,000  [ 0:14:14 < 1:47:37 , 221 it/s ]
+deployed=85.7% trades=660
+step=4000 pv=8036.07 reward=3.598 ret_r=1.196 turnover=0.005 to_pen=0.003 996/1,500,000  [ 0:14:16 < 1:47:37 , 221 it/s ]
+deployed=75.0% trades=730
+step=4500 pv=7503.79 reward=2.591 ret_r=0.707 turnover=0.004 to_pen=0.002 996/1,500,000  [ 0:14:17 < 1:47:37 , 221 it/s ]
+deployed=72.6% trades=810
+step=5000 pv=7306.45 reward=2.828 ret_r=0.316 turnover=0.009 to_pen=0.005 996/1,500,000  [ 0:14:19 < 1:47:37 , 221 it/s ]
+deployed=72.1% trades=890
+step=0 pv=9992.50 reward=1.137 ret_r=-0.750 turnover=0.750 to_pen=0.000 9,996/1,500,000  [ 0:14:20 < 1:47:37 , 221 it/s ]
+deployed=75.0% trades=0
+step=500 pv=9142.10 reward=2.667 ret_r=0.245 turnover=0.007 to_pen=0.003 ,996/1,500,000  [ 0:14:21 < 1:47:37 , 221 it/s ]
+deployed=84.4% trades=77
+step=1000 pv=9667.10 reward=2.319 ret_r=0.154 turnover=0.164 to_pen=0.082 996/1,500,000  [ 0:14:23 < 1:47:37 , 221 it/s ]
+deployed=69.8% trades=184
+step=1500 pv=9140.42 reward=4.258 ret_r=1.530 turnover=0.007 to_pen=0.004 996/1,500,000  [ 0:14:24 < 1:47:37 , 221 it/s ]
+deployed=83.0% trades=316
+step=2000 pv=9126.34 reward=2.234 ret_r=-0.196 turnover=0.250 to_pen=0.375 96/1,500,000  [ 0:14:25 < 1:47:37 , 221 it/s ]
+deployed=75.3% trades=405
+step=2500 pv=8889.98 reward=3.661 ret_r=1.110 turnover=0.011 to_pen=0.005 996/1,500,000  [ 0:14:27 < 1:47:37 , 221 it/s ]
+deployed=79.8% trades=512
+step=3000 pv=8503.63 reward=1.909 ret_r=-0.837 turnover=0.002 to_pen=0.001 96/1,500,000  [ 0:14:28 < 1:47:37 , 221 it/s ]
+deployed=86.2% trades=601
+step=3500 pv=8439.06 reward=2.509 ret_r=0.086 turnover=0.005 to_pen=0.002 996/1,500,000  [ 0:14:30 < 1:47:37 , 221 it/s ]
+deployed=85.7% trades=660
+step=4000 pv=8036.07 reward=3.598 ret_r=1.196 turnover=0.005 to_pen=0.003 996/1,500,000  [ 0:14:31 < 1:47:37 , 221 it/s ]
+deployed=75.0% trades=730
+step=4500 pv=7503.79 reward=2.591 ret_r=0.707 turnover=0.004 to_pen=0.002 996/1,500,000  [ 0:14:33 < 1:47:37 , 221 it/s ]
+deployed=72.6% trades=810
+step=5000 pv=7306.45 reward=2.828 ret_r=0.316 turnover=0.009 to_pen=0.005 996/1,500,000  [ 0:14:34 < 1:47:37 , 221 it/s ]
+deployed=72.1% trades=890
+step=0 pv=9992.50 reward=1.137 ret_r=-0.750 turnover=0.750 to_pen=0.000 9,996/1,500,000  [ 0:14:35 < 1:47:37 , 221 it/s ]
+deployed=75.0% trades=0
+step=500 pv=9142.10 reward=2.667 ret_r=0.245 turnover=0.007 to_pen=0.003 ,996/1,500,000  [ 0:14:37 < 1:47:37 , 221 it/s ]
+deployed=84.4% trades=77
+step=1000 pv=9667.10 reward=2.319 ret_r=0.154 turnover=0.164 to_pen=0.082 996/1,500,000  [ 0:14:38 < 1:47:37 , 221 it/s ]
+deployed=69.8% trades=184
+step=1500 pv=9140.42 reward=4.258 ret_r=1.530 turnover=0.007 to_pen=0.004 996/1,500,000  [ 0:14:40 < 1:47:37 , 221 it/s ]
+deployed=83.0% trades=316
+step=2000 pv=9126.34 reward=2.234 ret_r=-0.196 turnover=0.250 to_pen=0.375 96/1,500,000  [ 0:14:41 < 1:47:37 , 221 it/s ]
+deployed=75.3% trades=405
+step=2500 pv=8889.98 reward=3.661 ret_r=1.110 turnover=0.011 to_pen=0.005 996/1,500,000  [ 0:14:43 < 1:47:37 , 221 it/s ]
+deployed=79.8% trades=512
+step=3000 pv=8503.63 reward=1.909 ret_r=-0.837 turnover=0.002 to_pen=0.001 96/1,500,000  [ 0:14:44 < 1:47:37 , 221 it/s ]
+deployed=86.2% trades=601
+step=3500 pv=8439.06 reward=2.509 ret_r=0.086 turnover=0.005 to_pen=0.002 996/1,500,000  [ 0:14:46 < 1:47:37 , 221 it/s ]
+deployed=85.7% trades=660
+step=4000 pv=8036.07 reward=3.598 ret_r=1.196 turnover=0.005 to_pen=0.003 996/1,500,000  [ 0:14:47 < 1:47:37 , 221 it/s ]
+deployed=75.0% trades=730
+step=4500 pv=7503.79 reward=2.591 ret_r=0.707 turnover=0.004 to_pen=0.002 996/1,500,000  [ 0:14:48 < 1:47:37 , 221 it/s ]
+deployed=72.6% trades=810
+step=5000 pv=7306.45 reward=2.828 ret_r=0.316 turnover=0.009 to_pen=0.005 996/1,500,000  [ 0:14:50 < 1:47:37 , 221 it/s ]
+deployed=72.1% trades=890
+step=0 pv=9992.50 reward=1.137 ret_r=-0.750 turnover=0.750 to_pen=0.000 9,996/1,500,000  [ 0:14:51 < 1:47:37 , 221 it/s ]
+deployed=75.0% trades=0
+step=500 pv=9142.10 reward=2.667 ret_r=0.245 turnover=0.007 to_pen=0.003 ,996/1,500,000  [ 0:14:53 < 1:47:37 , 221 it/s ]
+deployed=84.4% trades=77
+step=1000 pv=9667.10 reward=2.319 ret_r=0.154 turnover=0.164 to_pen=0.082 996/1,500,000  [ 0:14:54 < 1:47:37 , 221 it/s ]
+deployed=69.8% trades=184
+step=1500 pv=9140.42 reward=4.258 ret_r=1.530 turnover=0.007 to_pen=0.004 996/1,500,000  [ 0:14:56 < 1:47:37 , 221 it/s ]
+deployed=83.0% trades=316
+step=2000 pv=9126.34 reward=2.234 ret_r=-0.196 turnover=0.250 to_pen=0.375 96/1,500,000  [ 0:14:57 < 1:47:37 , 221 it/s ]
+deployed=75.3% trades=405
+step=2500 pv=8889.98 reward=3.661 ret_r=1.110 turnover=0.011 to_pen=0.005 996/1,500,000  [ 0:14:59 < 1:47:37 , 221 it/s ]
+deployed=79.8% trades=512
+step=3000 pv=8503.63 reward=1.909 ret_r=-0.837 turnover=0.002 to_pen=0.001 96/1,500,000  [ 0:15:00 < 1:47:37 , 221 it/s ]
+deployed=86.2% trades=601
+step=3500 pv=8439.06 reward=2.509 ret_r=0.086 turnover=0.005 to_pen=0.002 996/1,500,000  [ 0:15:02 < 1:47:37 , 221 it/s ]
+deployed=85.7% trades=660
+step=4000 pv=8036.07 reward=3.598 ret_r=1.196 turnover=0.005 to_pen=0.003 996/1,500,000  [ 0:15:03 < 1:47:37 , 221 it/s ]
+deployed=75.0% trades=730
+step=4500 pv=7503.79 reward=2.591 ret_r=0.707 turnover=0.004 to_pen=0.002 996/1,500,000  [ 0:15:05 < 1:47:37 , 221 it/s ]
+deployed=72.6% trades=810
+step=5000 pv=7306.45 reward=2.828 ret_r=0.316 turnover=0.009 to_pen=0.005 996/1,500,000  [ 0:15:06 < 1:47:37 , 221 it/s ]
+deployed=72.1% trades=890
+Eval num_timesteps=70000, episode_reward=11782.94 +/- 0.00━━━ 69,996/1,500,000  [ 0:15:07 < 1:47:37 , 221 it/s ]
+Episode length: 5391.00 +/- 0.00[90m━━━━━━━━━━━━━━━━━━━━━ 69,996/1,500,000  [ 0:15:07 < 1:47:37 , 221 it/s ]
+-----------------------------------------━━━━━━━━━━━━━━━━ 69,996/1,500,000  [ 0:15:07 < 1:47:37 , 221 it/s ]
+| eval/                   |             |
+|    mean_ep_length       | 5.39e+03    |
+|    mean_reward          | 1.18e+04    |
+| time/                   |             |
+|    total_timesteps      | 70000       |
+| train/                  |             |
+|    approx_kl            | 0.034232132 |
+|    clip_fraction        | 0.37        |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -12.7       |
+|    explained_variance   | 0.963       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.161      |
+|    n_updates            | 80          |
+|    policy_gradient_loss | -0.0388     |
+|    std                  | 0.992       |
+|    value_loss           | 0.0175      |
+-----------------------------------------
+New best mean reward!╺━━━━━━━━━━━━━━━━━━━━━ 69,996/1,500,000  [ 0:15:07 < 1:47:37 , 221 it/s ]
+   5% ━╺━━━━━━━━━━━━━━━━━━━━━ 70,104/1,500,000  [ 0:15:08 < 0:48:20 , 493 it/s ]step=1000 pv=7864.85 reward=0.262 ret_r=0.124 turnover=0.244 to_pen=0.366 deployed=74.8% trades=223
+   5% ━╺━━━━━━━━━━━━━━━━━━━━━ 70,156/1,500,000  [ 0:15:08 < 0:48:25 , 492 it/s ]step=0 pv=9991.33 reward=1.203 ret_r=-0.867 turnover=0.867 to_pen=0.000 deployed=86.7% trades=0
+   5% ━╺━━━━━━━━━━━━━━━━━━━━━ 70,836/1,500,000  [ 0:15:09 < 0:47:38 , 500 it/s ]step=1000 pv=7667.15 reward=2.355 ret_r=0.158 turnover=0.200 to_pen=0.100 deployed=90.4% trades=227
+   5% ━╺━━━━━━━━━━━━━━━━━━━━━ 71,264/1,500,000  [ 0:15:10 < 0:47:32 , 501 it/s ]step=500 pv=8086.63 reward=2.125 ret_r=0.465 turnover=0.202 to_pen=0.303 deployed=91.7% trades=101
+   5% ━╺━━━━━━━━━━━━━━━━━━━━━ 71,316/1,500,000  [ 0:15:10 < 0:47:39 , 500 it/s ]

@@ -21,10 +21,9 @@ TURNOVER_PENALTY_LIGHT = 0.5      # For <20% turnover
 TURNOVER_PENALTY_MEDIUM = 1.5     # For 20-50% turnover
 TURNOVER_PENALTY_HEAVY = 3.0      # For >50% turnover
 WARMUP_STEPS = 5                  # No turnover penalty for first N steps
-DEPLOYMENT_BONUS_SCALE = 0.5      # Max bonus for full deployment
-HOLDING_BONUS_MAX = 1.0           # Max bonus for holding positions
+DEPLOYMENT_REWARD_SCALE = 1.0     # Symmetric: -1.0 to +1.0 (target 50% deployed)
 RR_QUALITY_SCALE = 1.0            # Risk-reward quality scaling
-WINRATE_BONUS_SCALE = 2.0         # Win rate bonus scaling
+WINRATE_REWARD_SCALE = 2.0        # Win rate reward scaling
 CASH_HOARD_THRESHOLD = 0.9        # Cash % above which hoarding penalty applies
 CASH_HOARD_GRACE_STEPS = 20       # Steps before hoarding penalty kicks in
 CASH_HOARD_PENALTY = 0.5          # Penalty per step when hoarding
@@ -450,30 +449,25 @@ class TradingEnv(gym.Env):
         rr_quality = (rr_ratio - 2.0) * RR_QUALITY_SCALE
         rr_quality = float(np.clip(rr_quality, -2.0, 3.0))
         
-        # --- WIN RATE BONUS ---
+        # --- WIN RATE REWARD (Symmetric) ---
         if len(self.trade_history) >= 5:
             recent_trades = self.trade_history[-50:]  # Last 50 trades
             wins = sum(1 for t in recent_trades if t['net_profit'] > 0)
             win_rate = wins / len(recent_trades)
-            winrate_bonus = (win_rate - 0.5) * WINRATE_BONUS_SCALE
+            winrate_reward = (win_rate - 0.5) * WINRATE_REWARD_SCALE
         else:
-            winrate_bonus = 0.0
+            winrate_reward = 0.0
             win_rate = 0.0
         
-        # --- HOLDING BONUS ---
-        active_positions = sum(1 for a in self.assets if self.holdings[a] > 0)
-        if active_positions > 0:
-            avg_holding = sum(self.position_ages.values()) / active_positions
-            # Linear bonus up to max at 16 steps (4 hours at 15min bars)
-            holding_bonus = min(HOLDING_BONUS_MAX, avg_holding / 16.0)
-        else:
-            avg_holding = 0
-            holding_bonus = 0.0
-        
-        # --- DEPLOYMENT BONUS ---
+        # --- DEPLOYMENT REWARD (Symmetric) ---
+        # Target: 50% deployed. Range: -1.0 (0% deployed) to +1.0 (100% deployed)
+        # deployed_pct < 0.5: negative (underutilized capital)
+        # deployed_pct = 0.5: zero (neutral)
+        # deployed_pct > 0.5: positive (active trading)
         cash_weight = weights[6]
         deployed_pct = 1.0 - cash_weight
-        deployment_bonus = deployed_pct * DEPLOYMENT_BONUS_SCALE
+        deployment_reward = (deployed_pct - 0.5) * 2.0 * DEPLOYMENT_REWARD_SCALE
+        deployment_reward = float(np.clip(deployment_reward, -1.0, 1.0))
         
         # --- ANTI-CASH-HOARDING PENALTY ---
         if cash_weight > CASH_HOARD_THRESHOLD:
@@ -501,10 +495,9 @@ class TradingEnv(gym.Env):
         final_reward = (
             return_reward +           # Primary: portfolio change
             trade_profit_reward +     # Closed trade P&L
-            rr_quality +              # Risk-reward quality
-            winrate_bonus +           # Trade win rate
-            holding_bonus +           # Patience bonus
-            deployment_bonus -        # Encourage capital use
+            rr_quality +              # Risk-reward quality (symmetric)
+            winrate_reward +          # Trade win rate (symmetric)
+            deployment_reward -       # Capital utilization (symmetric)
             turnover_penalty -        # Trading cost
             cash_hoarding_penalty -   # Anti-hoarding
             staleness_penalty         # Anti-stagnation
@@ -518,9 +511,8 @@ class TradingEnv(gym.Env):
             'return_reward': return_reward,
             'trade_profit': trade_profit_reward,
             'rr_quality': rr_quality,
-            'winrate_bonus': winrate_bonus,
-            'holding_bonus': holding_bonus,
-            'deployment_bonus': deployment_bonus,
+            'winrate_reward': winrate_reward,
+            'deployment_reward': deployment_reward,
             'turnover_penalty': -turnover_penalty,
             'cash_hoard_penalty': -cash_hoarding_penalty,
             'stale_penalty': -staleness_penalty,
