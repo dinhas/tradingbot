@@ -1,8 +1,0 @@
-*.json
-*.parquet
-
-__pycache__/
-*.pyc
-
-# Environment variables - DO NOT COMMIT
-.env
