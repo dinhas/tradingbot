@@ -104,8 +104,8 @@ class DataFetcher:
         all_bars = []
         
         while current_start < END_DATE:
-            # Request 30 days at a time to be safe
-            chunk_end = current_start + timedelta(days=30)
+            # Request 90 days at a time (approx 3 months)
+            chunk_end = current_start + timedelta(days=90)
             if chunk_end > END_DATE:
                 chunk_end = END_DATE
             
