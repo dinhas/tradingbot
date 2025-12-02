@@ -1,0 +1,3 @@
+ctrader_open_api
+pandas
+Twisted
