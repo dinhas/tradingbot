@@ -85,13 +85,21 @@ class TradingEnv(gym.Env):
         super().reset(seed=seed)
         
         if self.is_training:
+            # Training: Randomize everything for diversity
             self.equity = np.random.choice([100.0, 1000.0, 10000.0])
             self.leverage = np.random.choice([100, 200, 500])
             self.current_step = np.random.randint(100, self.max_steps - 288)
         else:
+            # Backtesting: Fixed equity/leverage but randomize starting point
+            # This tests the model across different market conditions in 2025
             self.equity = 10000.0
             self.leverage = 100
-            self.current_step = 100
+            # Randomize starting point for backtesting diversity
+            # Use at least 500 steps for indicator warmup, leave 288 steps for episode
+            if self.max_steps > 788:  # 500 warmup + 288 episode
+                self.current_step = np.random.randint(500, self.max_steps - 288)
+            else:
+                self.current_step = 100  # Fallback for small datasets
             
         self.start_equity = self.equity
         self.peak_equity = self.equity
