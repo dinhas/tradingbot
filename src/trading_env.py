@@ -46,6 +46,10 @@ class TradingEnv(gym.Env):
         self.transaction_costs_step = 0.0
         self.new_entry_bonus = 0.0
         
+        # Tracking for Backtesting
+        self.completed_trades = []  # Trades completed in current step
+        self.all_trades = []  # All trades for the episode
+        
         # PRD Constants
         self.MAX_POS_SIZE_PCT = 0.50
         self.MAX_TOTAL_EXPOSURE = 0.60
@@ -88,6 +92,10 @@ class TradingEnv(gym.Env):
         self.transaction_costs_step = 0.0
         self.new_entry_bonus = 0.0
         
+        # Reset Trade Tracking
+        self.completed_trades = []
+        self.all_trades = []
+        
         return self._get_observation(), {}
 
     def step(self, action):
@@ -95,6 +103,7 @@ class TradingEnv(gym.Env):
         self.realized_pnl_step = 0.0
         self.transaction_costs_step = 0.0
         self.new_entry_bonus = 0.0
+        self.completed_trades = []  # Clear trades from previous step
         
         # 1. Parse Action
         parsed_actions = self._parse_action(action)
@@ -125,7 +134,14 @@ class TradingEnv(gym.Env):
             
         self.peak_equity = max(self.peak_equity, self.equity)
         
-        return self._get_observation(), reward, terminated, truncated, {}
+        # 7. Prepare info dict for backtesting
+        info = {
+            'trades': self.completed_trades,
+            'equity': self.equity,
+            'timestamp': self._get_current_timestamp()
+        }
+        
+        return self._get_observation(), reward, terminated, truncated, info
 
     def _parse_action(self, action):
         parsed = {}
@@ -263,6 +279,9 @@ class TradingEnv(gym.Env):
         pos = self.positions[asset]
         if pos is None: return
         
+        # Store equity before trade
+        equity_before = self.equity
+        
         # Calculate PnL
         diff = (price - pos['entry_price']) * pos['direction']
         position_value = pos['size'] * self.leverage
@@ -276,6 +295,29 @@ class TradingEnv(gym.Env):
         cost = position_value * 0.0001
         self.equity -= cost
         self.transaction_costs_step += cost
+        
+        # Record completed trade for backtesting
+        hold_time = (self.current_step - pos['entry_step']) * 5  # 5 minutes per step
+        trade_record = {
+            'timestamp': self._get_current_timestamp(),
+            'asset': asset,
+            'action': 'BUY' if pos['direction'] == 1 else 'SELL',
+            'size': pos['size'],
+            'entry_price': pos['entry_price'],
+            'exit_price': price,
+            'sl': pos['sl'],
+            'tp': pos['tp'],
+            'pnl': pnl,
+            'fees': cost,
+            'equity_before': equity_before,
+            'equity_after': self.equity,
+            'equity': self.equity,
+            'hold_time': hold_time,
+            'rr_ratio': pos['tp_dist'] / pos['sl_dist'] if pos['sl_dist'] > 0 else 0
+        }
+        
+        self.completed_trades.append(trade_record)
+        self.all_trades.append(trade_record)
         
         self.positions[asset] = None
 
@@ -417,3 +459,14 @@ class TradingEnv(gym.Env):
         for asset in self.assets:
             atrs[asset] = row[f"{asset}_atr_14"]
         return atrs
+    
+    def _get_current_timestamp(self):
+        """Get timestamp for current step"""
+        try:
+            return self.processed_data.index[self.current_step]
+        except:
+            # Fallback if index is not datetime
+            from datetime import datetime, timedelta
+            base_time = datetime(2025, 1, 1)
+            return base_time + timedelta(minutes=self.current_step * 5)
+
