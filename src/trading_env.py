@@ -58,16 +58,27 @@ class TradingEnv(gym.Env):
     def _load_data(self):
         data = {}
         for asset in self.assets:
+            # Try regular file first, then 2025 backtest file
             file_path = f"{self.data_dir}/{asset}_5m.parquet"
+            file_path_2025 = f"{self.data_dir}/{asset}_5m_2025.parquet"
+            
+            df = None
             try:
                 df = pd.read_parquet(file_path)
-                data[asset] = df
+                logging.info(f"Loaded {asset} from {file_path}")
             except FileNotFoundError:
-                logging.error(f"Data file not found: {file_path}")
-                dates = pd.date_range(start='2024-01-01', periods=1000, freq='5min')
-                data[asset] = pd.DataFrame({
-                    'open': 1.0, 'high': 1.1, 'low': 0.9, 'close': 1.0, 'volume': 100
-                }, index=dates)
+                try:
+                    df = pd.read_parquet(file_path_2025)
+                    logging.info(f"Loaded {asset} from {file_path_2025}")
+                except FileNotFoundError:
+                    logging.error(f"Data file not found: {file_path} or {file_path_2025}")
+                    logging.warning(f"Using dummy data for {asset} - BACKTEST WILL NOT BE ACCURATE!")
+                    dates = pd.date_range(start='2024-01-01', periods=1000, freq='5min')
+                    df = pd.DataFrame({
+                        'open': 1.0, 'high': 1.1, 'low': 0.9, 'close': 1.0, 'volume': 100
+                    }, index=dates)
+            
+            data[asset] = df
         return data
 
     def reset(self, seed=None, options=None):
