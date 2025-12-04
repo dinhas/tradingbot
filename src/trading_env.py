@@ -282,15 +282,25 @@ class TradingEnv(gym.Env):
         # Store equity before trade
         equity_before = self.equity
         
-        # Calculate PnL
-        diff = (price - pos['entry_price']) * pos['direction']
+        # Calculate PnL - FIXED FORMULA
+        # For forex/commodities: P&L = (Exit Price - Entry Price) * Position Size * Direction
+        # Position Size here is in units (lots), not dollar value
+        # We need to convert position_size (dollars) to units
+        
+        # Simplified: P&L = price_change_pct * position_value
+        price_change = (price - pos['entry_price']) * pos['direction']
+        price_change_pct = price_change / pos['entry_price']
         position_value = pos['size'] * self.leverage
-        pnl = (diff / pos['entry_price']) * position_value
+        pnl = price_change_pct * position_value
+        
+        # Alternative simpler calculation (more intuitive):
+        # pnl = price_change * (position_value / pos['entry_price'])
+        # This gives: dollars_per_pip * number_of_pips
         
         self.equity += pnl
         self.realized_pnl_step += pnl
         
-        # Deduct Transaction Costs (Closing also incurs costs?)
+        # Deduct Transaction Costs (Closing also incurs costs)
         # PRD says "Deducted on every trade execution". Usually means entry and exit.
         cost = position_value * 0.0001
         self.equity -= cost
@@ -298,6 +308,10 @@ class TradingEnv(gym.Env):
         
         # Record completed trade for backtesting
         hold_time = (self.current_step - pos['entry_step']) * 5  # 5 minutes per step
+        
+        # Calculate net P&L (after fees)
+        net_pnl = pnl - cost
+        
         trade_record = {
             'timestamp': self._get_current_timestamp(),
             'asset': asset,
@@ -307,13 +321,16 @@ class TradingEnv(gym.Env):
             'exit_price': price,
             'sl': pos['sl'],
             'tp': pos['tp'],
-            'pnl': pnl,
+            'pnl': pnl,  # Gross P&L
+            'net_pnl': net_pnl,  # Net P&L after fees
             'fees': cost,
             'equity_before': equity_before,
             'equity_after': self.equity,
             'equity': self.equity,
             'hold_time': hold_time,
-            'rr_ratio': pos['tp_dist'] / pos['sl_dist'] if pos['sl_dist'] > 0 else 0
+            'rr_ratio': pos['tp_dist'] / pos['sl_dist'] if pos['sl_dist'] > 0 else 0,
+            'price_change': price_change,
+            'price_change_pct': price_change_pct * 100  # As percentage
         }
         
         self.completed_trades.append(trade_record)

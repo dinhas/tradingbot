@@ -2,6 +2,7 @@ import os
 import argparse
 import logging
 import gymnasium as gym
+import torch.nn as nn
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
@@ -117,7 +118,7 @@ def get_ppo_config(stage):
     # - Shared layers for both policy and value networks
     policy_kwargs = {
         "net_arch": [256, 256, 128],  # 3 hidden layers
-        "activation_fn": "relu"        # ReLU activation (default, but explicit)
+        "activation_fn": nn.ReLU      # ReLU activation (must be class, not string)
     }
     
     # Base config from PRD 7.1

@@ -55,12 +55,18 @@ class BacktestMetrics:
             
         df_trades = pd.DataFrame(self.trades)
         
-        # Separate winning and losing trades
-        winning_trades = df_trades[df_trades['pnl'] > 0]
-        losing_trades = df_trades[df_trades['pnl'] < 0]
+        # Use net_pnl if available, otherwise calculate it
+        if 'net_pnl' in df_trades.columns:
+            df_trades['final_pnl'] = df_trades['net_pnl']
+        else:
+            df_trades['final_pnl'] = df_trades['pnl'] - df_trades['fees']
         
-        gross_profit = winning_trades['pnl'].sum() if len(winning_trades) > 0 else 0
-        gross_loss = abs(losing_trades['pnl'].sum()) if len(losing_trades) > 0 else 0
+        # Separate winning and losing trades based on net P&L
+        winning_trades = df_trades[df_trades['final_pnl'] > 0]
+        losing_trades = df_trades[df_trades['final_pnl'] < 0]
+        
+        gross_profit = winning_trades['final_pnl'].sum() if len(winning_trades) > 0 else 0
+        gross_loss = abs(losing_trades['final_pnl'].sum()) if len(losing_trades) > 0 else 0
         
         # PRIMARY METRIC: Profit Factor
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
@@ -131,21 +137,28 @@ class BacktestMetrics:
             return {}
             
         df_trades = pd.DataFrame(self.trades)
+        
+        # Use net_pnl if available
+        if 'net_pnl' in df_trades.columns:
+            df_trades['final_pnl'] = df_trades['net_pnl']
+        else:
+            df_trades['final_pnl'] = df_trades['pnl'] - df_trades['fees']
+        
         per_asset = {}
         
         for asset in df_trades['asset'].unique():
             asset_trades = df_trades[df_trades['asset'] == asset]
-            winning = asset_trades[asset_trades['pnl'] > 0]
-            losing = asset_trades[asset_trades['pnl'] < 0]
+            winning = asset_trades[asset_trades['final_pnl'] > 0]
+            losing = asset_trades[asset_trades['final_pnl'] < 0]
             
-            gross_profit = winning['pnl'].sum() if len(winning) > 0 else 0
-            gross_loss = abs(losing['pnl'].sum()) if len(losing) > 0 else 0
+            gross_profit = winning['final_pnl'].sum() if len(winning) > 0 else 0
+            gross_loss = abs(losing['final_pnl'].sum()) if len(losing) > 0 else 0
             
             per_asset[asset] = {
                 'num_trades': len(asset_trades),
                 'win_rate': len(winning) / len(asset_trades) if len(asset_trades) > 0 else 0,
                 'profit_factor': gross_profit / gross_loss if gross_loss > 0 else float('inf'),
-                'total_pnl': asset_trades['pnl'].sum()
+                'total_pnl': asset_trades['final_pnl'].sum()
             }
             
         return per_asset
@@ -331,16 +344,22 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
     
     # ============ Chart 2: P&L Distribution ============
     ax2 = fig.add_subplot(gs[0, 2])
-    pnl_values = df_trades['pnl'].values
+    
+    # Use net_pnl if available
+    if 'net_pnl' in df_trades.columns:
+        pnl_values = df_trades['net_pnl'].values
+    else:
+        pnl_values = (df_trades['pnl'] - df_trades['fees']).values
+    
     wins = pnl_values[pnl_values > 0]
     losses = pnl_values[pnl_values < 0]
     
     ax2.hist(wins, bins=20, alpha=0.7, color='green', label=f'Wins ({len(wins)})', edgecolor='black')
     ax2.hist(losses, bins=20, alpha=0.7, color='red', label=f'Losses ({len(losses)})', edgecolor='black')
     ax2.axvline(x=0, color='black', linestyle='--', linewidth=2)
-    ax2.set_xlabel('P&L ($)', fontsize=10, fontweight='bold')
+    ax2.set_xlabel('Net P&L ($)', fontsize=10, fontweight='bold')
     ax2.set_ylabel('Frequency', fontsize=10, fontweight='bold')
-    ax2.set_title('P&L Distribution', fontsize=12, fontweight='bold')
+    ax2.set_title('Net P&L Distribution (After Fees)', fontsize=12, fontweight='bold')
     ax2.legend(fontsize=9)
     ax2.grid(True, alpha=0.3, axis='y')
     
