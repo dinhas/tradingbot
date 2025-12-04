@@ -5,4 +5,5 @@ numpy
 ta
 gymnasium
 stable-baselines3
-shimmy
+shimmy>=0.2.1
+matplotlib

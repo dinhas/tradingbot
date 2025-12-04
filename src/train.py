@@ -27,22 +27,84 @@ def make_env(rank, seed=0, data_dir='data', stage=1):
         return env
     return _init
 
-class ValidationCallback(BaseCallback):
+class MetricsCallback(BaseCallback):
     """
-    Callback for validating the model every N steps.
+    Enhanced callback for logging detailed training metrics and creating visualizations.
     """
-    def __init__(self, eval_env, eval_freq=100000, verbose=1):
-        super(ValidationCallback, self).__init__(verbose)
-        self.eval_env = eval_env
+    def __init__(self, eval_freq=1000, plot_freq=10000, verbose=1):
+        super(MetricsCallback, self).__init__(verbose)
         self.eval_freq = eval_freq
-
+        self.plot_freq = plot_freq
+        self.episode_rewards = []
+        self.episode_lengths = []
+        self.timesteps = []
+        
     def _on_step(self) -> bool:
+        # Log every eval_freq steps
         if self.n_calls % self.eval_freq == 0:
-            logger.info(f"Running validation at step {self.num_timesteps}")
-            # Note: In a real scenario, we would run a full evaluation loop here
-            # For now, we just log that we are validating
-            pass
+            # Get episode statistics from the environment
+            if len(self.model.ep_info_buffer) > 0:
+                ep_info = self.model.ep_info_buffer[-1]
+                
+                # Log to TensorBoard
+                self.logger.record("train/episode_reward", ep_info.get("r", 0))
+                self.logger.record("train/episode_length", ep_info.get("l", 0))
+                
+                # Store for plotting
+                self.episode_rewards.append(ep_info.get("r", 0))
+                self.episode_lengths.append(ep_info.get("l", 0))
+                self.timesteps.append(self.num_timesteps)
+                
+                if self.verbose > 0:
+                    logger.info(f"Step {self.num_timesteps}: Reward={ep_info.get('r', 0):.2f}, Length={ep_info.get('l', 0)}")
+        
+        # Create plots periodically
+        if self.n_calls % self.plot_freq == 0 and len(self.episode_rewards) > 0:
+            self._create_plots()
+        
         return True
+    
+    def _create_plots(self):
+        """Create and save training progress plots."""
+        try:
+            import matplotlib.pyplot as plt
+            import os
+            
+            os.makedirs("logs/plots", exist_ok=True)
+            
+            # Create figure with subplots
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+            
+            # Plot 1: Episode Rewards
+            ax1.plot(self.timesteps, self.episode_rewards, alpha=0.6, label='Episode Reward')
+            if len(self.episode_rewards) > 10:
+                # Add moving average
+                window = min(50, len(self.episode_rewards) // 10)
+                import numpy as np
+                moving_avg = np.convolve(self.episode_rewards, np.ones(window)/window, mode='valid')
+                ax1.plot(self.timesteps[window-1:], moving_avg, 'r-', linewidth=2, label=f'{window}-Episode MA')
+            ax1.set_xlabel('Timesteps')
+            ax1.set_ylabel('Episode Reward')
+            ax1.set_title('Training Progress: Episode Rewards')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot 2: Episode Lengths
+            ax2.plot(self.timesteps, self.episode_lengths, alpha=0.6, color='green', label='Episode Length')
+            ax2.set_xlabel('Timesteps')
+            ax2.set_ylabel('Episode Length (steps)')
+            ax2.set_title('Episode Lengths Over Time')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(f'logs/plots/training_progress_{self.num_timesteps}.png', dpi=100)
+            plt.close()
+            
+            logger.info(f"Saved training plot to logs/plots/training_progress_{self.num_timesteps}.png")
+        except Exception as e:
+            logger.warning(f"Could not create plots: {e}")
+
 
 def get_ppo_config(stage):
     """
@@ -116,13 +178,19 @@ def train(args):
         name_prefix=f"ppo_stage{args.stage}"
     )
     
+    metrics_callback = MetricsCallback(
+        eval_freq=1000,      # Log metrics every 1000 steps
+        plot_freq=10000,     # Create plots every 10k steps
+        verbose=1
+    )
+    
     # 4. Train
     total_timesteps = args.total_timesteps if not args.dry_run else 1000
     
     logger.info(f"Training for {total_timesteps} timesteps...")
     model.learn(
         total_timesteps=total_timesteps, 
-        callback=[checkpoint_callback],
+        callback=[checkpoint_callback, metrics_callback],
         progress_bar=True
     )
     
