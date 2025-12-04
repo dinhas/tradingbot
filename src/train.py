@@ -84,13 +84,13 @@ def train(args):
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     
     # 1. Setup Vectorized Environment
-    # Using 8 parallel environments as per PRD 7.2
-    n_envs = 8 if not args.dry_run else 1
+    # Note: Using DummyVecEnv for cloud compatibility (SubprocVecEnv crashes during heavy preprocessing)
+    # For local training with faster CPUs, you can switch back to SubprocVecEnv for parallel speedup
+    n_envs = 4 if not args.dry_run else 1  # Reduced from 8 to 4 for stability
     
-    if n_envs == 1:
-        env = DummyVecEnv([make_env(0, data_dir=args.data_dir, stage=args.stage)])
-    else:
-        env = SubprocVecEnv([make_env(i, data_dir=args.data_dir, stage=args.stage) for i in range(n_envs)])
+    # Always use DummyVecEnv on cloud platforms (Colab/Kaggle)
+    logger.info(f"Creating {n_envs} environment(s) using DummyVecEnv...")
+    env = DummyVecEnv([make_env(i, data_dir=args.data_dir, stage=args.stage) for i in range(n_envs)])
     
     # Apply Normalization
     env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
