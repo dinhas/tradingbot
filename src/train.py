@@ -174,13 +174,17 @@ def train(args):
     
     if args.load_model:
         logger.info(f"Loading model from {args.load_model}")
-        # Note: If loading from a previous stage with different action space, 
-        # we might need to handle partial loading or just use the weights for feature extraction.
-        # For strict PPO loading, the architecture must match. 
-        # If moving stages (5->10 actions), we typically start a fresh head.
-        # For this implementation, we assume we are resuming same stage or starting fresh.
-        model = PPO.load(args.load_model, env=env, **ppo_config)
+        # For Stage 1: Safe to load since action space is constant (5 outputs)
+        # For Stage 2/3: Only load if resuming same stage, otherwise start fresh
+        try:
+            model = PPO.load(args.load_model, env=env, **ppo_config)
+            logger.info("✅ Model loaded successfully - continuing training")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not load model: {e}")
+            logger.info("Starting fresh model instead")
+            model = PPO("MlpPolicy", env, **ppo_config)
     else:
+        logger.info("Creating new model from scratch")
         model = PPO("MlpPolicy", env, **ppo_config)
         
     # 3. Callbacks
@@ -217,12 +221,13 @@ def train(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train RL Trading Bot")
     parser.add_argument("--stage", type=int, default=1, choices=[1, 2, 3], help="Curriculum stage (1, 2, or 3)")
-    parser.add_argument("--total_timesteps", type=int, default=1000000, help="Total timesteps to train")
+    parser.add_argument("--total_timesteps", type=int, default=1500000, help="Total timesteps to train (default: 1.5M for Stage 1)")
     parser.add_argument("--data_dir", type=str, default="data", help="Path to data directory")
     parser.add_argument("--log_dir", type=str, default="logs", help="Path to log directory")
     parser.add_argument("--checkpoint_dir", type=str, default="models/checkpoints", help="Path to save checkpoints")
-    parser.add_argument("--load_model", type=str, default=None, help="Path to load existing model")
+    parser.add_argument("--load_model", type=str, default=None, help="Path to load existing model (for continuing training)")
     parser.add_argument("--dry-run", action="store_true", help="Run a short test training loop")
     
     args = parser.parse_args()
     train(args)
+
