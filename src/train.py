@@ -110,6 +110,16 @@ def get_ppo_config(stage):
     """
     Returns PPO configuration based on the curriculum stage.
     """
+    # Neural Network Architecture
+    # Using 3-layer MLP: [256, 256, 128]
+    # - Layer 1 & 2: 256 neurons (capture complex patterns from 140 features)
+    # - Layer 3: 128 neurons (gradual compression before output)
+    # - Shared layers for both policy and value networks
+    policy_kwargs = {
+        "net_arch": [256, 256, 128],  # 3 hidden layers
+        "activation_fn": "relu"        # ReLU activation (default, but explicit)
+    }
+    
     # Base config from PRD 7.1
     config = {
         "learning_rate": 3e-4,
@@ -122,7 +132,8 @@ def get_ppo_config(stage):
         "vf_coef": 0.5,
         "max_grad_norm": 0.5,
         "verbose": 1,
-        "tensorboard_log": "./logs/tensorboard"
+        "tensorboard_log": "./logs/tensorboard",
+        "policy_kwargs": policy_kwargs  # Add neural network architecture
     }
 
     # Stage-specific adjustments (PRD 7.1)
