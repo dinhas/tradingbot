@@ -1,3 +1,8 @@
-ctrader_open_api
+ctrader-open-api
+twisted
 pandas
-Twisted
+numpy
+ta
+gymnasium
+stable-baselines3
+shimmy>=0.2.1

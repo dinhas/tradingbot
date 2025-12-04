@@ -86,6 +86,12 @@ class DataFetcher:
                 if symbol_id == 0:
                     logging.warning(f"Skipping {asset_name}: Symbol ID not set. Please update SYMBOL_IDS.")
                     continue
+                
+                # Check if file already exists
+                fname = f"data/{asset_name}_5m.parquet"
+                if os.path.exists(fname):
+                    logging.info(f"✅ Found existing data for {asset_name}. Skipping download.")
+                    continue
                     
                 yield self.fetch_asset_history(asset_name, symbol_id)
                 
@@ -116,63 +122,78 @@ class DataFetcher:
             req.fromTimestamp = int(current_start.timestamp() * 1000)
             req.toTimestamp = int(chunk_end.timestamp() * 1000)
             
-            try:
-                # Rate limit delay
-                d = defer.Deferred()
-                reactor.callLater(self.request_delay, d.callback, None)
-                yield d
-                
-                res_msg = yield self.send_proto_request(req)
-                payload = Protobuf.extract(res_msg)
-                
-                if not hasattr(payload, 'trendbar') or not payload.trendbar:
-                    current_start = chunk_end
-                    continue
-                
-                bars_data = []
-                for bar in payload.trendbar:
-                    # cTrader Price = value / 100,000
-                    DIVISOR = 100000.0
-                    
-                    low = bar.low / DIVISOR
-                    open_p = (bar.low + bar.deltaOpen) / DIVISOR
-                    high = (bar.low + bar.deltaHigh) / DIVISOR
-                    close = (bar.low + bar.deltaClose) / DIVISOR
-                    
-                    bars_data.append({
-                        'open': open_p, 
-                        'high': high, 
-                        'low': low, 
-                        'close': close, 
-                        'volume': bar.volume
-                    })
-                
-                if not bars_data:
-                    current_start = chunk_end
-                    continue
+            # Retry loop for the current chunk
+            max_retries = 5
+            retry_count = 0
+            chunk_success = False
 
-                df_chunk = pd.DataFrame(bars_data)
-                
-                # Create time index (Approximation based on M5)
-                # Note: This is a simplification. Ideally we'd use the timestamp if available per bar, 
-                # but ProtoOATrendbar gives us a sequence. 
-                # We should probably check if we can get exact timestamps, but for now we follow the previous pattern.
-                # Actually, ProtoOATrendbar doesn't have individual timestamps per bar in the repeated field, 
-                # it relies on the period.
-                time_index = pd.date_range(start=current_start, periods=len(df_chunk), freq='5min')
-                df_chunk.index = time_index
-                
-                all_bars.append(df_chunk)
-                
-                current_start = chunk_end
-                logging.info(f"   {asset_name}: Fetched {len(df_chunk)} bars. Next: {current_start}")
+            while retry_count < max_retries:
+                try:
+                    # Rate limit delay
+                    d = defer.Deferred()
+                    reactor.callLater(self.request_delay, d.callback, None)
+                    yield d
+                    
+                    res_msg = yield self.send_proto_request(req)
+                    payload = Protobuf.extract(res_msg)
+                    
+                    if not hasattr(payload, 'trendbar') or not payload.trendbar:
+                        # No data in this chunk, but request was successful
+                        chunk_success = True
+                        break
+                    
+                    bars_data = []
+                    for bar in payload.trendbar:
+                        # cTrader Price = value / 100,000
+                        DIVISOR = 100000.0
+                        
+                        low = bar.low / DIVISOR
+                        open_p = (bar.low + bar.deltaOpen) / DIVISOR
+                        high = (bar.low + bar.deltaHigh) / DIVISOR
+                        close = (bar.low + bar.deltaClose) / DIVISOR
+                        
+                        bars_data.append({
+                            'open': open_p, 
+                            'high': high, 
+                            'low': low, 
+                            'close': close, 
+                            'volume': bar.volume
+                        })
+                    
+                    if not bars_data:
+                        chunk_success = True
+                        break
 
-            except Exception as e:
-                logging.error(f"Error fetching chunk for {asset_name}: {e}")
-                d_err = defer.Deferred()
-                reactor.callLater(1.0, d_err.callback, None)
-                yield d_err
-                current_start = chunk_end
+                    df_chunk = pd.DataFrame(bars_data)
+                    
+                    # Create time index (Approximation based on M5)
+                    time_index = pd.date_range(start=current_start, periods=len(df_chunk), freq='5min')
+                    df_chunk.index = time_index
+                    
+                    all_bars.append(df_chunk)
+                    logging.info(f"   {asset_name}: Fetched {len(df_chunk)} bars. Next: {chunk_end}")
+                    
+                    chunk_success = True
+                    break # Success, exit retry loop
+
+                except Exception as e:
+                    retry_count += 1
+                    logging.error(f"⚠️ Error fetching chunk for {asset_name} (Attempt {retry_count}/{max_retries}): {e}")
+                    
+                    # Exponential backoff: 2s, 4s, 8s, 16s, 32s
+                    backoff_time = 2.0 ** retry_count
+                    logging.info(f"   Retrying in {backoff_time} seconds...")
+                    
+                    d_wait = defer.Deferred()
+                    reactor.callLater(backoff_time, d_wait.callback, None)
+                    yield d_wait
+            
+            if not chunk_success:
+                logging.error(f"❌ Failed to fetch chunk starting {current_start} for {asset_name} after {max_retries} attempts. Skipping to next chunk.")
+            
+            # Move to next chunk regardless of success/failure to avoid infinite loop, 
+            # but only after retries are exhausted or success achieved.
+            current_start = chunk_end
         
         if all_bars:
             full_df = pd.concat(all_bars)
