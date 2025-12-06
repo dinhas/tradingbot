@@ -107,43 +107,70 @@ class MetricsCallback(BaseCallback):
             logger.warning(f"Could not create plots: {e}")
 
 
+def linear_schedule(initial_value: float):
+    """
+    Linear learning rate schedule.
+    Decays from initial_value to a minimum of 1e-5.
+    
+    :param initial_value: Initial learning rate
+    :return: Schedule function for stable-baselines3
+    """
+    def func(progress_remaining: float) -> float:
+        return max(progress_remaining * initial_value, 1e-5)
+    return func
+
+
 def get_ppo_config(stage):
     """
     Returns PPO configuration based on the curriculum stage.
+    
+    UPDATED for better Stage 1 learning:
+    - Lower entropy coefficient (0.003) to reduce random exploration
+    - Separate policy/value networks for better value function learning
+    - Learning rate schedule for stable convergence
+    - Larger batches and conservative updates
     """
     # Neural Network Architecture
-    # Using 3-layer MLP: [256, 256, 128]
-    # - Layer 1 & 2: 256 neurons (capture complex patterns from 140 features)
-    # - Layer 3: 128 neurons (gradual compression before output)
-    # - Shared layers for both policy and value networks
+    # UPDATED: Separate networks for policy and value function
+    # - Policy network: [256, 256, 128] - learns trading decisions
+    # - Value network: [512, 256, 128] - larger capacity for return prediction
     policy_kwargs = {
-        "net_arch": [256, 256, 128],  # 3 hidden layers
-        "activation_fn": nn.ReLU      # ReLU activation (must be class, not string)
+        "net_arch": dict(
+            pi=[256, 256, 128],   # Policy network (actor)
+            vf=[512, 256, 128]    # Value network (critic) - larger for better value estimation
+        ),
+        "activation_fn": nn.ReLU
     }
     
-    # Base config from PRD 7.1
+    # UPDATED config based on TensorBoard analysis:
+    # - Lower learning rate with decay for stability
+    # - Larger batches for better gradient estimates
+    # - More conservative updates (lower clip_range)
+    # - Stronger value function learning (higher vf_coef)
     config = {
-        "learning_rate": 3e-4,
-        "n_steps": 2048,
-        "batch_size": 64,
-        "n_epochs": 10,
-        "gamma": 0.99,
+        "learning_rate": linear_schedule(1e-4),  # CHANGED: Slower with decay (was 3e-4 fixed)
+        "n_steps": 4096,           # CHANGED: More experience before update (was 2048)
+        "batch_size": 256,         # CHANGED: Larger batches (was 64)
+        "n_epochs": 5,             # CHANGED: Fewer epochs to prevent overfitting (was 10)
+        "gamma": 0.995,            # CHANGED: Value future rewards more (was 0.99)
         "gae_lambda": 0.95,
-        "clip_range": 0.2,
-        "vf_coef": 0.5,
-        "max_grad_norm": 0.5,
+        "clip_range": 0.1,         # CHANGED: More conservative updates (was 0.2)
+        "vf_coef": 1.0,            # CHANGED: Stronger value learning (was 0.5)
+        "max_grad_norm": 0.3,      # CHANGED: Reduce gradient spikes (was 0.5)
         "verbose": 1,
         "tensorboard_log": "./logs/tensorboard",
-        "policy_kwargs": policy_kwargs  # Add neural network architecture
+        "policy_kwargs": policy_kwargs
     }
 
-    # Stage-specific adjustments (PRD 7.1)
+    # Stage-specific adjustments
+    # UPDATED: Much lower entropy to reduce random exploration
+    # Previous values caused too much randomness (40% win rate ≈ random)
     if stage == 1:
-        config["ent_coef"] = 0.02
+        config["ent_coef"] = 0.003   # CHANGED: Was 0.02 (6.7x lower)
     elif stage == 2:
-        config["ent_coef"] = 0.01
+        config["ent_coef"] = 0.002   # CHANGED: Was 0.01
     else:
-        config["ent_coef"] = 0.005
+        config["ent_coef"] = 0.001   # CHANGED: Was 0.005
         
     return config
 

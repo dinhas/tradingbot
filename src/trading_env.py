@@ -50,6 +50,10 @@ class TradingEnv(gym.Env):
         self.completed_trades = []  # Trades completed in current step
         self.all_trades = []  # All trades for the episode
         
+        # ADDED: Churn/Whipsaw tracking to penalize rapid trading
+        self.last_close_step = {asset: -100 for asset in self.assets}  # Step when last closed
+        self.trades_opened_this_step = 0  # Count of new trades this step
+        
         # PRD Constants
         self.MAX_POS_SIZE_PCT = 0.50
         self.MAX_TOTAL_EXPOSURE = 0.60
@@ -115,6 +119,10 @@ class TradingEnv(gym.Env):
         self.completed_trades = []
         self.all_trades = []
         
+        # ADDED: Reset churn tracking
+        self.last_close_step = {asset: -100 for asset in self.assets}
+        self.trades_opened_this_step = 0
+        
         return self._get_observation(), {}
 
     def step(self, action):
@@ -123,6 +131,7 @@ class TradingEnv(gym.Env):
         self.transaction_costs_step = 0.0
         self.new_entry_bonus = 0.0
         self.completed_trades = []  # Clear trades from previous step
+        self.trades_opened_this_step = 0  # ADDED: Reset trade counter
         
         # 1. Parse Action
         parsed_actions = self._parse_action(action)
@@ -285,6 +294,9 @@ class TradingEnv(gym.Env):
             'sl_dist': sl_dist
         }
         
+        # ADDED: Track trade opens for churn detection
+        self.trades_opened_this_step += 1
+        
         # Deduct Transaction Costs (PRD 5.2)
         # Spread + Commission. Simplified as 0.0001 (1 pip) * Position Value
         # Position Value = Margin * Leverage
@@ -355,6 +367,9 @@ class TradingEnv(gym.Env):
         self.completed_trades.append(trade_record)
         self.all_trades.append(trade_record)
         
+        # ADDED: Track when position was closed for churn detection
+        self.last_close_step[asset] = self.current_step
+        
         self.positions[asset] = None
 
     def _update_positions(self):
@@ -373,7 +388,14 @@ class TradingEnv(gym.Env):
                     self._close_position(asset, price)
 
     def _calculate_reward(self):
-        # PRD Section 5: Reward Function
+        """
+        PRD Section 5: Reward Function
+        
+        UPDATED with additional penalties/bonuses:
+        - Churn penalty: Penalize rapid open→close→reopen (whipsaw trading)
+        - Session hold bonus: Reward patient holding during active sessions
+        - Stronger holding penalty: Increased from 0.01 to 0.02
+        """
         
         # 1. Realized PnL (Normalized)
         realized = self.realized_pnl_step / self.start_equity
@@ -407,31 +429,55 @@ class TradingEnv(gym.Env):
         elif drawdown < -0.10:
             drawdown_penalty = -0.3
             
-        # 6. Holding Penalty
-        # -0.01 * num_open_positions * (avg_position_age / 100)
+        # 6. Holding Penalty (INCREASED from 0.01 to 0.02)
+        # Stronger penalty to encourage more selective trading
         num_open = sum(1 for p in self.positions.values() if p is not None)
         avg_age = 0
         if num_open > 0:
             total_age = sum(self.current_step - p['entry_step'] for p in self.positions.values() if p is not None)
             avg_age = total_age / num_open
             
-        holding_penalty = -0.01 * num_open * (avg_age / 100.0)
+        holding_penalty = -0.02 * num_open * (avg_age / 100.0)  # CHANGED: Was -0.01
         
-        # 7. Session Penalty
-        # -0.5 if trade executed outside sessions
+        # 7. Session Penalty/Bonus
         session_penalty = 0.0
-        # Check current hour
+        session_bonus = 0.0
         current_row = self.processed_data.iloc[self.current_step]
-        # We need to know if a trade was executed THIS step.
-        # We can track this with a flag or check if transaction costs > 0 (proxy for execution)
+        
+        is_london = current_row['session_london']
+        is_ny = current_row['session_ny']
+        is_overlap = current_row['session_overlap']
+        is_active_session = is_london or is_ny or is_overlap
+        
+        # Penalty for trading outside sessions
         if self.transaction_costs_step > 0:
-            # Check sessions
-            is_london = current_row['session_london']
-            is_ny = current_row['session_ny']
-            is_overlap = current_row['session_overlap']
-            
-            if not (is_london or is_ny or is_overlap):
+            if not is_active_session:
                 session_penalty = -0.5
+        
+        # ADDED: Bonus for patient holding during active sessions
+        # Reward the agent for maintaining positions during liquid market hours
+        if num_open > 0 and is_active_session:
+            session_bonus = 0.01 * num_open  # Small reward for patience
+        
+        # 8. ADDED: Churn/Whipsaw Penalty
+        # Penalize rapid open→close→reopen patterns (within 3 steps = 15 minutes)
+        churn_penalty = 0.0
+        if self.trades_opened_this_step > 0:
+            for asset in self.assets:
+                # Check if we closed this asset recently and reopened
+                steps_since_close = self.current_step - self.last_close_step[asset]
+                if steps_since_close <= 3:  # Within 15 minutes
+                    # We opened a new trade right after closing
+                    # Check if we opened on this asset this step
+                    if self.positions[asset] is not None and self.positions[asset]['entry_step'] == self.current_step:
+                        churn_penalty -= 0.3  # Penalty per churned asset
+        
+        # 9. ADDED: Overtrading Penalty
+        # Penalize opening too many trades at once
+        if self.trades_opened_this_step > 2:
+            overtrading_penalty = -0.2 * (self.trades_opened_this_step - 2)
+        else:
+            overtrading_penalty = 0.0
                 
         # Total Reward
         total_reward = (
@@ -442,6 +488,9 @@ class TradingEnv(gym.Env):
             + drawdown_penalty 
             + holding_penalty 
             + session_penalty
+            + session_bonus       # ADDED
+            + churn_penalty       # ADDED
+            + overtrading_penalty # ADDED
         )
         
         return total_reward
