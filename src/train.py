@@ -124,14 +124,14 @@ def get_ppo_config(stage):
     """
     Returns PPO configuration based on the curriculum stage.
     
-    UPDATED for better Stage 1 learning:
-    - Lower entropy coefficient (0.003) to reduce random exploration
-    - Separate policy/value networks for better value function learning
-    - Learning rate schedule for stable convergence
-    - Larger batches and conservative updates
+    BALANCED CONFIG (Dec 6 Fix):
+    - Restored ent_coef to prevent entropy collapse (was too low at 0.003)
+    - Restored clip_range=0.2 for proper policy updates
+    - Restored n_epochs=10 for adequate learning
+    - Keeping larger batches and learning rate schedule for stability
     """
     # Neural Network Architecture
-    # UPDATED: Separate networks for policy and value function
+    # Separate networks for policy and value function
     # - Policy network: [256, 256, 128] - learns trading decisions
     # - Value network: [512, 256, 128] - larger capacity for return prediction
     policy_kwargs = {
@@ -142,35 +142,35 @@ def get_ppo_config(stage):
         "activation_fn": nn.ReLU
     }
     
-    # UPDATED config based on TensorBoard analysis:
-    # - Lower learning rate with decay for stability
+    # Balanced config - fixes entropy collapse while maintaining stability:
+    # - Learning rate with decay for stable convergence
     # - Larger batches for better gradient estimates
-    # - More conservative updates (lower clip_range)
-    # - Stronger value function learning (higher vf_coef)
+    # - Standard clip_range=0.2 (as per PRD)
+    # - n_epochs=10 for proper learning (as per PRD)
     config = {
-        "learning_rate": linear_schedule(1e-4),  # CHANGED: Slower with decay (was 3e-4 fixed)
-        "n_steps": 4096,           # CHANGED: More experience before update (was 2048)
-        "batch_size": 256,         # CHANGED: Larger batches (was 64)
-        "n_epochs": 5,             # CHANGED: Fewer epochs to prevent overfitting (was 10)
-        "gamma": 0.995,            # CHANGED: Value future rewards more (was 0.99)
+        "learning_rate": linear_schedule(1e-4),  # Slower with decay for stability
+        "n_steps": 4096,           # More experience before update
+        "batch_size": 256,         # Larger batches for gradient stability
+        "n_epochs": 10,            # RESTORED: Was 5, too few for proper learning (PRD: 10)
+        "gamma": 0.995,            # Value future rewards more
         "gae_lambda": 0.95,
-        "clip_range": 0.1,         # CHANGED: More conservative updates (was 0.2)
-        "vf_coef": 1.0,            # CHANGED: Stronger value learning (was 0.5)
-        "max_grad_norm": 0.3,      # CHANGED: Reduce gradient spikes (was 0.5)
+        "clip_range": 0.2,         # RESTORED: Was 0.1, too conservative (PRD: 0.2)
+        "vf_coef": 1.0,            # Stronger value learning
+        "max_grad_norm": 0.3,      # Reduce gradient spikes
         "verbose": 1,
         "tensorboard_log": "./logs/tensorboard",
         "policy_kwargs": policy_kwargs
     }
 
-    # Stage-specific adjustments
-    # UPDATED: Much lower entropy to reduce random exploration
-    # Previous values caused too much randomness (40% win rate ≈ random)
+    # Stage-specific entropy coefficients
+    # FIXED: Previous values (0.003, 0.002, 0.001) were too low causing entropy collapse
+    # Restored to PRD-recommended values with slight reduction for focused exploration
     if stage == 1:
-        config["ent_coef"] = 0.003   # CHANGED: Was 0.02 (6.7x lower)
+        config["ent_coef"] = 0.01    # FIXED: Was 0.003 (too low → entropy collapse)
     elif stage == 2:
-        config["ent_coef"] = 0.002   # CHANGED: Was 0.01
+        config["ent_coef"] = 0.008   # Balanced exploration
     else:
-        config["ent_coef"] = 0.001   # CHANGED: Was 0.005
+        config["ent_coef"] = 0.005   # As per PRD for Stage 3
         
     return config
 
