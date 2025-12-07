@@ -124,11 +124,11 @@ def get_ppo_config(stage):
     """
     Returns PPO configuration based on the curriculum stage.
     
-    BALANCED CONFIG (Dec 6 Fix):
-    - Restored ent_coef to prevent entropy collapse (was too low at 0.003)
-    - Restored clip_range=0.2 for proper policy updates
-    - Restored n_epochs=10 for adequate learning
-    - Keeping larger batches and learning rate schedule for stability
+    STABILIZED CONFIG (Dec 6 v2 Fix):
+    - Increased ent_coef to 0.02 to prevent entropy collapse
+    - Reduced vf_coef to 0.5 to stabilize value loss
+    - Added clip_range_vf=0.2 for value function clipping (prevents value spikes)
+    - Increased max_grad_norm to 0.5 for smoother gradients
     """
     # Neural Network Architecture
     # Separate networks for policy and value function
@@ -142,35 +142,35 @@ def get_ppo_config(stage):
         "activation_fn": nn.ReLU
     }
     
-    # Balanced config - fixes entropy collapse while maintaining stability:
-    # - Learning rate with decay for stable convergence
-    # - Larger batches for better gradient estimates
-    # - Standard clip_range=0.2 (as per PRD)
-    # - n_epochs=10 for proper learning (as per PRD)
+    # Stabilized config - fixes training instability:
+    # 1. Higher ent_coef prevents entropy collapse (policy too deterministic)
+    # 2. Lower vf_coef reduces value loss dominance in total loss
+    # 3. Value clipping (clip_range_vf) prevents value network spikes
+    # 4. Higher max_grad_norm allows more gradient flow
     config = {
         "learning_rate": linear_schedule(1e-4),  # Slower with decay for stability
         "n_steps": 4096,           # More experience before update
         "batch_size": 256,         # Larger batches for gradient stability
-        "n_epochs": 10,            # RESTORED: Was 5, too few for proper learning (PRD: 10)
+        "n_epochs": 10,            # Full training epochs (PRD: 10)
         "gamma": 0.995,            # Value future rewards more
         "gae_lambda": 0.95,
-        "clip_range": 0.2,         # RESTORED: Was 0.1, too conservative (PRD: 0.2)
-        "vf_coef": 1.0,            # Stronger value learning
-        "max_grad_norm": 0.3,      # Reduce gradient spikes
+        "clip_range": 0.2,         # Standard PPO clipping (PRD: 0.2)
+        "clip_range_vf": 0.2,      # ADDED: Value function clipping (prevents value spikes)
+        "vf_coef": 0.5,            # REDUCED: Was 1.0 (too high, dominated loss)
+        "max_grad_norm": 0.5,      # INCREASED: Was 0.3 (too restrictive)
         "verbose": 1,
         "tensorboard_log": "./logs/tensorboard",
         "policy_kwargs": policy_kwargs
     }
 
     # Stage-specific entropy coefficients
-    # FIXED: Previous values (0.003, 0.002, 0.001) were too low causing entropy collapse
-    # Restored to PRD-recommended values with slight reduction for focused exploration
+    # INCREASED to prevent entropy collapse (policy becoming too deterministic)
     if stage == 1:
-        config["ent_coef"] = 0.01    # FIXED: Was 0.003 (too low → entropy collapse)
+        config["ent_coef"] = 0.02    # INCREASED: Was 0.01 (still collapsing)
     elif stage == 2:
-        config["ent_coef"] = 0.008   # Balanced exploration
+        config["ent_coef"] = 0.015   # Balanced exploration
     else:
-        config["ent_coef"] = 0.005   # As per PRD for Stage 3
+        config["ent_coef"] = 0.01    # Focused policy for final stage
         
     return config
 

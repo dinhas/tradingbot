@@ -419,15 +419,18 @@ class TradingEnv(gym.Env):
         # 4. Transaction Costs (Normalized)
         costs = self.transaction_costs_step / self.start_equity
         
-        # 5. Drawdown Penalty
+        # 5. Drawdown Penalty (REDUCED for value stability)
+        # NOTE: Previous values (-10, -1, -0.3) were too extreme relative to 
+        # other reward components (~0.001 to 0.1), making value estimation impossible.
+        # The termination at -25% drawdown is the main safeguard, not the penalty.
         drawdown = (self.equity / self.peak_equity) - 1
         drawdown_penalty = 0.0
         if drawdown < -0.25:
-            drawdown_penalty = -10.0
+            drawdown_penalty = -2.0    # REDUCED: Was -10.0 (too extreme)
         elif drawdown < -0.15:
-            drawdown_penalty = -1.0
+            drawdown_penalty = -0.5    # REDUCED: Was -1.0
         elif drawdown < -0.10:
-            drawdown_penalty = -0.3
+            drawdown_penalty = -0.2    # REDUCED: Was -0.3
             
         # 6. Holding Penalty (INCREASED from 0.01 to 0.02)
         # Stronger penalty to encourage more selective trading
