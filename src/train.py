@@ -162,6 +162,11 @@ def train(args):
     # 2. Initialize Model
     ppo_config = load_ppo_config(args.config, args.stage)
     
+    # Remove total_timesteps if present, as it's not a PPO init argument
+    # (It is used in ppo_config.yaml for documentation or future use, but passed to learn() via args)
+    if 'total_timesteps' in ppo_config:
+        del ppo_config['total_timesteps']
+    
     if args.load_model:
         logger.info(f"Loading model from {args.load_model}")
         # For Stage 1: Safe to load since action space is constant (5 outputs)
