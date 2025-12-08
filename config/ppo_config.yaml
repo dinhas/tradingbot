@@ -1,0 +1,25 @@
+default:
+  learning_rate: 0.0003
+  n_steps: 2048
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  verbose: 1
+  tensorboard_log: "./logs/tensorboard"
+  # Default total_timesteps if not specified in args
+  total_timesteps: 1500000
+  policy_kwargs:
+    net_arch: [256, 256, 128]
+    activation_fn: "ReLU"
+
+stages:
+  1:
+    ent_coef: 0.02
+  2:
+    ent_coef: 0.01
+  3:
+    ent_coef: 0.005

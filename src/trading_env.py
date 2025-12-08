@@ -38,6 +38,7 @@ class TradingEnv(gym.Env):
         self.current_step = 0
         self.max_steps = len(self.processed_data) - 1
         self.equity = 10000.0
+        self.leverage = 100  # BUG FIX #1: Initialize in __init__ (overwritten in reset)
         self.positions = {asset: None for asset in self.assets} # None or dict
         self.portfolio_history = []
         
@@ -90,9 +91,9 @@ class TradingEnv(gym.Env):
         
         if self.is_training:
             # Training: Randomize everything for diversity
-            self.equity = np.random.choice([100.0, 1000.0, 10000.0])
-            self.leverage = np.random.choice([100, 200, 500])
-            self.current_step = np.random.randint(100, self.max_steps - 288)
+            self.equity = np.random.uniform(5000.0, 15000.0)
+            self.leverage = 100
+            self.current_step = np.random.randint(500, self.max_steps - 288)
         else:
             # Backtesting: Fixed equity/leverage but randomize starting point
             # This tests the model across different market conditions in 2025
@@ -139,6 +140,19 @@ class TradingEnv(gym.Env):
         # 2. Execute Trades
         self._execute_trades(parsed_actions)
         
+        # Check for margin call (account blown up)
+        if self.equity <= 0:
+            self.equity = 0.01
+            terminated = True
+            reward = -0.5
+            info = {
+                'trades': self.completed_trades,
+                'equity': self.equity,
+                'timestamp': self._get_current_timestamp(),
+                'termination_reason': 'margin_call'
+            }
+            return self._get_observation(), reward, terminated, truncated, info
+        
         # 3. Update Market Data
         self.current_step += 1
         
@@ -152,6 +166,9 @@ class TradingEnv(gym.Env):
         terminated = False
         truncated = False
         
+        # BUG FIX #3: Update peak_equity BEFORE calculating drawdown
+        self.peak_equity = max(self.peak_equity, self.equity)
+        
         drawdown = (self.equity / self.peak_equity) - 1
         if drawdown < -self.DRAWDOWN_LIMIT:
             terminated = True
@@ -159,8 +176,6 @@ class TradingEnv(gym.Env):
             
         if self.current_step >= self.max_steps:
             truncated = True
-            
-        self.peak_equity = max(self.peak_equity, self.equity)
         
         # 7. Prepare info dict for backtesting
         info = {
@@ -258,11 +273,17 @@ class TradingEnv(gym.Env):
         # Risk Validation 1: Max Position Size (Per Asset)
         size_pct = act['size'] * self.MAX_POS_SIZE_PCT
         position_size = size_pct * self.equity # Capital to allocate
+
+        # Optimization #2: Add Position Value Validation
+        if position_size < 10:  # Minimum $10 position
+            return
+        if position_size > self.equity * 0.5:  # Sanity check
+            position_size = self.equity * 0.5
         
         # Risk Validation 2: Margin Check
-        margin_required = position_size # Since we treat position_size as margin
-        if margin_required > self.equity * 0.9: 
-            return # Reject
+        # REMOVED: Redundant check (Issue #4) fixed
+        # if margin_required > self.equity * 0.9: 
+        #     return # Reject
             
         # Risk Validation 3: Global Exposure Check (PRD Fix)
         if not self._check_global_exposure(position_size):
@@ -275,13 +296,14 @@ class TradingEnv(gym.Env):
         tp = price + (direction * tp_dist)
         
         # Risk-Reward Quality Bonus (PRD 5.2)
+        # FIXED: Reduced magnitude to match PnL scale (~0.01 range)
         rr_ratio = tp_dist / sl_dist
         if rr_ratio >= 2.0:
-            self.new_entry_bonus += 0.5
+            self.new_entry_bonus += 0.02  # Was 0.5 - now matches PnL scale
         elif rr_ratio >= 1.5:
-            self.new_entry_bonus += 0.2
+            self.new_entry_bonus += 0.01  # Was 0.2
         else:
-            self.new_entry_bonus -= 0.3
+            self.new_entry_bonus -= 0.01  # Was -0.3 - much less punishing
         
         self.positions[asset] = {
             'direction': direction,
@@ -298,10 +320,10 @@ class TradingEnv(gym.Env):
         self.trades_opened_this_step += 1
         
         # Deduct Transaction Costs (PRD 5.2)
-        # Spread + Commission. Simplified as 0.0001 (1 pip) * Position Value
+        # Spread + Commission. FIXED: 0.00002 (~0.2 pips)
         # Position Value = Margin * Leverage
         pos_value = position_size * self.leverage
-        cost = pos_value * 0.0001 
+        cost = pos_value * 0.00002 
         
         self.equity -= cost
         self.transaction_costs_step += cost
@@ -320,7 +342,8 @@ class TradingEnv(gym.Env):
         
         # Simplified: P&L = price_change_pct * position_value
         price_change = (price - pos['entry_price']) * pos['direction']
-        price_change_pct = price_change / pos['entry_price']
+        # BUG FIX #4: Division by zero protection
+        price_change_pct = price_change / pos['entry_price'] if pos['entry_price'] != 0 else 0
         position_value = pos['size'] * self.leverage
         pnl = price_change_pct * position_value
         
@@ -333,9 +356,13 @@ class TradingEnv(gym.Env):
         
         # Deduct Transaction Costs (Closing also incurs costs)
         # PRD says "Deducted on every trade execution". Usually means entry and exit.
-        cost = position_value * 0.0001
+        cost = position_value * 0.00002
         self.equity -= cost
         self.transaction_costs_step += cost
+        
+        # BUG FIX #6: Prevent equity from going negative
+        if self.equity <= 0:
+            self.equity = 0.01  # Minimum equity to avoid NaN
         
         # Record completed trade for backtesting
         hold_time = (self.current_step - pos['entry_step']) * 5  # 5 minutes per step
@@ -380,69 +407,85 @@ class TradingEnv(gym.Env):
             
             price = current_prices[asset]
             
-            if pos['direction'] == 1: # Buy
-                if price <= pos['sl'] or price >= pos['tp']:
-                    self._close_position(asset, price)
-            else: # Sell
-                if price >= pos['sl'] or price <= pos['tp']:
-                    self._close_position(asset, price)
+            # BUG FIX #5: Use SL/TP prices for exit, not gap price
+            # This ensures R:R ratio is honored even with price gaps
+            if pos['direction'] == 1:  # Buy
+                if price <= pos['sl']:
+                    self._close_position(asset, pos['sl'])  # Close at SL price
+                elif price >= pos['tp']:
+                    self._close_position(asset, pos['tp'])  # Close at TP price
+            else:  # Sell
+                if price >= pos['sl']:
+                    self._close_position(asset, pos['sl'])  # Close at SL price
+                elif price <= pos['tp']:
+                    self._close_position(asset, pos['tp'])  # Close at TP price
 
     def _calculate_reward(self):
         """
         PRD Section 5: Reward Function
         
-        UPDATED with additional penalties/bonuses:
-        - Churn penalty: Penalize rapid open→close→reopen (whipsaw trading)
-        - Session hold bonus: Reward patient holding during active sessions
-        - Stronger holding penalty: Increased from 0.01 to 0.02
+        OPTION B FIX: Moderate overhaul to fix persistent negative rewards.
+        Key changes:
+        1. All penalties rescaled to ~0.001-0.01 range (match PnL magnitude)
+        2. Transaction costs NOT subtracted (already deducted from equity)
+        3. Holding penalty is now PROFIT-AWARE (penalize losers, reward winners)
+        4. Unrealized PnL discount reduced from 0.8 to 0.5
         """
         
-        # 1. Realized PnL (Normalized)
+        # 1. Realized PnL (Normalized) - THE PRIMARY SIGNAL
         realized = self.realized_pnl_step / self.start_equity
         
-        # 2. Unrealized PnL (Discounted)
+        # 2. Unrealized PnL (Less Discounted)
+        # FIXED: Reduced discount from 80% to 50% so paper profits register better
         unrealized_pnl_total = 0.0
         current_prices = self._get_current_prices()
         for asset, pos in self.positions.items():
             if pos:
                 price = current_prices[asset]
-                diff = (price - pos['entry_price']) * pos['direction']
-                val = pos['size'] * self.leverage
-                pnl = (diff / pos['entry_price']) * val
+                price_diff = price - pos['entry_price']
+                position_value = pos['size'] * self.leverage
+                units = position_value / pos['entry_price'] if pos['entry_price'] > 0 else 0
+                pnl = price_diff * pos['direction'] * units
                 unrealized_pnl_total += pnl
         
-        unrealized = (unrealized_pnl_total * 0.2) / self.start_equity
+        unrealized = (unrealized_pnl_total * 0.5) / self.start_equity  # Was 0.2
         
-        # 3. Risk-Reward Quality
+        # 3. Risk-Reward Quality (already scaled down in _open_position)
         rr_quality = self.new_entry_bonus
         
-        # 4. Transaction Costs (Normalized)
-        costs = self.transaction_costs_step / self.start_equity
+        # 4. Transaction Costs - REMOVED FROM REWARD
+        # FIXED: Costs are already deducted from equity in _open_position and _close_position
+        # Double-counting was biasing rewards negative. Now we just track for logging.
+        # costs = self.transaction_costs_step / self.start_equity  # REMOVED
         
-        # 5. Drawdown Penalty (REDUCED for value stability)
-        # NOTE: Previous values (-10, -1, -0.3) were too extreme relative to 
-        # other reward components (~0.001 to 0.1), making value estimation impossible.
-        # The termination at -25% drawdown is the main safeguard, not the penalty.
+        # 5. Drawdown Penalty (RESCALED to match PnL magnitude)
         drawdown = (self.equity / self.peak_equity) - 1
         drawdown_penalty = 0.0
         if drawdown < -0.25:
-            drawdown_penalty = -2.0    # REDUCED: Was -10.0 (too extreme)
+            drawdown_penalty = -0.1   # Was -2.0 (20x too large)
         elif drawdown < -0.15:
-            drawdown_penalty = -0.5    # REDUCED: Was -1.0
+            drawdown_penalty = -0.05  # Was -0.5
         elif drawdown < -0.10:
-            drawdown_penalty = -0.2    # REDUCED: Was -0.3
+            drawdown_penalty = -0.02  # Was -0.2
             
-        # 6. Holding Penalty (INCREASED from 0.01 to 0.02)
-        # Stronger penalty to encourage more selective trading
+        # 6. PROFIT-AWARE Holding Penalty/Bonus
+        # FIXED: Now rewards holding WINNERS and penalizes holding LOSERS
         num_open = sum(1 for p in self.positions.values() if p is not None)
-        avg_age = 0
-        if num_open > 0:
-            total_age = sum(self.current_step - p['entry_step'] for p in self.positions.values() if p is not None)
-            avg_age = total_age / num_open
-            
-        holding_penalty = -0.02 * num_open * (avg_age / 100.0)  # CHANGED: Was -0.01
+        holding_adjustment = 0.0
         
-        # 7. Session Penalty/Bonus
+        if num_open > 0:
+            for asset, pos in self.positions.items():
+                if pos is not None:
+                    price = current_prices[asset]
+                    diff = (price - pos['entry_price']) * pos['direction']
+                    position_age = (self.current_step - pos['entry_step']) / 100.0
+                    
+                    if diff > 0:  # Winning position
+                        holding_adjustment += 0.002 * position_age  # Reward patience
+                    else:  # Losing position
+                        holding_adjustment -= 0.003 * position_age  # Penalize holding losers
+        
+        # 7. Session Penalty/Bonus (RESCALED)
         session_penalty = 0.0
         session_bonus = 0.0
         current_row = self.processed_data.iloc[self.current_step]
@@ -452,50 +495,57 @@ class TradingEnv(gym.Env):
         is_overlap = current_row['session_overlap']
         is_active_session = is_london or is_ny or is_overlap
         
-        # Penalty for trading outside sessions
+        # RESCALED: Penalty for trading outside sessions
         if self.transaction_costs_step > 0:
             if not is_active_session:
-                session_penalty = -0.5
+                session_penalty = -0.02  # Was -0.5 (25x too large)
         
-        # ADDED: Bonus for patient holding during active sessions
-        # Reward the agent for maintaining positions during liquid market hours
+        # Bonus for patient holding during active sessions
         if num_open > 0 and is_active_session:
-            session_bonus = 0.01 * num_open  # Small reward for patience
+            session_bonus = 0.005 * num_open  # Was 0.01
         
-        # 8. ADDED: Churn/Whipsaw Penalty
-        # Penalize rapid open→close→reopen patterns (within 3 steps = 15 minutes)
+        # 8. Churn/Whipsaw Penalty (RESCALED)
         churn_penalty = 0.0
         if self.trades_opened_this_step > 0:
             for asset in self.assets:
-                # Check if we closed this asset recently and reopened
                 steps_since_close = self.current_step - self.last_close_step[asset]
                 if steps_since_close <= 3:  # Within 15 minutes
-                    # We opened a new trade right after closing
-                    # Check if we opened on this asset this step
-                    if self.positions[asset] is not None and self.positions[asset]['entry_step'] == self.current_step:
-                        churn_penalty -= 0.3  # Penalty per churned asset
+                    # BUG FIX #2: Use current_step - 1 because step was already incremented
+                    if self.positions[asset] is not None and self.positions[asset]['entry_step'] == self.current_step - 1:
+                        churn_penalty -= 0.02  # Was -0.3 (15x too large)
         
-        # 9. ADDED: Overtrading Penalty
-        # Penalize opening too many trades at once
+        # 9. Overtrading Penalty (RESCALED)
         if self.trades_opened_this_step > 2:
-            overtrading_penalty = -0.2 * (self.trades_opened_this_step - 2)
+            overtrading_penalty = -0.01 * (self.trades_opened_this_step - 2)  # Was -0.2
         else:
             overtrading_penalty = 0.0
                 
-        # Total Reward
+        # Total Reward - SIMPLIFIED (removed cost double-counting)
         total_reward = (
-            realized 
-            + unrealized 
-            + rr_quality 
-            - costs 
-            + drawdown_penalty 
-            + holding_penalty 
-            + session_penalty
-            + session_bonus       # ADDED
-            + churn_penalty       # ADDED
-            + overtrading_penalty # ADDED
+            realized              # Primary signal: actual profits
+            + unrealized          # Secondary: paper profits (50% weight)
+            + rr_quality          # Entry quality bonus (small)
+            # - costs             # REMOVED: already in equity
+            + drawdown_penalty    # Risk penalty (small)
+            + holding_adjustment  # Profit-aware holding (rewards winners)
+            + session_penalty     # Session timing (small)
+            + session_bonus       # Session timing bonus
+            + churn_penalty       # Anti-whipsaw (small)
+            + overtrading_penalty # Anti-overtrade (small)
         )
         
+        # Optimization #1: Add Reward Component Logging
+        # At the end of _calculate_reward(), before return:
+        if self.current_step % 1000 == 0:  # Log every 1000 steps
+            logging.debug(
+                f"Step {self.current_step} Reward Breakdown: "
+                f"realized={realized:.6f}, unrealized={unrealized:.6f}, "
+                f"rr_quality={rr_quality:.4f}, drawdown={drawdown_penalty:.4f}, "
+                f"holding={holding_adjustment:.4f}, session_pen={session_penalty:.4f}, "
+                f"session_bonus={session_bonus:.4f}, churn={churn_penalty:.4f}, "
+                f"overtrade={overtrading_penalty:.4f}, TOTAL={total_reward:.6f}"
+            )
+
         return total_reward
 
     def _get_observation(self):

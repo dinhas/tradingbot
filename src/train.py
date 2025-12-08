@@ -107,44 +107,34 @@ class MetricsCallback(BaseCallback):
             logger.warning(f"Could not create plots: {e}")
 
 
-def get_ppo_config(stage):
+def load_ppo_config(config_path, stage):
     """
-    Returns PPO configuration based on the curriculum stage.
+    Loads PPO configuration from a YAML file and applies stage-specific overrides.
     """
-    # Neural Network Architecture
-    # Using 3-layer MLP: [256, 256, 128]
-    # - Layer 1 & 2: 256 neurons (capture complex patterns from 140 features)
-    # - Layer 3: 128 neurons (gradual compression before output)
-    # - Shared layers for both policy and value networks
-    policy_kwargs = {
-        "net_arch": [256, 256, 128],  # 3 hidden layers
-        "activation_fn": nn.ReLU      # ReLU activation (must be class, not string)
-    }
+    import yaml
     
-    # Base config from PRD 7.1
-    config = {
-        "learning_rate": 3e-4,
-        "n_steps": 2048,
-        "batch_size": 64,
-        "n_epochs": 10,
-        "gamma": 0.99,
-        "gae_lambda": 0.95,
-        "clip_range": 0.2,
-        "vf_coef": 0.5,
-        "max_grad_norm": 0.5,
-        "verbose": 1,
-        "tensorboard_log": "./logs/tensorboard",
-        "policy_kwargs": policy_kwargs  # Add neural network architecture
-    }
-
-    # Stage-specific adjustments (PRD 7.1)
-    if stage == 1:
-        config["ent_coef"] = 0.02
-    elif stage == 2:
-        config["ent_coef"] = 0.01
-    else:
-        config["ent_coef"] = 0.005
+    with open(config_path, 'r') as f:
+        full_config = yaml.safe_load(f)
         
+    config = full_config['default'].copy()
+    
+    # Apply stage overrides
+    if 'stages' in full_config and stage in full_config['stages']:
+        config.update(full_config['stages'][stage])
+        
+    # Handle policy_kwargs
+    if 'policy_kwargs' in config:
+        # Map activation function string to class
+        activation_map = {
+            "ReLU": nn.ReLU,
+            "Tanh": nn.Tanh,
+            "LeakyReLU": nn.LeakyReLU
+        }
+        
+        act_fn_name = config['policy_kwargs'].get('activation_fn')
+        if act_fn_name in activation_map:
+            config['policy_kwargs']['activation_fn'] = activation_map[act_fn_name]
+            
     return config
 
 def train(args):
@@ -170,7 +160,7 @@ def train(args):
     env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
     
     # 2. Initialize Model
-    ppo_config = get_ppo_config(args.stage)
+    ppo_config = load_ppo_config(args.config, args.stage)
     
     if args.load_model:
         logger.info(f"Loading model from {args.load_model}")
@@ -226,6 +216,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_dir", type=str, default="logs", help="Path to log directory")
     parser.add_argument("--checkpoint_dir", type=str, default="models/checkpoints", help="Path to save checkpoints")
     parser.add_argument("--load_model", type=str, default=None, help="Path to load existing model (for continuing training)")
+    parser.add_argument("--config", type=str, default="config/ppo_config.yaml", help="Path to PPO configuration file")
     parser.add_argument("--dry-run", action="store_true", help="Run a short test training loop")
     
     args = parser.parse_args()
