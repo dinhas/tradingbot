@@ -107,70 +107,43 @@ class MetricsCallback(BaseCallback):
             logger.warning(f"Could not create plots: {e}")
 
 
-def linear_schedule(initial_value: float):
-    """
-    Linear learning rate schedule.
-    Decays from initial_value to a minimum of 1e-5.
-    
-    :param initial_value: Initial learning rate
-    :return: Schedule function for stable-baselines3
-    """
-    def func(progress_remaining: float) -> float:
-        return max(progress_remaining * initial_value, 1e-5)
-    return func
-
-
 def get_ppo_config(stage):
     """
     Returns PPO configuration based on the curriculum stage.
-    
-    STABILIZED CONFIG (Dec 6 v2 Fix):
-    - Increased ent_coef to 0.02 to prevent entropy collapse
-    - Reduced vf_coef to 0.5 to stabilize value loss
-    - Added clip_range_vf=0.2 for value function clipping (prevents value spikes)
-    - Increased max_grad_norm to 0.5 for smoother gradients
     """
     # Neural Network Architecture
-    # Separate networks for policy and value function
-    # - Policy network: [256, 256, 128] - learns trading decisions
-    # - Value network: [512, 256, 128] - larger capacity for return prediction
+    # Using 3-layer MLP: [256, 256, 128]
+    # - Layer 1 & 2: 256 neurons (capture complex patterns from 140 features)
+    # - Layer 3: 128 neurons (gradual compression before output)
+    # - Shared layers for both policy and value networks
     policy_kwargs = {
-        "net_arch": dict(
-            pi=[256, 256, 128],   # Policy network (actor)
-            vf=[512, 256, 128]    # Value network (critic) - larger for better value estimation
-        ),
-        "activation_fn": nn.ReLU
+        "net_arch": [256, 256, 128],  # 3 hidden layers
+        "activation_fn": nn.ReLU      # ReLU activation (must be class, not string)
     }
     
-    # Stabilized config - fixes training instability:
-    # 1. Higher ent_coef prevents entropy collapse (policy too deterministic)
-    # 2. Lower vf_coef reduces value loss dominance in total loss
-    # 3. Value clipping (clip_range_vf) prevents value network spikes
-    # 4. Higher max_grad_norm allows more gradient flow
+    # Base config from PRD 7.1
     config = {
-        "learning_rate": linear_schedule(1e-4),  # Slower with decay for stability
-        "n_steps": 4096,           # More experience before update
-        "batch_size": 256,         # Larger batches for gradient stability
-        "n_epochs": 10,            # Full training epochs (PRD: 10)
-        "gamma": 0.995,            # Value future rewards more
+        "learning_rate": 3e-4,
+        "n_steps": 2048,
+        "batch_size": 64,
+        "n_epochs": 10,
+        "gamma": 0.99,
         "gae_lambda": 0.95,
-        "clip_range": 0.2,         # Standard PPO clipping (PRD: 0.2)
-        "clip_range_vf": 0.2,      # ADDED: Value function clipping (prevents value spikes)
-        "vf_coef": 0.5,            # REDUCED: Was 1.0 (too high, dominated loss)
-        "max_grad_norm": 0.5,      # INCREASED: Was 0.3 (too restrictive)
+        "clip_range": 0.2,
+        "vf_coef": 0.5,
+        "max_grad_norm": 0.5,
         "verbose": 1,
         "tensorboard_log": "./logs/tensorboard",
-        "policy_kwargs": policy_kwargs
+        "policy_kwargs": policy_kwargs  # Add neural network architecture
     }
 
-    # Stage-specific entropy coefficients
-    # INCREASED to prevent entropy collapse (policy becoming too deterministic)
+    # Stage-specific adjustments (PRD 7.1)
     if stage == 1:
-        config["ent_coef"] = 0.02    # INCREASED: Was 0.01 (still collapsing)
+        config["ent_coef"] = 0.02
     elif stage == 2:
-        config["ent_coef"] = 0.015   # Balanced exploration
+        config["ent_coef"] = 0.01
     else:
-        config["ent_coef"] = 0.01    # Focused policy for final stage
+        config["ent_coef"] = 0.005
         
     return config
 
