@@ -296,14 +296,14 @@ class TradingEnv(gym.Env):
         tp = price + (direction * tp_dist)
         
         # Risk-Reward Quality Bonus (PRD 5.2)
-        # FIXED: Reduced magnitude to match PnL scale (~0.01 range)
+        # REDUCED: Make smaller than profit signal so trading P&L dominates
         rr_ratio = tp_dist / sl_dist
         if rr_ratio >= 2.0:
-            self.new_entry_bonus += 0.02  # Was 0.5 - now matches PnL scale
+            self.new_entry_bonus += 0.005  # REDUCED: Was 0.02
         elif rr_ratio >= 1.5:
-            self.new_entry_bonus += 0.01  # Was 0.2
+            self.new_entry_bonus += 0.002  # REDUCED: Was 0.01
         else:
-            self.new_entry_bonus -= 0.01  # Was -0.3 - much less punishing
+            self.new_entry_bonus -= 0.002  # REDUCED: Was -0.01
         
         self.positions[asset] = {
             'direction': direction,
@@ -462,11 +462,11 @@ class TradingEnv(gym.Env):
         drawdown = (self.equity / self.peak_equity) - 1
         drawdown_penalty = 0.0
         if drawdown < -0.25:
-            drawdown_penalty = -0.1   # Was -2.0 (20x too large)
+            drawdown_penalty = -0.02   # REDUCED: Was -0.1 (still 2x profit signal)
         elif drawdown < -0.15:
-            drawdown_penalty = -0.05  # Was -0.5
+            drawdown_penalty = -0.01  # REDUCED: Was -0.05
         elif drawdown < -0.10:
-            drawdown_penalty = -0.02  # Was -0.2
+            drawdown_penalty = -0.005  # REDUCED: Was -0.02
             
         # 6. PROFIT-AWARE Holding Penalty/Bonus
         # FIXED: Now rewards holding WINNERS and penalizes holding LOSERS
@@ -498,11 +498,11 @@ class TradingEnv(gym.Env):
         # RESCALED: Penalty for trading outside sessions
         if self.transaction_costs_step > 0:
             if not is_active_session:
-                session_penalty = -0.02  # Was -0.5 (25x too large)
+                session_penalty = -0.002  # REDUCED: Was -0.02 (still too large vs profit)
         
         # Bonus for patient holding during active sessions
         if num_open > 0 and is_active_session:
-            session_bonus = 0.005 * num_open  # Was 0.01
+            session_bonus = 0.001 * num_open  # REDUCED: Was 0.005
         
         # 8. Churn/Whipsaw Penalty (RESCALED)
         churn_penalty = 0.0
@@ -512,11 +512,11 @@ class TradingEnv(gym.Env):
                 if steps_since_close <= 3:  # Within 15 minutes
                     # BUG FIX #2: Use current_step - 1 because step was already incremented
                     if self.positions[asset] is not None and self.positions[asset]['entry_step'] == self.current_step - 1:
-                        churn_penalty -= 0.02  # Was -0.3 (15x too large)
+                        churn_penalty -= 0.003  # REDUCED: Was -0.02 (still overwhelming profit)
         
         # 9. Overtrading Penalty (RESCALED)
         if self.trades_opened_this_step > 2:
-            overtrading_penalty = -0.01 * (self.trades_opened_this_step - 2)  # Was -0.2
+            overtrading_penalty = -0.001 * (self.trades_opened_this_step - 2)  # REDUCED: Was -0.01
         else:
             overtrading_penalty = 0.0
                 
