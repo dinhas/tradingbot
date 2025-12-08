@@ -537,7 +537,7 @@ class TradingEnv(gym.Env):
         # Optimization #1: Add Reward Component Logging
         # At the end of _calculate_reward(), before return:
         if self.current_step % 1000 == 0:  # Log every 1000 steps
-            logging.debug(
+            logging.info(
                 f"Step {self.current_step} Reward Breakdown: "
                 f"realized={realized:.6f}, unrealized={unrealized:.6f}, "
                 f"rr_quality={rr_quality:.4f}, drawdown={drawdown_penalty:.4f}, "
