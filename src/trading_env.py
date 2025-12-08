@@ -458,15 +458,18 @@ class TradingEnv(gym.Env):
         # Double-counting was biasing rewards negative. Now we just track for logging.
         # costs = self.transaction_costs_step / self.start_equity  # REMOVED
         
-        # 5. Drawdown Penalty (RESCALED to match PnL magnitude)
+        # 5. Progressive Drawdown Penalty (RESCALED + PROGRESSIVE)
+        # Scales with drawdown severity to encourage better risk management
         drawdown = (self.equity / self.peak_equity) - 1
         drawdown_penalty = 0.0
-        if drawdown < -0.25:
-            drawdown_penalty = -0.02   # REDUCED: Was -0.1 (still 2x profit signal)
-        elif drawdown < -0.15:
-            drawdown_penalty = -0.01  # REDUCED: Was -0.05
+        if drawdown < -0.40:
+            drawdown_penalty = -0.05   # Severe penalty at 40%+ drawdown
+        elif drawdown < -0.30:
+            drawdown_penalty = -0.02   # Strong penalty at 30%+
+        elif drawdown < -0.20:
+            drawdown_penalty = -0.01   # Moderate penalty
         elif drawdown < -0.10:
-            drawdown_penalty = -0.005  # REDUCED: Was -0.02
+            drawdown_penalty = -0.0025  # Light penalty (REDUCED 50%)
             
         # 6. PROFIT-AWARE Holding Penalty/Bonus
         # FIXED: Now rewards holding WINNERS and penalizes holding LOSERS
@@ -481,9 +484,9 @@ class TradingEnv(gym.Env):
                     position_age = (self.current_step - pos['entry_step']) / 100.0
                     
                     if diff > 0:  # Winning position
-                        holding_adjustment += 0.002 * position_age  # Reward patience
+                        holding_adjustment += 0.001 * position_age  # REDUCED 50%: Reward patience
                     else:  # Losing position
-                        holding_adjustment -= 0.003 * position_age  # Penalize holding losers
+                        holding_adjustment -= 0.0015 * position_age  # REDUCED 50%: Penalize holding losers
         
         # 7. Session Penalty/Bonus (RESCALED)
         session_penalty = 0.0
@@ -495,14 +498,14 @@ class TradingEnv(gym.Env):
         is_overlap = current_row['session_overlap']
         is_active_session = is_london or is_ny or is_overlap
         
-        # RESCALED: Penalty for trading outside sessions
+        # RESCALED: Penalty for trading outside sessions (REDUCED 50%)
         if self.transaction_costs_step > 0:
             if not is_active_session:
-                session_penalty = -0.002  # REDUCED: Was -0.02 (still too large vs profit)
+                session_penalty = -0.001  # REDUCED 50%: Was -0.002
         
-        # Bonus for patient holding during active sessions
+        # Bonus for patient holding during active sessions (REDUCED 50%)
         if num_open > 0 and is_active_session:
-            session_bonus = 0.001 * num_open  # REDUCED: Was 0.005
+            session_bonus = 0.0005 * num_open  # REDUCED 50%: Was 0.001
         
         # 8. Churn/Whipsaw Penalty (RESCALED)
         churn_penalty = 0.0
@@ -512,11 +515,11 @@ class TradingEnv(gym.Env):
                 if steps_since_close <= 3:  # Within 15 minutes
                     # BUG FIX #2: Use current_step - 1 because step was already incremented
                     if self.positions[asset] is not None and self.positions[asset]['entry_step'] == self.current_step - 1:
-                        churn_penalty -= 0.003  # REDUCED: Was -0.02 (still overwhelming profit)
+                        churn_penalty -= 0.0015  # REDUCED 50%: Was -0.003
         
-        # 9. Overtrading Penalty (RESCALED)
+        # 9. Overtrading Penalty (RESCALED 50%)
         if self.trades_opened_this_step > 2:
-            overtrading_penalty = -0.001 * (self.trades_opened_this_step - 2)  # REDUCED: Was -0.01
+            overtrading_penalty = -0.0005 * (self.trades_opened_this_step - 2)  # REDUCED 50%: Was -0.001
         else:
             overtrading_penalty = 0.0
                 
