@@ -11,14 +11,14 @@ default:
   verbose: 1
   tensorboard_log: "./logs/tensorboard"
   # Default total_timesteps if not specified in args
-  total_timesteps: 1500000
+  total_timesteps: 3000000  # INCREASED: From 1.5M to 3M for more learning
   policy_kwargs:
     net_arch: [256, 256, 128]
     activation_fn: "ReLU"
 
 stages:
   1:
-    ent_coef: 0.02
+    ent_coef: 0.05  # INCREASED: From 0.02 to 0.05 to fix entropy collapse
   2:
     ent_coef: 0.01
   3:
