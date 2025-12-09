@@ -216,7 +216,7 @@ def train(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train RL Trading Bot")
     parser.add_argument("--stage", type=int, default=1, choices=[1, 2, 3], help="Curriculum stage (1, 2, or 3)")
-    parser.add_argument("--total_timesteps", type=int, default=1500000, help="Total timesteps to train (default: 1.5M for Stage 1)")
+    parser.add_argument("--total_timesteps", type=int, default=None, help="Total timesteps to train (default: from config file)")
     parser.add_argument("--data_dir", type=str, default="data", help="Path to data directory")
     parser.add_argument("--log_dir", type=str, default="logs", help="Path to log directory")
     parser.add_argument("--checkpoint_dir", type=str, default="models/checkpoints", help="Path to save checkpoints")
