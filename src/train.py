@@ -200,7 +200,7 @@ def train(args):
     )
     
     metrics_callback = MetricsCallback(
-        eval_freq=1000,      # Log metrics every 1000 steps
+        eval_freq=10000,     # Log metrics every 10k steps (REDUCED FROM 1000)
         plot_freq=10000,     # Create plots every 10k steps
         verbose=1
     )
