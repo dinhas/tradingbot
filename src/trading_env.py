@@ -449,39 +449,61 @@ class TradingEnv(gym.Env):
         
         # Vectorized check for speed
         if direction == 1: # Long
-            # Find first index where Low <= SL or High >= TP
-            # For accurate simulation we should check candle by candle
-            # but for speed we'll assume SL happens first if both occur in same candle (pessimistic)
+            # Get arrays for speed
+            # FAST: Convert to numpy only once
+            lows = future_data[f"{asset}_low"].values
+            highs = future_data[f"{asset}_high"].values
             
-            # Simple simulation: Check if we hit TP or SL
-            # We need to find the FIRST occurrence of either
+            # Find indices where SL or TP are hit
+            sl_hit_mask = lows <= sl
+            tp_hit_mask = highs >= tp
             
-            for i in range(len(future_data)):
-                row = future_data.iloc[i]
-                low = row[f"{asset}_low"]
-                high = row[f"{asset}_high"]
+            # Check if any hit occurred
+            sl_hit = sl_hit_mask.any()
+            tp_hit = tp_hit_mask.any()
+            
+            if sl_hit and tp_hit:
+                # Both hit, see which happened first
+                first_sl_idx = np.argmax(sl_hit_mask)
+                first_tp_idx = np.argmax(tp_hit_mask)
                 
-                if low <= sl: # Hit Stop Loss
-                    pnl = (sl - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
-                    return pnl
-                if high >= tp: # Hit Take Profit
-                    pnl = (tp - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
-                    return pnl
-                    
+                if first_sl_idx <= first_tp_idx:
+                     return (sl - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                else:
+                     return (tp - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+            
+            elif sl_hit:
+                 return (sl - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+            elif tp_hit:
+                 return (tp - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                 
         else: # Short
-            for i in range(len(future_data)):
-                row = future_data.iloc[i]
-                low = row[f"{asset}_low"]
-                high = row[f"{asset}_high"]
+            lows = future_data[f"{asset}_low"].values
+            highs = future_data[f"{asset}_high"].values
+            
+            sl_hit_mask = highs >= sl
+            tp_hit_mask = lows <= tp
+            
+            sl_hit = sl_hit_mask.any()
+            tp_hit = tp_hit_mask.any()
+            
+            if sl_hit and tp_hit:
+                first_sl_idx = np.argmax(sl_hit_mask)
+                first_tp_idx = np.argmax(tp_hit_mask)
                 
-                if high >= sl: # Hit Stop Loss
-                    pnl = (sl - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price']) # direction is -1 implicit in price diff
-                    pnl = pnl * -1 # short pnl inverted
-                    return pnl
-                if low <= tp: # Hit Take Profit
-                    pnl = (tp - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
-                    pnl = pnl * -1 
-                    return pnl
+                if first_sl_idx <= first_tp_idx:
+                     pnl = (sl - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                     return pnl * -1
+                else:
+                     pnl = (tp - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                     return pnl * -1
+
+            elif sl_hit:
+                 pnl = (sl - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                 return pnl * -1
+            elif tp_hit:
+                 pnl = (tp - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                 return pnl * -1
                     
         # If neither hit in 1000 steps, return current floating P&L at step 1000
         # or 0 if we reached end of data
