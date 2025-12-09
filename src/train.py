@@ -147,14 +147,21 @@ def train(args):
     os.makedirs(args.log_dir, exist_ok=True)
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     
+    import multiprocessing
+
     # 1. Setup Vectorized Environment
-    # Note: Using DummyVecEnv for cloud compatibility (SubprocVecEnv crashes during heavy preprocessing)
-    # For local training with faster CPUs, you can switch back to SubprocVecEnv for parallel speedup
-    n_envs = 4 if not args.dry_run else 1  # Reduced from 8 to 4 for stability
+    # MAX SPEED: Use all available CPU cores with SubprocVecEnv
+    n_cpu = multiprocessing.cpu_count()
+    n_envs = n_cpu if not args.dry_run else 1
     
-    # Always use DummyVecEnv on cloud platforms (Colab/Kaggle)
-    logger.info(f"Creating {n_envs} environment(s) using DummyVecEnv...")
-    env = DummyVecEnv([make_env(i, data_dir=args.data_dir, stage=args.stage) for i in range(n_envs)])
+    logger.info(f"Creating {n_envs} environment(s) using SubprocVecEnv (maximizing CPU usage)...")
+    
+    # Use SubprocVecEnv for true parallelism
+    # Note: If this crashes due to RAM, reduce n_envs manually or switch to DummyVecEnv
+    if n_envs > 1:
+        env = SubprocVecEnv([make_env(i, data_dir=args.data_dir, stage=args.stage) for i in range(n_envs)])
+    else:
+        env = DummyVecEnv([make_env(0, data_dir=args.data_dir, stage=args.stage)])
     
     # Apply Normalization
     env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)

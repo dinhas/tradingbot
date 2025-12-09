@@ -1,7 +1,7 @@
 default:
   learning_rate: 0.0003
-  n_steps: 2048
-  batch_size: 64
+  n_steps: 4096 # INCREASED: From 2048 to 4096 for better samples per update
+  batch_size: 512 # INCREASED: From 64 to 512 for T4 GPU speedup
   n_epochs: 10
   gamma: 0.99
   gae_lambda: 0.95
