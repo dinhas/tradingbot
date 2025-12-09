@@ -630,7 +630,16 @@ class TradingEnv(gym.Env):
         inaction_penalty = 0.0
         if is_active_session and num_open == 0 and self.trades_opened_this_step == 0:
             inaction_penalty = -0.0005  # Very small - just to break ties
-                
+
+        # ======================================================================
+        # 9. NEW: "Hunter's Instinct" Action Bonus (GREED)
+        # ======================================================================
+        # Give a small hit of dopamine just for taking a valid trade
+        # This encourages the agent to BE ACTIVE and chase the peeked_reward
+        action_bonus = 0.0
+        if self.trades_opened_this_step > 0:
+            action_bonus = 0.002 * self.trades_opened_this_step
+
         # ======================================================================
         # Total Reward
         # ======================================================================
@@ -644,6 +653,7 @@ class TradingEnv(gym.Env):
             + churn_penalty       # Anti-churning (stronger)
             + overtrading_penalty # Anti-overtrading (stronger)
             + inaction_penalty    # Mild push to take positions
+            + action_bonus        # HUNTER: Reward for pulling the trigger
         )
         
         # Logging
@@ -652,7 +662,7 @@ class TradingEnv(gym.Env):
                 f"Step {self.current_step} Reward Breakdown: "
                 f"peeked_pnl={peeked_reward:.6f} (raw={raw_peeked:.6f}), "
                 f"rr_quality={rr_quality:.4f}, drawdown={drawdown_penalty:.4f}, "
-                f"holding={holding_adjustment:.4f}, churn={churn_penalty:.4f}, "
+                f"holding={holding_adjustment:.4f}, action={action_bonus:.4f}, "
                 f"TOTAL={total_reward:.6f}"
             )
 
