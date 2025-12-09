@@ -162,10 +162,13 @@ def train(args):
     # 2. Initialize Model
     ppo_config = load_ppo_config(args.config, args.stage)
     
-    # Remove total_timesteps if present, as it's not a PPO init argument
-    # (It is used in ppo_config.yaml for documentation or future use, but passed to learn() via args)
-    if 'total_timesteps' in ppo_config:
-        del ppo_config['total_timesteps']
+    # Extract total_timesteps from config before removing it (it's not a PPO init argument)
+    config_timesteps = ppo_config.pop('total_timesteps', 1500000)  # Default fallback
+    
+    # Use command line arg if provided, otherwise use config file value
+    if args.total_timesteps is None:
+        args.total_timesteps = config_timesteps
+        logger.info(f"Using total_timesteps from config: {args.total_timesteps}")
     
     if args.load_model:
         logger.info(f"Loading model from {args.load_model}")
