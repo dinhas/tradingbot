@@ -1,31 +1,31 @@
 default:
   # =========================================================================
-  # EFFICIENCY OPTIMIZED FOR 1.5M STEPS (Dec 9)
-  # Goal: Maximum learning per sample without overfitting
+  # AGGRESSIVE LEARNING CONFIG (Dec 9 - CRANKED UP)
+  # Goal: Maximum learning speed in 1.5M steps
   # NO linear schedules - constant values throughout training
   # =========================================================================
   
-  learning_rate: 0.0005  # INCREASED: From 0.0003 - faster learning (no schedule!)
+  learning_rate: 0.001   # 2x INCREASE: From 0.0005 - FAST learning!
   
   # MORE FREQUENT UPDATES
-  n_steps: 2048         # HALVED: From 4096 - 2x more policy updates (732 vs 366)
+  n_steps: 2048          # 2x more policy updates than 4096
   
-  # MORE GRADIENT STEPS PER UPDATE  
-  batch_size: 256       # HALVED: From 512 - 2x more batches per epoch
-  n_epochs: 15          # INCREASED: From 10 - 1.5x more epochs per update
+  # AGGRESSIVE GRADIENT STEPS  
+  batch_size: 128        # SMALLER: More batches per epoch = more updates
+  n_epochs: 20           # INCREASED: From 15 - more learning per rollout
   
-  # Net effect: (2048/256) * 15 = 120 gradient steps per 2048 samples
-  # vs old:     (4096/512) * 10 = 80 gradient steps per 4096 samples
-  # = 3x more gradient updates per sample!
+  # Net effect: (2048/128) * 20 = 320 gradient steps per 2048 samples
+  # vs previous: (2048/256) * 15 = 120 gradient steps
+  # = 2.7x MORE gradient updates!
   
-  # LONGER HORIZON THINKING -> CHANGED TO GREEDIER (Dec 9)
-  gamma: 0.99           # REDUCED: From 0.995 - value IMMEDIATE rewards more (greedier)
-  gae_lambda: 0.98      # INCREASED: From 0.97 - trust value function more (chase trends)
+  # GREEDY AGENT
+  gamma: 0.99            # Value immediate rewards
+  gae_lambda: 0.98       # Trust value function, chase trends
   
-  # STABILITY
-  clip_range: 0.15      # Conservative policy updates
-  vf_coef: 0.75         # INCREASED: From 0.5 - stronger value function learning
-  max_grad_norm: 0.3    # TIGHTER: From 0.5 - prevent gradient explosions
+  # AGGRESSIVE POLICY UPDATES
+  clip_range: 0.25       # INCREASED: From 0.15 - allow bigger policy jumps
+  vf_coef: 0.5           # Standard value function weight
+  max_grad_norm: 0.5     # RELAXED: From 0.3 - allow bigger gradients
   
   verbose: 1
   tensorboard_log: "./logs/tensorboard"
@@ -37,14 +37,13 @@ default:
 
 stages:
   1:
-    # PENALTY FEAR + EFFICIENCY UPDATE (Dec 9)
-    # Lower entropy = less random exploration = more exploitation of learned patterns
-    # With stronger penalties, random trades get punished hard
-    ent_coef: 0.015     # REDUCED: From 0.02 - even less randomness for efficiency
+    # AGGRESSIVE EXPLORATION for Stage 1
+    # Higher entropy = more exploration = find good strategies faster
+    ent_coef: 0.03       # INCREASED: From 0.015 - explore more!
   2:
-    ent_coef: 0.01
+    ent_coef: 0.02
   3:
-    ent_coef: 0.005
+    ent_coef: 0.01
     policy_kwargs:
       net_arch: [256, 256, 256] # Larger network for 20 outputs
       activation_fn: "LeakyReLU"
