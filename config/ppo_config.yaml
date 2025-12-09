@@ -23,3 +23,6 @@ stages:
     ent_coef: 0.01
   3:
     ent_coef: 0.005
+    policy_kwargs:
+      net_arch: [256, 256, 256] # Larger network for 20 outputs
+      activation_fn: "LeakyReLU"
