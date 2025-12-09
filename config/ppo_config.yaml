@@ -1,0 +1,49 @@
+default:
+  # =========================================================================
+  # AGGRESSIVE LEARNING CONFIG (Dec 9 - CRANKED UP)
+  # Goal: Maximum learning speed in 1.5M steps
+  # NO linear schedules - constant values throughout training
+  # =========================================================================
+  
+  learning_rate: 0.001   # 2x INCREASE: From 0.0005 - FAST learning!
+  
+  # MORE FREQUENT UPDATES
+  n_steps: 2048          # 2x more policy updates than 4096
+  
+  # AGGRESSIVE GRADIENT STEPS  
+  batch_size: 128        # SMALLER: More batches per epoch = more updates
+  n_epochs: 20           # INCREASED: From 15 - more learning per rollout
+  
+  # Net effect: (2048/128) * 20 = 320 gradient steps per 2048 samples
+  # vs previous: (2048/256) * 15 = 120 gradient steps
+  # = 2.7x MORE gradient updates!
+  
+  # GREEDY AGENT
+  gamma: 0.99            # Value immediate rewards
+  gae_lambda: 0.98       # Trust value function, chase trends
+  
+  # AGGRESSIVE POLICY UPDATES
+  clip_range: 0.25       # INCREASED: From 0.15 - allow bigger policy jumps
+  vf_coef: 0.5           # Standard value function weight
+  max_grad_norm: 0.5     # RELAXED: From 0.3 - allow bigger gradients
+  
+  verbose: 1
+  tensorboard_log: "./logs/tensorboard"
+  # Default total_timesteps if not specified in args
+<<<<<<< HEAD
+  total_timesteps: 3000000  # Increased from 1.5M to 3M for more learning
+=======
+  total_timesteps: 2500000
+  
+>>>>>>> refs/remotes/origin/best-result
+  policy_kwargs:
+    net_arch: [256, 256, 128]
+    activation_fn: "ReLU"
+
+stages:
+  1:
+    ent_coef: 0.05  # Increased from 0.02 to prevent entropy collapse
+  2:
+    ent_coef: 0.01
+  3:
+    ent_coef: 0.005
