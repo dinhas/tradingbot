@@ -5,7 +5,7 @@ default:
   n_epochs: 10
   gamma: 0.99
   gae_lambda: 0.95
-  clip_range: 0.2
+  clip_range: 0.15  # REDUCED: From 0.2 to 0.15 for more stable updates with penalty-heavy rewards
   vf_coef: 0.5
   max_grad_norm: 0.5
   verbose: 1
@@ -18,7 +18,10 @@ default:
 
 stages:
   1:
-    ent_coef: 0.05  # INCREASED: From 0.02 to 0.05 to fix entropy collapse
+    # PENALTY FEAR UPDATE (Dec 9): Reduced from 0.05 to 0.02
+    # With loss aversion & stronger penalties, we need LESS exploration
+    # Too much entropy = random trades = get punished hard by new penalties
+    ent_coef: 0.02
   2:
     ent_coef: 0.01
   3:

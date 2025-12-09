@@ -523,39 +523,54 @@ class TradingEnv(gym.Env):
         - Rewards are assigned at trade OPEN time based on simulated outcome.
         - Unrealized PnL is REMOVED (too noisy).
         - Realized PnL logic moved to trade open (peeked).
+        
+        PENALTY FEAR UPDATE (Dec 9):
+        - Implemented LOSS AVERSION: Losses hurt 2x more than wins feel good
+        - Increased all penalty magnitudes by 2-3x
+        - Earlier drawdown detection (starts at -5%)
+        - Added no-trade penalty to discourage excessive inaction
         """
         
-        # 1. Peeked PnL (The Truth Signal)
+        # ======================================================================
+        # 1. Peeked PnL with LOSS AVERSION
+        # ======================================================================
         # Normalized by starting equity
-        peeked_reward = self.peeked_pnl_step / self.start_equity
+        raw_peeked = self.peeked_pnl_step / self.start_equity
         
-        # 2. Unrealized PnL - REMOVED (Noise)
-        # unrealized = (unrealized_pnl_total * 0.5) / self.start_equity
+        # LOSS AVERSION: Make losses hurt 2x more than equivalent gains
+        # This is based on Kahneman's Prospect Theory - humans feel losses ~2x as much
+        if raw_peeked < 0:
+            peeked_reward = raw_peeked * 2.0  # FEAR: Losses hurt 2x
+        else:
+            peeked_reward = raw_peeked
         
-        # 3. Risk-Reward Quality (already scaled down in _open_position)
+        # 2. Risk-Reward Quality (already scaled down in _open_position)
         rr_quality = self.new_entry_bonus
         
-        # 4. Transaction Costs - REMOVED FROM REWARD (already in pnl/equity)
-        
-        # 5. PROGRESSIVE Drawdown Penalty
+        # ======================================================================
+        # 3. AGGRESSIVE Drawdown Penalty (Earlier & Stronger)
+        # ======================================================================
         drawdown = (self.equity / self.peak_equity) - 1
         drawdown_penalty = 0.0
+        
+        # EARLIER detection: Start penalty at just -5% drawdown
         if drawdown < -0.40:
-            drawdown_penalty = -0.05
+            drawdown_penalty = -0.15  # 3x increase: Was -0.05
         elif drawdown < -0.30:
-            drawdown_penalty = -0.02
+            drawdown_penalty = -0.08  # 4x increase: Was -0.02
         elif drawdown < -0.20:
-            drawdown_penalty = -0.01
+            drawdown_penalty = -0.04  # 4x increase: Was -0.01
         elif drawdown < -0.10:
-            drawdown_penalty = -0.005
+            drawdown_penalty = -0.02  # 4x increase: Was -0.005
+        elif drawdown < -0.05:
+            drawdown_penalty = -0.01  # NEW: Early warning at -5%
             
-        # 6. PROFIT-AWARE Holding Penalty/Bonus
-        # STILL USEFUL: Encourage holding winners, cutting losers (active management)
-        # Even with peeked rewards, this helps the agent learn to manage the trade *while it's open*
-        # (e.g., if it didn't hit TP/SL yet)
+        # ======================================================================
+        # 4. PROFIT-AWARE Holding Penalty/Bonus (Increased magnitude)
+        # ======================================================================
         num_open = sum(1 for p in self.positions.values() if p is not None)
         holding_adjustment = 0.0
-        current_prices = self._get_current_prices() # Needed for holding calc
+        current_prices = self._get_current_prices()
         
         if num_open > 0:
             for asset, pos in self.positions.items():
@@ -565,11 +580,13 @@ class TradingEnv(gym.Env):
                     position_age = (self.current_step - pos['entry_step']) / 100.0
                     
                     if diff > 0:  # Winning position
-                        holding_adjustment += 0.001 * position_age 
+                        holding_adjustment += 0.002 * position_age  # 2x: Was 0.001
                     else:  # Losing position
-                        holding_adjustment -= 0.0015 * position_age 
+                        holding_adjustment -= 0.005 * position_age  # 3.3x: Was 0.0015
         
-        # 7. Session Penalty/Bonus
+        # ======================================================================
+        # 5. Session Penalty/Bonus (Increased)
+        # ======================================================================
         session_penalty = 0.0
         session_bonus = 0.0
         current_row = self.processed_data.iloc[self.current_step]
@@ -581,46 +598,61 @@ class TradingEnv(gym.Env):
         
         if self.transaction_costs_step > 0:
             if not is_active_session:
-                session_penalty = -0.001
+                session_penalty = -0.003  # 3x: Was -0.001
         
         if num_open > 0 and is_active_session:
-            session_bonus = 0.0005 * num_open
+            session_bonus = 0.001 * num_open  # 2x: Was 0.0005
         
-        # 8. Churn/Whipsaw Penalty
+        # ======================================================================
+        # 6. Churn/Whipsaw Penalty (Increased)
+        # ======================================================================
         churn_penalty = 0.0
         if self.trades_opened_this_step > 0:
             for asset in self.assets:
                 steps_since_close = self.current_step - self.last_close_step[asset]
                 if steps_since_close <= 3:
                      if self.positions[asset] is not None and self.positions[asset]['entry_step'] == self.current_step - 1:
-                        churn_penalty -= 0.0015
+                        churn_penalty -= 0.005  # 3.3x: Was -0.0015
         
-        # 9. Overtrading Penalty
+        # ======================================================================
+        # 7. Overtrading Penalty (Increased)
+        # ======================================================================
         if self.trades_opened_this_step > 2:
-            overtrading_penalty = -0.0005 * (self.trades_opened_this_step - 2)
+            overtrading_penalty = -0.002 * (self.trades_opened_this_step - 2)  # 4x: Was -0.0005
         else:
             overtrading_penalty = 0.0
+        
+        # ======================================================================
+        # 8. NEW: Inaction Penalty (Mild)
+        # ======================================================================
+        # Prevent the model from learning "never trade" is safe
+        # Only apply during active sessions when there's no position and no trade was made
+        inaction_penalty = 0.0
+        if is_active_session and num_open == 0 and self.trades_opened_this_step == 0:
+            inaction_penalty = -0.0005  # Very small - just to break ties
                 
+        # ======================================================================
         # Total Reward
+        # ======================================================================
         total_reward = (
-            peeked_reward         # Primary signal: future outcome of action
-            # + unrealized        # REMOVED
+            peeked_reward         # Primary signal with loss aversion
             + rr_quality          # Entry quality
-            + drawdown_penalty    # Risk control
-            + holding_adjustment  # Active management
-            + session_penalty     
+            + drawdown_penalty    # Risk control (much stronger)
+            + holding_adjustment  # Active management (stronger)
+            + session_penalty     # Trading session awareness
             + session_bonus       
-            + churn_penalty       
-            + overtrading_penalty 
+            + churn_penalty       # Anti-churning (stronger)
+            + overtrading_penalty # Anti-overtrading (stronger)
+            + inaction_penalty    # Mild push to take positions
         )
         
         # Logging
         if self.current_step % 10000 == 0:
             logging.info(
                 f"Step {self.current_step} Reward Breakdown: "
-                f"peeked_pnl={peeked_reward:.6f}, "
+                f"peeked_pnl={peeked_reward:.6f} (raw={raw_peeked:.6f}), "
                 f"rr_quality={rr_quality:.4f}, drawdown={drawdown_penalty:.4f}, "
-                f"holding={holding_adjustment:.4f}, session_pen={session_penalty:.4f}, "
+                f"holding={holding_adjustment:.4f}, churn={churn_penalty:.4f}, "
                 f"TOTAL={total_reward:.6f}"
             )
 
