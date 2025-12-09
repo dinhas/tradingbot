@@ -44,6 +44,7 @@ class TradingEnv(gym.Env):
         
         # Tracking for Rewards
         self.realized_pnl_step = 0.0
+        self.peeked_pnl_step = 0.0  # PEEK & LABEL: Reward given at trade open
         self.transaction_costs_step = 0.0
         self.new_entry_bonus = 0.0
         
@@ -113,6 +114,7 @@ class TradingEnv(gym.Env):
         
         # Reset Reward Trackers
         self.realized_pnl_step = 0.0
+        self.peeked_pnl_step = 0.0  # PEEK & LABEL
         self.transaction_costs_step = 0.0
         self.new_entry_bonus = 0.0
         
@@ -129,6 +131,7 @@ class TradingEnv(gym.Env):
     def step(self, action):
         # Reset step-specific reward trackers
         self.realized_pnl_step = 0.0
+        self.peeked_pnl_step = 0.0  # PEEK & LABEL
         self.transaction_costs_step = 0.0
         self.new_entry_bonus = 0.0
         self.completed_trades = []  # Clear trades from previous step
@@ -319,6 +322,10 @@ class TradingEnv(gym.Env):
         # ADDED: Track trade opens for churn detection
         self.trades_opened_this_step += 1
         
+        # PEEK & LABEL: Simulate trade outcome and assign reward NOW
+        simulated_pnl = self._simulate_trade_outcome(asset)
+        self.peeked_pnl_step += simulated_pnl
+        
         # Deduct Transaction Costs (PRD 5.2)
         # Spread + Commission. FIXED: 0.00002 (~0.2 pips)
         # Position Value = Margin * Leverage
@@ -352,7 +359,8 @@ class TradingEnv(gym.Env):
         # This gives: dollars_per_pip * number_of_pips
         
         self.equity += pnl
-        self.realized_pnl_step += pnl
+        # PEEK & LABEL: Don't add to realized_pnl_step - reward was given at open time
+        # self.realized_pnl_step += pnl  # REMOVED
         
         # Deduct Transaction Costs (Closing also incurs costs)
         # PRD says "Deducted on every trade execution". Usually means entry and exit.
@@ -420,58 +428,149 @@ class TradingEnv(gym.Env):
                 elif price <= pos['tp']:
                     self._close_position(asset, pos['tp'])  # Close at TP price
 
+    def _simulate_trade_outcome(self, asset):
+        """
+        PEEK & LABEL: Look ahead in data to see if the trade hits SL or TP.
+        Returns the simulated P&L (in dollars).
+        """
+        if self.positions[asset] is None: return 0.0
+        
+        pos = self.positions[asset]
+        direction = pos['direction']
+        sl = pos['sl']
+        tp = pos['tp']
+        
+        # Look forward up to 1000 steps (or end of data)
+        # Note: This is computationally expensive but accurate for training
+        start_idx = self.current_step + 1
+        end_idx = min(start_idx + 1000, len(self.raw_data))
+        
+        future_data = self.raw_data.iloc[start_idx:end_idx]
+        
+        # Vectorized check for speed
+        if direction == 1: # Long
+            # Get arrays for speed
+            # FAST: Convert to numpy only once
+            lows = future_data[f"{asset}_low"].values
+            highs = future_data[f"{asset}_high"].values
+            
+            # Find indices where SL or TP are hit
+            sl_hit_mask = lows <= sl
+            tp_hit_mask = highs >= tp
+            
+            # Check if any hit occurred
+            sl_hit = sl_hit_mask.any()
+            tp_hit = tp_hit_mask.any()
+            
+            if sl_hit and tp_hit:
+                # Both hit, see which happened first
+                first_sl_idx = np.argmax(sl_hit_mask)
+                first_tp_idx = np.argmax(tp_hit_mask)
+                
+                if first_sl_idx <= first_tp_idx:
+                     return (sl - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                else:
+                     return (tp - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+            
+            elif sl_hit:
+                 return (sl - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+            elif tp_hit:
+                 return (tp - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                 
+        else: # Short
+            lows = future_data[f"{asset}_low"].values
+            highs = future_data[f"{asset}_high"].values
+            
+            sl_hit_mask = highs >= sl
+            tp_hit_mask = lows <= tp
+            
+            sl_hit = sl_hit_mask.any()
+            tp_hit = tp_hit_mask.any()
+            
+            if sl_hit and tp_hit:
+                first_sl_idx = np.argmax(sl_hit_mask)
+                first_tp_idx = np.argmax(tp_hit_mask)
+                
+                if first_sl_idx <= first_tp_idx:
+                     pnl = (sl - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                     return pnl * -1
+                else:
+                     pnl = (tp - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                     return pnl * -1
+
+            elif sl_hit:
+                 pnl = (sl - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                 return pnl * -1
+            elif tp_hit:
+                 pnl = (tp - pos['entry_price']) * (pos['size'] * self.leverage / pos['entry_price'])
+                 return pnl * -1
+                    
+        # If neither hit in 1000 steps, return current floating P&L at step 1000
+        # or 0 if we reached end of data
+        if len(future_data) > 0:
+            last_price = future_data.iloc[-1][f"{asset}_close"]
+            price_change = (last_price - pos['entry_price']) * direction
+            pnl = price_change * (pos['size'] * self.leverage / pos['entry_price'])
+            return pnl
+            
+        return 0.0
+
     def _calculate_reward(self):
         """
         PRD Section 5: Reward Function
         
-        OPTION B FIX: Moderate overhaul to fix persistent negative rewards.
-        Key changes:
-        1. All penalties rescaled to ~0.001-0.01 range (match PnL magnitude)
-        2. Transaction costs NOT subtracted (already deducted from equity)
-        3. Holding penalty is now PROFIT-AWARE (penalize losers, reward winners)
-        4. Unrealized PnL discount reduced from 0.8 to 0.5
+        PEEK & LABEL UPDATE:
+        - Rewards are assigned at trade OPEN time based on simulated outcome.
+        - Unrealized PnL is REMOVED (too noisy).
+        - Realized PnL logic moved to trade open (peeked).
+        
+        PENALTY FEAR UPDATE (Dec 9):
+        - Implemented LOSS AVERSION: Losses hurt 2x more than wins feel good
+        - Increased all penalty magnitudes by 2-3x
+        - Earlier drawdown detection (starts at -5%)
+        - Added no-trade penalty to discourage excessive inaction
         """
         
-        # 1. Realized PnL (Normalized) - THE PRIMARY SIGNAL
-        realized = self.realized_pnl_step / self.start_equity
+        # ======================================================================
+        # 1. Peeked PnL with LOSS AVERSION
+        # ======================================================================
+        # Normalized by starting equity
+        raw_peeked = self.peeked_pnl_step / self.start_equity
         
-        # 2. Unrealized PnL (Less Discounted)
-        # FIXED: Reduced discount from 80% to 50% so paper profits register better
-        unrealized_pnl_total = 0.0
-        current_prices = self._get_current_prices()
-        for asset, pos in self.positions.items():
-            if pos:
-                price = current_prices[asset]
-                price_diff = price - pos['entry_price']
-                position_value = pos['size'] * self.leverage
-                units = position_value / pos['entry_price'] if pos['entry_price'] > 0 else 0
-                pnl = price_diff * pos['direction'] * units
-                unrealized_pnl_total += pnl
+        # LOSS AVERSION: Make losses hurt 2x more than equivalent gains
+        # This is based on Kahneman's Prospect Theory - humans feel losses ~2x as much
+        if raw_peeked < 0:
+            peeked_reward = raw_peeked * 2.0  # FEAR: Losses hurt 2x
+        else:
+            peeked_reward = raw_peeked
         
-        unrealized = (unrealized_pnl_total * 0.5) / self.start_equity  # Was 0.2
-        
-        # 3. Risk-Reward Quality (already scaled down in _open_position)
+        # 2. Risk-Reward Quality (already scaled down in _open_position)
         rr_quality = self.new_entry_bonus
         
-        # 4. Transaction Costs - REMOVED FROM REWARD
-        # FIXED: Costs are already deducted from equity in _open_position and _close_position
-        # Double-counting was biasing rewards negative. Now we just track for logging.
-        # costs = self.transaction_costs_step / self.start_equity  # REMOVED
-        
-        # 5. Drawdown Penalty (RESCALED to match PnL magnitude)
+        # ======================================================================
+        # 3. AGGRESSIVE Drawdown Penalty (Earlier & Stronger)
+        # ======================================================================
         drawdown = (self.equity / self.peak_equity) - 1
         drawdown_penalty = 0.0
-        if drawdown < -0.25:
-            drawdown_penalty = -0.02   # REDUCED: Was -0.1 (still 2x profit signal)
-        elif drawdown < -0.15:
-            drawdown_penalty = -0.01  # REDUCED: Was -0.05
+        
+        # EARLIER detection: Start penalty at just -5% drawdown
+        if drawdown < -0.40:
+            drawdown_penalty = -0.15  # 3x increase: Was -0.05
+        elif drawdown < -0.30:
+            drawdown_penalty = -0.08  # 4x increase: Was -0.02
+        elif drawdown < -0.20:
+            drawdown_penalty = -0.04  # 4x increase: Was -0.01
         elif drawdown < -0.10:
-            drawdown_penalty = -0.005  # REDUCED: Was -0.02
+            drawdown_penalty = -0.02  # 4x increase: Was -0.005
+        elif drawdown < -0.05:
+            drawdown_penalty = -0.01  # NEW: Early warning at -5%
             
-        # 6. PROFIT-AWARE Holding Penalty/Bonus
-        # FIXED: Now rewards holding WINNERS and penalizes holding LOSERS
+        # ======================================================================
+        # 4. PROFIT-AWARE Holding Penalty/Bonus (Increased magnitude)
+        # ======================================================================
         num_open = sum(1 for p in self.positions.values() if p is not None)
         holding_adjustment = 0.0
+        current_prices = self._get_current_prices()
         
         if num_open > 0:
             for asset, pos in self.positions.items():
@@ -481,11 +580,13 @@ class TradingEnv(gym.Env):
                     position_age = (self.current_step - pos['entry_step']) / 100.0
                     
                     if diff > 0:  # Winning position
-                        holding_adjustment += 0.002 * position_age  # Reward patience
+                        holding_adjustment += 0.002 * position_age  # 2x: Was 0.001
                     else:  # Losing position
-                        holding_adjustment -= 0.003 * position_age  # Penalize holding losers
+                        holding_adjustment -= 0.005 * position_age  # 3.3x: Was 0.0015
         
-        # 7. Session Penalty/Bonus (RESCALED)
+        # ======================================================================
+        # 5. Session Penalty/Bonus (Increased)
+        # ======================================================================
         session_penalty = 0.0
         session_bonus = 0.0
         current_row = self.processed_data.iloc[self.current_step]
@@ -495,55 +596,74 @@ class TradingEnv(gym.Env):
         is_overlap = current_row['session_overlap']
         is_active_session = is_london or is_ny or is_overlap
         
-        # RESCALED: Penalty for trading outside sessions
         if self.transaction_costs_step > 0:
             if not is_active_session:
-                session_penalty = -0.002  # REDUCED: Was -0.02 (still too large vs profit)
+                session_penalty = -0.003  # 3x: Was -0.001
         
-        # Bonus for patient holding during active sessions
         if num_open > 0 and is_active_session:
-            session_bonus = 0.001 * num_open  # REDUCED: Was 0.005
+            session_bonus = 0.001 * num_open  # 2x: Was 0.0005
         
-        # 8. Churn/Whipsaw Penalty (RESCALED)
+        # ======================================================================
+        # 6. Churn/Whipsaw Penalty (Increased)
+        # ======================================================================
         churn_penalty = 0.0
         if self.trades_opened_this_step > 0:
             for asset in self.assets:
                 steps_since_close = self.current_step - self.last_close_step[asset]
-                if steps_since_close <= 3:  # Within 15 minutes
-                    # BUG FIX #2: Use current_step - 1 because step was already incremented
-                    if self.positions[asset] is not None and self.positions[asset]['entry_step'] == self.current_step - 1:
-                        churn_penalty -= 0.003  # REDUCED: Was -0.02 (still overwhelming profit)
+                if steps_since_close <= 3:
+                     if self.positions[asset] is not None and self.positions[asset]['entry_step'] == self.current_step - 1:
+                        churn_penalty -= 0.005  # 3.3x: Was -0.0015
         
-        # 9. Overtrading Penalty (RESCALED)
+        # ======================================================================
+        # 7. Overtrading Penalty (Increased)
+        # ======================================================================
         if self.trades_opened_this_step > 2:
-            overtrading_penalty = -0.001 * (self.trades_opened_this_step - 2)  # REDUCED: Was -0.01
+            overtrading_penalty = -0.002 * (self.trades_opened_this_step - 2)  # 4x: Was -0.0005
         else:
             overtrading_penalty = 0.0
-                
-        # Total Reward - SIMPLIFIED (removed cost double-counting)
+        
+        # ======================================================================
+        # 8. NEW: Inaction Penalty (Mild)
+        # ======================================================================
+        # Prevent the model from learning "never trade" is safe
+        # Only apply during active sessions when there's no position and no trade was made
+        inaction_penalty = 0.0
+        if is_active_session and num_open == 0 and self.trades_opened_this_step == 0:
+            inaction_penalty = -0.0005  # Very small - just to break ties
+
+        # ======================================================================
+        # 9. NEW: "Hunter's Instinct" Action Bonus (GREED)
+        # ======================================================================
+        # Give a small hit of dopamine just for taking a valid trade
+        # This encourages the agent to BE ACTIVE and chase the peeked_reward
+        action_bonus = 0.0
+        if self.trades_opened_this_step > 0:
+            action_bonus = 0.002 * self.trades_opened_this_step
+
+        # ======================================================================
+        # Total Reward
+        # ======================================================================
         total_reward = (
-            realized              # Primary signal: actual profits
-            + unrealized          # Secondary: paper profits (50% weight)
-            + rr_quality          # Entry quality bonus (small)
-            # - costs             # REMOVED: already in equity
-            + drawdown_penalty    # Risk penalty (small)
-            + holding_adjustment  # Profit-aware holding (rewards winners)
-            + session_penalty     # Session timing (small)
-            + session_bonus       # Session timing bonus
-            + churn_penalty       # Anti-whipsaw (small)
-            + overtrading_penalty # Anti-overtrade (small)
+            peeked_reward         # Primary signal with loss aversion
+            + rr_quality          # Entry quality
+            + drawdown_penalty    # Risk control (much stronger)
+            + holding_adjustment  # Active management (stronger)
+            + session_penalty     # Trading session awareness
+            + session_bonus       
+            + churn_penalty       # Anti-churning (stronger)
+            + overtrading_penalty # Anti-overtrading (stronger)
+            + inaction_penalty    # Mild push to take positions
+            + action_bonus        # HUNTER: Reward for pulling the trigger
         )
         
-        # Optimization #1: Add Reward Component Logging
-        # At the end of _calculate_reward(), before return:
-        if self.current_step % 1000 == 0:  # Log every 1000 steps
+        # Logging
+        if self.current_step % 10000 == 0:
             logging.info(
                 f"Step {self.current_step} Reward Breakdown: "
-                f"realized={realized:.6f}, unrealized={unrealized:.6f}, "
+                f"peeked_pnl={peeked_reward:.6f} (raw={raw_peeked:.6f}), "
                 f"rr_quality={rr_quality:.4f}, drawdown={drawdown_penalty:.4f}, "
-                f"holding={holding_adjustment:.4f}, session_pen={session_penalty:.4f}, "
-                f"session_bonus={session_bonus:.4f}, churn={churn_penalty:.4f}, "
-                f"overtrade={overtrading_penalty:.4f}, TOTAL={total_reward:.6f}"
+                f"holding={holding_adjustment:.4f}, action={action_bonus:.4f}, "
+                f"TOTAL={total_reward:.6f}"
             )
 
         return total_reward

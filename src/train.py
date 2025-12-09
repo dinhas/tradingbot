@@ -147,14 +147,21 @@ def train(args):
     os.makedirs(args.log_dir, exist_ok=True)
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     
+    import multiprocessing
+
     # 1. Setup Vectorized Environment
-    # Note: Using DummyVecEnv for cloud compatibility (SubprocVecEnv crashes during heavy preprocessing)
-    # For local training with faster CPUs, you can switch back to SubprocVecEnv for parallel speedup
-    n_envs = 4 if not args.dry_run else 1  # Reduced from 8 to 4 for stability
+    # MAX SPEED: Use all available CPU cores with SubprocVecEnv
+    n_cpu = multiprocessing.cpu_count()
+    n_envs = n_cpu if not args.dry_run else 1
     
-    # Always use DummyVecEnv on cloud platforms (Colab/Kaggle)
-    logger.info(f"Creating {n_envs} environment(s) using DummyVecEnv...")
-    env = DummyVecEnv([make_env(i, data_dir=args.data_dir, stage=args.stage) for i in range(n_envs)])
+    logger.info(f"Creating {n_envs} environment(s) using SubprocVecEnv (maximizing CPU usage)...")
+    
+    # Use SubprocVecEnv for true parallelism
+    # Note: If this crashes due to RAM, reduce n_envs manually or switch to DummyVecEnv
+    if n_envs > 1:
+        env = SubprocVecEnv([make_env(i, data_dir=args.data_dir, stage=args.stage) for i in range(n_envs)])
+    else:
+        env = DummyVecEnv([make_env(0, data_dir=args.data_dir, stage=args.stage)])
     
     # Apply Normalization
     env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
@@ -162,10 +169,13 @@ def train(args):
     # 2. Initialize Model
     ppo_config = load_ppo_config(args.config, args.stage)
     
-    # Remove total_timesteps if present, as it's not a PPO init argument
-    # (It is used in ppo_config.yaml for documentation or future use, but passed to learn() via args)
-    if 'total_timesteps' in ppo_config:
-        del ppo_config['total_timesteps']
+    # Extract total_timesteps from config before removing it (it's not a PPO init argument)
+    config_timesteps = ppo_config.pop('total_timesteps', 1500000)  # Default fallback
+    
+    # Use command line arg if provided, otherwise use config file value
+    if args.total_timesteps is None:
+        args.total_timesteps = config_timesteps
+        logger.info(f"Using total_timesteps from config: {args.total_timesteps}")
     
     if args.load_model:
         logger.info(f"Loading model from {args.load_model}")
@@ -190,7 +200,7 @@ def train(args):
     )
     
     metrics_callback = MetricsCallback(
-        eval_freq=1000,      # Log metrics every 1000 steps
+        eval_freq=10000,     # Log metrics every 10k steps (REDUCED FROM 1000)
         plot_freq=10000,     # Create plots every 10k steps
         verbose=1
     )
@@ -216,7 +226,7 @@ def train(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train RL Trading Bot")
     parser.add_argument("--stage", type=int, default=1, choices=[1, 2, 3], help="Curriculum stage (1, 2, or 3)")
-    parser.add_argument("--total_timesteps", type=int, default=1500000, help="Total timesteps to train (default: 1.5M for Stage 1)")
+    parser.add_argument("--total_timesteps", type=int, default=None, help="Total timesteps to train (default: from config file)")
     parser.add_argument("--data_dir", type=str, default="data", help="Path to data directory")
     parser.add_argument("--log_dir", type=str, default="logs", help="Path to log directory")
     parser.add_argument("--checkpoint_dir", type=str, default="models/checkpoints", help="Path to save checkpoints")
