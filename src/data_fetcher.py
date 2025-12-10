@@ -82,6 +82,7 @@ class DataFetcher:
             # 3. Fetch Data
             os.makedirs("data", exist_ok=True)
             
+            fetch_tasks = []
             for asset_name, symbol_id in SYMBOL_IDS.items():
                 if symbol_id == 0:
                     logging.warning(f"Skipping {asset_name}: Symbol ID not set. Please update SYMBOL_IDS.")
@@ -93,7 +94,13 @@ class DataFetcher:
                     logging.info(f"✅ Found existing data for {asset_name}. Skipping download.")
                     continue
                     
-                yield self.fetch_asset_history(asset_name, symbol_id)
+                # Store task for parallel execution
+                d = self.fetch_asset_history(asset_name, symbol_id)
+                fetch_tasks.append(d)
+            
+            if fetch_tasks:
+                logging.info(f"🚀 Starting parallel fetch for {len(fetch_tasks)} assets...")
+                yield defer.gatherResults(fetch_tasks, consumeErrors=True)
                 
             logging.info("All downloads complete. Stopping reactor.")
             reactor.stop()

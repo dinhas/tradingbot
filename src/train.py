@@ -208,11 +208,22 @@ def train(args):
     # 4. Train
     total_timesteps = args.total_timesteps if not args.dry_run else 1000
     
+    # Configure file logging
+    from datetime import datetime
+    log_file = os.path.join(args.log_dir, f"train_stage{args.stage}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    
+    # Add FileHandler to existing logger
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logging.getLogger().addHandler(file_handler)
+    
+    logger.info(f"Logging to {log_file}")
     logger.info(f"Training for {total_timesteps} timesteps...")
+    
     model.learn(
         total_timesteps=total_timesteps, 
         callback=[checkpoint_callback, metrics_callback],
-        progress_bar=True
+        progress_bar=False
     )
     
     # 5. Save Final Model

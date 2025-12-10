@@ -33,6 +33,9 @@ class TradingEnv(gym.Env):
         self.feature_engine = FeatureEngine()
         self.raw_data, self.processed_data = self.feature_engine.preprocess_data(self.data)
         
+        # OPTIMIZATION: Cache data as numpy arrays for fast access
+        self._cache_data_arrays()
+        
         # Define Action Space based on Stage
         if self.stage == 1:
             self.action_dim = 5   # Direction only
@@ -77,6 +80,19 @@ class TradingEnv(gym.Env):
         self.MIN_ATR_MULTIPLIER = 0.0001  # Fallback if ATR is zero (0.01%)
         self.REWARD_LOG_INTERVAL = 5000  # Steps between reward logging
         
+    def _cache_data_arrays(self):
+        """Cache DataFrame columns as numpy arrays for performance."""
+        self.close_arrays = {}
+        self.low_arrays = {}
+        self.high_arrays = {}
+        self.atr_arrays = {}
+        
+        for asset in self.assets:
+            self.close_arrays[asset] = self.raw_data[f"{asset}_close"].values.astype(np.float32)
+            self.low_arrays[asset] = self.raw_data[f"{asset}_low"].values.astype(np.float32)
+            self.high_arrays[asset] = self.raw_data[f"{asset}_high"].values.astype(np.float32)
+            self.atr_arrays[asset] = self.raw_data[f"{asset}_atr_14"].values.astype(np.float32)
+
     def _load_data(self):
         """Load market data for all assets."""
         data = {}
@@ -411,9 +427,7 @@ class TradingEnv(gym.Env):
     def _simulate_trade_outcome(self, asset):
         """
         PEEK & LABEL: Look ahead to see if trade hits SL or TP.
-        
-        This solves the credit assignment problem by giving the agent
-        immediate feedback on its trade decision quality.
+        OPTIMIZED: Uses cached numpy arrays instead of pandas slicing.
         """
         if self.positions[asset] is None:
             return 0.0
@@ -430,11 +444,9 @@ class TradingEnv(gym.Env):
         if start_idx >= end_idx:
             return 0.0
             
-        future_data = self.raw_data.iloc[start_idx:end_idx]
-        
-        # Get price arrays for vectorized check
-        lows = future_data[f"{asset}_low"].values
-        highs = future_data[f"{asset}_high"].values
+        # OPTIMIZATION: Use pre-cached numpy arrays
+        lows = self.low_arrays[asset][start_idx:end_idx]
+        highs = self.high_arrays[asset][start_idx:end_idx]
         
         if direction == 1:  # Long
             sl_hit_mask = lows <= sl
@@ -457,8 +469,8 @@ class TradingEnv(gym.Env):
         elif tp_hit:
             exit_price = tp
         else:
-            # Neither hit: use last available price
-            exit_price = future_data.iloc[-1][f"{asset}_close"] if len(future_data) > 0 else pos['entry_price']
+            # Neither hit: use last available price from cached array
+            exit_price = self.close_arrays[asset][end_idx - 1]
         
         # Calculate P&L (FIX: Use correct formula matching _close_position)
         price_change = (exit_price - pos['entry_price']) * direction
@@ -575,14 +587,12 @@ class TradingEnv(gym.Env):
         return self.feature_engine.get_observation(current_row, portfolio_state)
 
     def _get_current_prices(self):
-        """Get current close prices for all assets."""
-        row = self.raw_data.iloc[self.current_step]
-        return {asset: row[f"{asset}_close"] for asset in self.assets}
+        """Get current close prices for all assets using cached arrays."""
+        return {asset: self.close_arrays[asset][self.current_step] for asset in self.assets}
 
     def _get_current_atrs(self):
-        """Get current ATR values for all assets."""
-        row = self.raw_data.iloc[self.current_step]
-        return {asset: row[f"{asset}_atr_14"] for asset in self.assets}
+        """Get current ATR values for all assets using cached arrays."""
+        return {asset: self.atr_arrays[asset][self.current_step] for asset in self.assets}
     
     def _get_current_timestamp(self):
         """Get timestamp for current step."""
