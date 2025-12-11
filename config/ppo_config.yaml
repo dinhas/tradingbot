@@ -30,7 +30,7 @@ default:
   tensorboard_log: null  # Disabled (tensorboard not installed)
   
   # Training Budget
-  total_timesteps: 1500000
+  total_timesteps: 3000000
   
   # Network Architecture
   policy_kwargs:
