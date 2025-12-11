@@ -545,7 +545,7 @@ if __name__ == "__main__":
                        help="Path to backtest data directory")
     parser.add_argument("--output-dir", type=str, default="backtest/results", 
                        help="Path to save results")
-    parser.add_argument("--episodes", type=int, default=50, 
+    parser.add_argument("--episodes", type=int, default=1, 
                        help="Number of episodes to run")
     
     args = parser.parse_args()

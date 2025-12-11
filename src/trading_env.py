@@ -150,10 +150,8 @@ class TradingEnv(gym.Env):
             # Backtesting: Fixed equity, randomize start point
             self.equity = 10000.0
             self.leverage = 100
-            if self.max_steps > 788:
-                self.current_step = np.random.randint(500, self.max_steps - 288)
-            else:
-                self.current_step = 100
+            # Backtesting: Start from beginning to cover full dataset
+            self.current_step = 500
             
         self.start_equity = self.equity
         self.peak_equity = self.equity
