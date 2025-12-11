@@ -230,7 +230,9 @@ def run_backtest(args):
                 if 'equity' in env_info and 'timestamp' in env_info:
                     metrics_tracker.add_equity_point(env_info['timestamp'], env_info['equity'])
         
-        logger.info(f"Episode {episode + 1}/{args.episodes} complete. Reward: {episode_reward:.2f}, Steps: {step_count}")
+        # Get final equity from the last info
+        final_equity = env_info.get('equity', 0) if info and len(info) > 0 else 0
+        logger.info(f"Episode {episode + 1}/{args.episodes} complete. Reward: {episode_reward:.2f}, Steps: {step_count}, Final Equity: ${final_equity:.2f}")
     
     env.close()
     

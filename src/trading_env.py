@@ -482,50 +482,56 @@ class TradingEnv(gym.Env):
 
     def _calculate_reward(self) -> float:
         """
-        Production-ready 2-component reward function.
+        Reward function with separate modes for training and backtesting.
         
-        Components:
-            1. Peeked P&L — Primary signal from PEEK & LABEL
-            2. Drawdown Penalty — Progressive risk awareness
-        
-        Design:
-            - Loss aversion: losses hurt 1.5x more than equivalent gains
-            - Normalized scaling: typical rewards in ±0.5 range
-            - Clipped to prevent training instability
+        Training Mode (is_training=True):
+            - Uses PEEK & LABEL for credit assignment
+            - Progressive drawdown penalty
+            
+        Backtesting Mode (is_training=False):
+            - Uses actual realized P&L from completed trades
+            - Reflects real portfolio performance
         """
         reward = 0.0
         
         # =====================================================================
-        # COMPONENT 1: Peeked P&L (Primary Signal)
+        # BACKTESTING MODE: Use actual realized P&L
         # =====================================================================
+        if not self.is_training:
+            # Sum up actual P&L from completed trades this step
+            step_pnl = sum(trade['net_pnl'] for trade in self.completed_trades)
+            
+            # Normalize: 1% of starting equity = 0.1 reward
+            if step_pnl != 0:
+                normalized_pnl = (step_pnl / self.start_equity) * 10.0
+                reward += normalized_pnl
+            
+            return reward
+        
+        # =====================================================================
+        # TRAINING MODE: PEEK & LABEL + Drawdown Penalty
+        # =====================================================================
+        
+        # COMPONENT 1: Peeked P&L (Primary Signal)
         if self.peeked_pnl_step != 0:
             # Normalize: 1% of starting equity = 0.1 reward
             normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 10.0
             
             # Loss Aversion (Prospect Theory): Losses hurt 1.5x more
-            # FIX: Apply clip BEFORE multiplier for losses to preserve range asymmetry
-            # Range becomes [-1.5, 1.0] instead of symmetric [-1.0, 1.0]
             if normalized_pnl < 0:
                 normalized_pnl = np.clip(normalized_pnl, -1.0, 0.0) * 1.5
             else:
                 normalized_pnl = np.clip(normalized_pnl, 0.0, 1.0)
             reward += normalized_pnl
         
-        # =====================================================================
         # COMPONENT 2: Progressive Drawdown Penalty
-        # =====================================================================
         drawdown = 1.0 - (self.equity / self.peak_equity)
         
-        # Progressive penalty: starts at 5%, maxes at 25% (termination)
         if drawdown > 0.05:
-            # Quadratic scaling for increasingly harsh penalty
             severity = min((drawdown - 0.05) / 0.20, 1.0)
             penalty = -0.15 * (severity ** 1.5)
             reward += penalty
         
-        # =====================================================================
-        # LOGGING (configurable interval)
-        # =====================================================================
         # Track best step reward
         if reward > self.max_step_reward:
             self.max_step_reward = reward
