@@ -213,7 +213,9 @@ class TradingEnv(gym.Env):
         self.peak_equity = max(self.peak_equity, self.equity)
         drawdown = 1.0 - (self.equity / self.peak_equity)
         
-        if drawdown > self.DRAWDOWN_LIMIT:
+        # Drawdown termination: Only apply during training
+        # During backtesting, we want to see full performance over entire dataset
+        if drawdown > self.DRAWDOWN_LIMIT and self.is_training:
             terminated = True
             reward -= 0.5  # Terminal drawdown penalty
         

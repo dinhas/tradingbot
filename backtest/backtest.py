@@ -172,6 +172,17 @@ def make_backtest_env(data_dir, stage):
     return _init
 
 
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
+
+
 def run_backtest(args):
     """Main backtesting function"""
     logger.info(f"Starting backtest for Stage {args.stage}")
@@ -282,7 +293,7 @@ def run_backtest(args):
     # 1. Save metrics JSON
     metrics_file = os.path.join(args.output_dir, f"metrics_stage{args.stage}_{timestamp}.json")
     with open(metrics_file, 'w') as f:
-        json.dump(metrics, f, indent=2)
+        json.dump(metrics, f, indent=2, cls=NumpyEncoder)
     logger.info(f"Saved metrics to {metrics_file}")
     
     # 2. Save trade log
@@ -325,7 +336,9 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
     ax1.fill_between(times, equity[0], equity, where=(equity >= equity[0]), alpha=0.2, color='green', label='Profit Zone')
     ax1.fill_between(times, equity[0], equity, where=(equity < equity[0]), alpha=0.2, color='red', label='Loss Zone')
     ax1.set_ylabel('Equity ($)', fontsize=11, fontweight='bold')
-    ax1.set_title(f'Stage {stage} - Equity Curve & Drawdown (2025)', fontsize=13, fontweight='bold')
+    # Determine year for title
+    year = times[0].year if times else "2025"
+    ax1.set_title(f'Stage {stage} - Equity Curve & Drawdown ({year})', fontsize=13, fontweight='bold')
     ax1.legend(loc='upper left', fontsize=9)
     ax1.grid(True, alpha=0.3)
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
@@ -451,7 +464,7 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
         ]
         ax6.legend(handles=legend_elements, fontsize=9, loc='best')
     
-    plt.suptitle(f'Stage {stage} Backtest - Comprehensive Analysis (2025)', 
+    plt.suptitle(f'Stage {stage} Backtest - Comprehensive Analysis ({year})', 
                  fontsize=16, fontweight='bold', y=0.995)
     
     # Save comprehensive chart
@@ -555,9 +568,17 @@ if __name__ == "__main__":
         logger.error(f"Model file not found: {args.model}")
         sys.exit(1)
     
-    # Validate data directory exists
+    # Validate data directory exists and is not empty
     if not os.path.exists(args.data_dir):
         logger.error(f"Data directory not found: {args.data_dir}")
+        logger.info("Please run: python backtest/data_fetcher_backtest.py")
+        sys.exit(1)
+        
+    # Check for parquet files
+    parquet_files = [f for f in os.listdir(args.data_dir) if f.endswith('.parquet')]
+    if not parquet_files:
+        logger.error(f"No .parquet files found in {args.data_dir}")
+        logger.info(f"Target directory '{args.data_dir}' is empty or contains no data.")
         logger.info("Please run: python backtest/data_fetcher_backtest.py")
         sys.exit(1)
     

@@ -27,7 +27,7 @@ SYMBOL_IDS = {
 
 # Backtesting Data Range: 2025 (Jan 1 to Dec 3, 2025)
 START_DATE = datetime(2025, 1, 1)
-END_DATE = datetime(2025, 12, 3)  # Yesterday
+END_DATE = datetime(2025, 12, 11)  # Yesterday
 TIMEFRAME = ProtoOATrendbarPeriod.M5
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

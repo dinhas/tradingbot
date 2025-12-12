@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Test Lightweight Charts</title>
+    <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+
+<body>
+    <div id="chart" style="width: 600px; height: 400px;"></div>
+    <script>
+        console.log("LightweightCharts available:", typeof LightweightCharts);
+        const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+            width: 600,
+            height: 400,
+        });
+        console.log("Chart created:", chart);
+        console.log("addCandlestickSeries method exists:", typeof chart.addCandlestickSeries);
+        const candleSeries = chart.addCandlestickSeries();
+        console.log("Candle series created:", candleSeries);
+        candleSeries.setData([
+            { time: '2018-12-22', open: 75.16, high: 82.84, low: 36.16, close: 45.72 },
+            { time: '2018-12-23', open: 45.12, high: 53.90, low: 45.12, close: 48.09 },
+        ]);
+        console.log("SUCCESS! Chart loaded with data");
+    </script>
+</body>
+
+</html>
