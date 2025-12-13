@@ -38,6 +38,34 @@ def generate_dataset_batched(model_path, data_dir, output_file):
 
     # 2. Load Data
     logger.info(f"Loading and preprocessing data from {data_dir}...")
+    
+    # Check if data exists, if not try to download
+    required_assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+    data_missing = False
+    for asset in required_assets:
+        p1 = os.path.join(data_dir, f"{asset}_5m.parquet")
+        p2 = os.path.join(data_dir, f"{asset}_5m_2025.parquet")
+        if not os.path.exists(p1) and not os.path.exists(p2):
+            data_missing = True
+            break
+            
+    if data_missing:
+        logger.warning(f"Data missing in {data_dir}. Attempting to download...")
+        try:
+            import subprocess
+            # Assume download_training_data.py is in same dir as this script
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            downloader = os.path.join(script_dir, "download_training_data.py")
+            
+            if os.path.exists(downloader):
+                logger.info(f"Running {downloader}...")
+                subprocess.check_call([sys.executable, downloader, "--output", data_dir])
+            else:
+                logger.error(f"Downloader script not found at {downloader}")
+        except Exception as e:
+            logger.error(f"Failed to auto-download data: {e}")
+            logger.info("Please run download_training_data.py manually.")
+
     try:
         env = TradingEnv(data_dir=data_dir, stage=1, is_training=False)
     except Exception as e:

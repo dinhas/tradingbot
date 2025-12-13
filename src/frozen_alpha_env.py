@@ -28,6 +28,14 @@ class TradingEnv(gym.Env):
         self.is_training = is_training
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         
+        # Configuration Constants
+        self.MAX_POS_SIZE_PCT = 0.50
+        self.MAX_TOTAL_EXPOSURE = 0.60
+        self.DRAWDOWN_LIMIT = 0.25
+        self.MIN_POSITION_SIZE = 10  # Minimum position size in equity units
+        self.MIN_ATR_MULTIPLIER = 0.0001  # Fallback if ATR is zero (0.01%)
+        self.REWARD_LOG_INTERVAL = 5000  # Steps between reward logging
+
         # Load Data
         self.data = self._load_data()
         self.feature_engine = FeatureEngine()
@@ -68,17 +76,6 @@ class TradingEnv(gym.Env):
         self.start_equity = self.equity
         self.peak_equity = self.equity
         self.max_step_reward = -float('inf')
-        
-        
-        # PRD Risk Constants
-        self.MAX_POS_SIZE_PCT = 0.50
-        self.MAX_TOTAL_EXPOSURE = 0.60
-        self.DRAWDOWN_LIMIT = 0.25
-        
-        # Configuration Constants
-        self.MIN_POSITION_SIZE = 10  # Minimum position size in equity units
-        self.MIN_ATR_MULTIPLIER = 0.0001  # Fallback if ATR is zero (0.01%)
-        self.REWARD_LOG_INTERVAL = 5000  # Steps between reward logging
         
     def _cache_data_arrays(self):
         """Cache DataFrame columns as numpy arrays for performance."""
