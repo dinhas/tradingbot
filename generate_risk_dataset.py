@@ -167,10 +167,6 @@ def generate_dataset_batched(model_path, data_dir, output_file):
         # Inference
         actions, _ = model.predict(observations, deterministic=True)
         
-        # Clean up memory
-        del feature_cols
-        del observations
-        
         # Process Signals
         chunk_timestamps = df_chunk.index
         
@@ -182,76 +178,7 @@ def generate_dataset_batched(model_path, data_dir, output_file):
             sell_indices = np.where(asset_actions < -0.33)[0]
             
             # Helper to process hits
-            def process_hits(hits, direction):
-                for hit_idx in hits:
-                    # Map to Global Index
-                    # chunk_indices is the range object or list of GLOBAL indices
-                    global_step = chunk_indices[hit_idx]
-                    
-                    # Store Features (Retrieve from df row to avoid re-stacking or save obs before delete)
-                    # Actually we want the Observation Vector for training.
-                    # Re-stacking just one row is cheap, or we can stash 'observations' but that beats the memory purpose?
-                    # No, we only keep signals.
-                    # We can regenerate the single observation from df row easily or just save raw features.
-                    # BETTER: Use FeatureEngine to regenerate singular observation on demand (cleaner data)
-                    # OR: Just grab the slice from the observation matrix before deleting?
-                    # Trade-off: Complex code.
-                    # Simplest: Re-construct obs for JUST the hits.
-                    
-                    # Prices & Outcomes
-                    entry_price = close_arrays[asset][global_step]
-                    atr = atr_arrays[asset][global_step]
-                    
-                    end_step = global_step + LOOKAHEAD_STEPS
-                    future_highs = high_arrays[asset][global_step+1 : end_step]
-                    future_lows = low_arrays[asset][global_step+1 : end_step]
-                    future_close = close_arrays[asset][end_step-1]
-                    
-                    if len(future_highs) == 0: continue
-                    
-                    max_h = np.max(future_highs)
-                    min_l = np.min(future_lows)
-                    
-                    if direction == 1:
-                        max_profit_pct = (max_h - entry_price) / entry_price
-                        max_loss_pct = (min_l - entry_price) / entry_price
-                    else:
-                        max_profit_pct = (entry_price - min_l) / entry_price
-                        max_loss_pct = (entry_price - max_h) / entry_price
-                        
-                    # Re-create observation for this specific row to save
-                    # This is slightly inefficient but safe for memory
-                    # (We deleted 'observations' above, but we could have filtered it before deleting)
-                    # Let's optimize: Don't delete 'observations' until after processing. 
-                    # 50k * 140 * 4 = 28MB. Keeping it is fine for the duration of the loop.
-                    
-                    # WAIT: I deleted 'observations' incorrectly above before using it here?
-                    # Yes, logic error in my thought. Correcting code below.
-                    
-                    # features = observations[hit_idx].tolist()
-                    # But since I deleted it in the code above, I will fix that in the actual code block.
-                    
-                    all_signals.append({
-                        'timestamp': chunk_timestamps[hit_idx],
-                        'asset': asset,
-                        'direction': direction,
-                        'entry_price': entry_price,
-                        'atr': atr,
-                        'features': None, # Placeholder, will fill in actual code
-                        'max_profit_pct': max_profit_pct,
-                        'max_loss_pct': max_loss_pct,
-                        'close_1000_price': future_close,
-                        'hit_idx_in_chunk': hit_idx # Intermediate
-                    })
 
-            # We need 'observations' for the 'features' column.
-            # So we MUST NOT delete it yet.
-            
-            # Temporary storage to access observations later
-            # We will fill 'features' in a second pass or just keep 'observations' alive
-            
-            # To avoid logic complexity in 'process_hits', I will inline it in the actual writing.
-            pass
 
         # ACTUAL PROCESSING WITH OBSERVATIONS ALIVE
         for i, asset in enumerate(assets):
@@ -293,6 +220,10 @@ def generate_dataset_batched(model_path, data_dir, output_file):
                         'max_loss_pct': max_loss_pct,
                         'close_1000_price': future_close
                     })
+
+        # Clean up memory after processing for this batch
+        del feature_cols
+        del observations
 
     # 4. Save
     if all_signals:
