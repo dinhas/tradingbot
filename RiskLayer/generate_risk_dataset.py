@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Defaults
 # Defaults
-DEFAULT_MODEL_PATH = r"e:\tradingbot\checkpoints\8.03.zip" # This might be fragile
+DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "checkpoints", "8.03.zip") # Relative path from RiskLayer to checkpoints
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DEFAULT_OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "risk_dataset.parquet")
 LOOKAHEAD_STEPS = 6 # 30 mins (5m candles)
