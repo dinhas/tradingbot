@@ -24,7 +24,7 @@ class RiskManagementEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
     
-    def __init__(self, dataset_path, initial_equity=10000.0, is_training=True):
+    def __init__(self, dataset_path, initial_equity=10.0, is_training=True):
         super(RiskManagementEnv, self).__init__()
         
         self.dataset_path = dataset_path
@@ -36,10 +36,10 @@ class RiskManagementEnv(gym.Env):
         
         # USER REQUESTED CHANGES:
         self.MAX_RISK_PER_TRADE = 0.40  # 40% Max Risk per trade (Very Agressive)
-        self.MAX_MARGIN_PER_TRADE_PCT = 0.40 # Max 40% of Equity used for Margin
-        self.MAX_LEVERAGE = 200.0       # 1:200 Leverage
+        self.MAX_MARGIN_PER_TRADE_PCT = 0.80 # Max 80% margin for $10 account survival
+        self.MAX_LEVERAGE = 400.0       # 1:200 Leverage
         self.TRADING_COST_PCT = 0.0002  # ~2 pips/ticks roundtrip cost
-        self.MIN_LOTS = 0.001
+        self.MIN_LOTS = 0.01
         self.CONTRACT_SIZE = 100000     # Standard Lot
         
         # --- Load Data ---
@@ -243,7 +243,11 @@ class RiskManagementEnv(gym.Env):
         risk_violation_penalty = 0.0
         
         # If we are forced to take > 2x the intended risk (due to min_lots or rounding), penalize
-        if actual_risk_cash_pen > risk_amount_cash * 2.0 and risk_amount_cash > 1e-9:
+        # If we are forced to take > 2x the intended risk (due to min_lots or rounding), penalize
+        # EXCEPTION: For small accounts ($10), 0.01 lots is mandatory. 
+        # Don't penalize if the absolute risk difference is small (e.g. < $2.0)
+        risk_diff = actual_risk_cash_pen - risk_amount_cash
+        if actual_risk_cash_pen > risk_amount_cash * 2.0 and risk_amount_cash > 1e-9 and risk_diff > 2.0:
              risk_violation_penalty = -1.0
         
         # Calculate Final Position Value
