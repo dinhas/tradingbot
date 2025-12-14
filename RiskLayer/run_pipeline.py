@@ -42,7 +42,7 @@ def main():
     if not base_dir:
         base_dir = "."
     
-    print("🚀 STARTING RISK LAYER PIPELINE")
+    print("STARTING RISK LAYER PIPELINE")
     print(f"Working Directory: {base_dir}")
     
     # 1. Fetch Data
@@ -59,7 +59,7 @@ def main():
         sys.exit(1)
 
     print("\n" + "="*50)
-    print("✅✅ ALL PIPELINE STEPS COMPLETED SUCCESSFULLY ✅✅")
+    print("ALL PIPELINE STEPS COMPLETED SUCCESSFULLY")
     print("="*50)
 
 if __name__ == "__main__":
