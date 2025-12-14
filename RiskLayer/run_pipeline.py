@@ -37,7 +37,10 @@ def run_step(step_name, script_name, cwd):
         return False
 
 def main():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    # Use relative path if possible, or dot
+    base_dir = os.path.dirname(__file__)
+    if not base_dir:
+        base_dir = "."
     
     print("🚀 STARTING RISK LAYER PIPELINE")
     print(f"Working Directory: {base_dir}")
