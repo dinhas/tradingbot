@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 import pandas as pd
 from datetime import datetime, timedelta
 from twisted.internet import reactor, defer
@@ -8,6 +9,46 @@ from ctrader_open_api import Client, Protobuf, TcpProtocol, EndPoints
 from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
+
+class Tee:
+    """Redirect stdout/stderr to both console and file."""
+    def __init__(self, file_path):
+        self.file = open(file_path, 'w', encoding='utf-8')
+        self.stdout = sys.stdout
+        self.stderr = sys.stderr
+        sys.stdout = self
+        sys.stderr = TeeStderr(self.file, self.stderr)
+    
+    def write(self, text):
+        self.file.write(text)
+        self.file.flush()
+        self.stdout.write(text)
+        self.stdout.flush()
+    
+    def flush(self):
+        self.file.flush()
+        self.stdout.flush()
+    
+    def close(self):
+        sys.stdout = self.stdout
+        sys.stderr = self.stderr
+        self.file.close()
+
+class TeeStderr:
+    """Handle stderr separately."""
+    def __init__(self, file, stderr):
+        self.file = file
+        self.stderr = stderr
+    
+    def write(self, text):
+        self.file.write(text)
+        self.file.flush()
+        self.stderr.write(text)
+        self.stderr.flush()
+    
+    def flush(self):
+        self.file.flush()
+        self.stderr.flush()
 
 # --- Configuration ---
 CT_APP_ID = "17481_ejoPRnjMkFdEkcZTHbjYt5n98n6wRE2wESCkSSHbLIvdWzRkRp"
@@ -192,11 +233,30 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="Alpha/data", help="Output directory")
+    parser.add_argument("--log_dir", type=str, default=None, help="Log directory (default: logs in script directory)")
     args = parser.parse_args()
     
-    fetcher = DataFetcherTraining(output_dir=args.output)
-    print("Starting Training Data Fetcher... (Press Ctrl+C to stop manually)")
+    # Setup logging to file - capture all terminal output
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    log_dir = args.log_dir if args.log_dir else os.path.join(BASE_DIR, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"download_training_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    tee = Tee(log_file)
+    
     try:
+        print(f"All terminal output will be saved to: {log_file}")
+        fetcher = DataFetcherTraining(output_dir=args.output)
+        print("Starting Training Data Fetcher... (Press Ctrl+C to stop manually)")
         fetcher.start()
     except KeyboardInterrupt:
         logging.info("Interrupted.")
+        print("Interrupted.")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        logging.error(f"CRITICAL ERROR: {e}")
+        print(f"CRITICAL ERROR: {e}")
+    finally:
+        tee.close()
+        logging.info(f"Log saved to: {log_file}")
+        print(f"Log saved to: {log_file}")

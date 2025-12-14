@@ -2,6 +2,47 @@ import subprocess
 import sys
 import os
 import time
+from datetime import datetime
+
+class Tee:
+    """Redirect stdout/stderr to both console and file."""
+    def __init__(self, file_path):
+        self.file = open(file_path, 'w', encoding='utf-8')
+        self.stdout = sys.stdout
+        self.stderr = sys.stderr
+        sys.stdout = self
+        sys.stderr = TeeStderr(self.file, self.stderr)
+    
+    def write(self, text):
+        self.file.write(text)
+        self.file.flush()
+        self.stdout.write(text)
+        self.stdout.flush()
+    
+    def flush(self):
+        self.file.flush()
+        self.stdout.flush()
+    
+    def close(self):
+        sys.stdout = self.stdout
+        sys.stderr = self.stderr
+        self.file.close()
+
+class TeeStderr:
+    """Handle stderr separately."""
+    def __init__(self, file, stderr):
+        self.file = file
+        self.stderr = stderr
+    
+    def write(self, text):
+        self.file.write(text)
+        self.file.flush()
+        self.stderr.write(text)
+        self.stderr.flush()
+    
+    def flush(self):
+        self.file.flush()
+        self.stderr.flush()
 
 def run_step(step_name, script_name, cwd):
     print(f"\n{'='*50}")
@@ -63,4 +104,20 @@ def main():
     print("="*50)
 
 if __name__ == "__main__":
-    main()
+    # Setup logging to file - capture all terminal output
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(BASE_DIR, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"run_pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    tee = Tee(log_file)
+    
+    try:
+        print(f"All terminal output will be saved to: {log_file}")
+        main()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"CRITICAL ERROR: {e}")
+    finally:
+        tee.close()
+        print(f"Log saved to: {log_file}")

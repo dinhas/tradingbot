@@ -4,6 +4,7 @@ import argparse
 import numpy as np
 import pandas as pd
 import torch
+from datetime import datetime
 from stable_baselines3 import PPO
 from tqdm import tqdm
 import logging
@@ -12,6 +13,46 @@ from src.frozen_alpha_env import TradingEnv
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+class Tee:
+    """Redirect stdout/stderr to both console and file."""
+    def __init__(self, file_path):
+        self.file = open(file_path, 'w', encoding='utf-8')
+        self.stdout = sys.stdout
+        self.stderr = sys.stderr
+        sys.stdout = self
+        sys.stderr = TeeStderr(self.file, self.stderr)
+    
+    def write(self, text):
+        self.file.write(text)
+        self.file.flush()
+        self.stdout.write(text)
+        self.stdout.flush()
+    
+    def flush(self):
+        self.file.flush()
+        self.stdout.flush()
+    
+    def close(self):
+        sys.stdout = self.stdout
+        sys.stderr = self.stderr
+        self.file.close()
+
+class TeeStderr:
+    """Handle stderr separately."""
+    def __init__(self, file, stderr):
+        self.file = file
+        self.stderr = stderr
+    
+    def write(self, text):
+        self.file.write(text)
+        self.file.flush()
+        self.stderr.write(text)
+        self.stderr.flush()
+    
+    def flush(self):
+        self.file.flush()
+        self.stderr.flush()
 
 # Defaults
 # Defaults
@@ -246,14 +287,27 @@ if __name__ == "__main__":
     parser.add_argument("--data", type=str, default=DEFAULT_DATA_DIR, help="Path to data directory")
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_FILE, help="Path to output .parquet")
     parser.add_argument("--batch", type=int, default=BATCH_SIZE, help="Batch size")
+    parser.add_argument("--log_dir", type=str, default=None, help="Log directory (default: logs in script directory)")
     
     args = parser.parse_args()
     
-    BATCH_SIZE = args.batch
+    # Setup logging to file - capture all terminal output
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    log_dir = args.log_dir if args.log_dir else os.path.join(BASE_DIR, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"generate_risk_dataset_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    tee = Tee(log_file)
     
     try:
+        BATCH_SIZE = args.batch
+        logger.info(f"All output will be saved to: {log_file}")
+        print(f"All terminal output will be saved to: {log_file}")
         generate_dataset_batched(args.model, args.data, args.output)
     except Exception as e:
         import traceback
         traceback.print_exc()
         logger.error(f"CRITICAL ERROR: {e}")
+    finally:
+        tee.close()
+        logger.info(f"Log saved to: {log_file}")
+        print(f"Log saved to: {log_file}")

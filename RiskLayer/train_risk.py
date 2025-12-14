@@ -3,6 +3,7 @@ import sys
 import torch
 import numpy as np
 import multiprocessing
+from datetime import datetime
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
@@ -11,6 +12,46 @@ from stable_baselines3.common.utils import set_random_seed
 # Add src to path so we can import the environment
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from risk_env import RiskManagementEnv
+
+class Tee:
+    """Redirect stdout/stderr to both console and file."""
+    def __init__(self, file_path):
+        self.file = open(file_path, 'w', encoding='utf-8')
+        self.stdout = sys.stdout
+        self.stderr = sys.stderr
+        sys.stdout = self
+        sys.stderr = TeeStderr(self.file, self.stderr)
+    
+    def write(self, text):
+        self.file.write(text)
+        self.file.flush()
+        self.stdout.write(text)
+        self.stdout.flush()
+    
+    def flush(self):
+        self.file.flush()
+        self.stdout.flush()
+    
+    def close(self):
+        sys.stdout = self.stdout
+        sys.stderr = self.stderr
+        self.file.close()
+
+class TeeStderr:
+    """Handle stderr separately."""
+    def __init__(self, file, stderr):
+        self.file = file
+        self.stderr = stderr
+    
+    def write(self, text):
+        self.file.write(text)
+        self.file.flush()
+        self.stderr.write(text)
+        self.stderr.flush()
+    
+    def flush(self):
+        self.file.flush()
+        self.stderr.flush()
 
 # --- Configuration for MAX SPEED ---
 # CPU Utilization
@@ -159,4 +200,21 @@ def train():
 if __name__ == "__main__":
     # Windows requires this
     multiprocessing.freeze_support()
-    train()
+    
+    # Setup logging to file - capture all terminal output
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(BASE_DIR, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"train_risk_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    tee = Tee(log_file)
+    
+    try:
+        print(f"All terminal output will be saved to: {log_file}")
+        train()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"CRITICAL ERROR: {e}")
+    finally:
+        tee.close()
+        print(f"Log saved to: {log_file}")
