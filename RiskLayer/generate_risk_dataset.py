@@ -14,9 +14,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Defaults
-DEFAULT_MODEL_PATH = r"e:\tradingbot\checkpoints\8.03.zip"
-DEFAULT_DATA_DIR = r"e:\tradingbot\Alpha\data"
-DEFAULT_OUTPUT_FILE = r"e:\tradingbot\risk_dataset.parquet"
+# Defaults
+DEFAULT_MODEL_PATH = r"e:\tradingbot\checkpoints\8.03.zip" # This might be fragile
+DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+DEFAULT_OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "risk_dataset.parquet")
 LOOKAHEAD_STEPS = 6 # 30 mins (5m candles)
 BATCH_SIZE = 50000  # Process 50k steps at a time to manage memory
 
