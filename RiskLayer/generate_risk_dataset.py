@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL_PATH = r"e:\tradingbot\checkpoints\8.03.zip"
 DEFAULT_DATA_DIR = r"e:\tradingbot\Alpha\data"
 DEFAULT_OUTPUT_FILE = r"e:\tradingbot\risk_dataset.parquet"
-LOOKAHEAD_STEPS = 1000
+LOOKAHEAD_STEPS = 6 # 30 mins (5m candles)
 BATCH_SIZE = 50000  # Process 50k steps at a time to manage memory
 
 def generate_dataset_batched(model_path, data_dir, output_file):
