@@ -34,7 +34,27 @@ MAX_GRAD_NORM = 0.5
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATASET_PATH = os.path.join(BASE_DIR, 'risk_dataset.parquet')
+# Fallback logic for finding dataset
+POSSIBLE_PATHS = [
+    os.path.join(BASE_DIR, 'risk_dataset.parquet'),
+    os.path.join(os.getcwd(), 'risk_dataset.parquet'),
+    os.path.join(os.getcwd(), 'RiskLayer', 'risk_dataset.parquet'),
+    'risk_dataset.parquet'
+]
+
+DATASET_PATH = None
+for p in POSSIBLE_PATHS:
+    if os.path.exists(p):
+        DATASET_PATH = p
+        break
+
+if DATASET_PATH is None:
+    # Default to standard path but warn
+    DATASET_PATH = os.path.join(BASE_DIR, 'risk_dataset.parquet')
+    print(f"WARNING: risk_dataset.parquet not found in common locations. Defaulting to {DATASET_PATH}")
+else:
+    print(f"Found Dataset at: {DATASET_PATH}")
+
 MODELS_DIR = os.path.join(BASE_DIR, 'models')
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
 CHECKPOINT_DIR = os.path.join(MODELS_DIR, 'checkpoints')
