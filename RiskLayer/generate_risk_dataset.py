@@ -250,13 +250,15 @@ def generate_dataset_batched(model_path, data_dir, output_file):
                         max_profit_pct = (entry_price - min_l) / entry_price
                         max_loss_pct = (entry_price - max_h) / entry_price
 
-                    # Don't store full feature vector to save memory - it's very large
+                    # Store features as list (needed for risk environment observation)
+                    # This is memory intensive but required for training
                     batch_signals.append({
                         'timestamp': chunk_timestamps[idx],
                         'asset': asset,
                         'direction': direction,
                         'entry_price': entry_price,
                         'atr': atr,
+                        'features': observations[idx].tolist(),  # Required for risk env
                         'max_profit_pct': max_profit_pct,
                         'max_loss_pct': max_loss_pct,
                         'close_1000_price': future_close

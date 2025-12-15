@@ -66,13 +66,28 @@ class RiskManagementEnv(gym.Env):
             self.df = pd.read_parquet(self.dataset_path)
             
             # Validation
-            chk_cols = ['max_profit_pct', 'max_loss_pct', 'features', 'close_1000_price']
+            chk_cols = ['max_profit_pct', 'max_loss_pct', 'close_1000_price']
             for c in chk_cols:
                 if c not in self.df.columns:
                     raise ValueError(f"Missing column {c} in dataset")
             
-            # Convert features to numpy stack for speed
-            self.features_array = np.stack(self.df['features'].values).astype(np.float32)
+            # Handle features column
+            if 'features' in self.df.columns:
+                # Convert features to numpy stack for speed
+                # Features may be stored as lists, convert to array
+                features_data = self.df['features'].values
+                if isinstance(features_data[0], (list, np.ndarray)):
+                    self.features_array = np.stack(features_data).astype(np.float32)
+                else:
+                    # If already arrays, just convert
+                    self.features_array = np.array(features_data).astype(np.float32)
+            else:
+                # Create dummy features array (140 features) if missing
+                # This allows training to continue but agent won't have market context
+                print("WARNING: 'features' column missing in dataset. Using zero-filled features.")
+                print("         Regenerate dataset with features for proper training.")
+                n_samples = len(self.df)
+                self.features_array = np.zeros((n_samples, 140), dtype=np.float32)
             
             # BUG FIX 6: Missing Dataset Validation
             if 'direction' not in self.df.columns:
@@ -302,11 +317,12 @@ class RiskManagementEnv(gym.Env):
         else:
              actual_risk_cash_pen = lots * sl_dist_price * self.CONTRACT_SIZE
 
-        # BUG FIX 7: Percentage-based Penalty
+        # BUG FIX 7: Percentage-based Penalty (reduced to prevent extreme values)
         if actual_risk_cash_pen > risk_amount_cash * 2.0 and risk_amount_cash > 1e-9:
-             excess_risk_pct = (actual_risk_cash_pen - risk_amount_cash) / self.equity
+             excess_risk_pct = (actual_risk_cash_pen - risk_amount_cash) / max(self.equity, 1e-6)
              if excess_risk_pct > 0.05: # 5% of account
-                 risk_violation_penalty = -5.0 * excess_risk_pct
+                 risk_violation_penalty = -2.0 * excess_risk_pct  # Reduced from -5.0
+                 risk_violation_penalty = np.clip(risk_violation_penalty, -10.0, 0.0)
         
         # Calculate Position Value
         position_val = lots * lot_value_usd
@@ -388,16 +404,25 @@ class RiskManagementEnv(gym.Env):
         new_dd  = 1.0 - (self.equity / prev_peak_safe)
         
         dd_increase = max(0.0, new_dd - prev_dd)
-        # Stronger penalty for INCREASING drawdown
-        dd_penalty = -(dd_increase ** 2) * 2000.0
+        # Reduced penalty multiplier to prevent extreme values (was 2000.0)
+        dd_penalty = -(dd_increase ** 2) * 50.0
         
-        pnl_reward = (net_pnl / prev_equity) * 100.0
+        # Normalized PnL reward (clip to prevent extreme values)
+        # Use log scale for better stability when equity is small
+        prev_equity_safe = max(prev_equity, 1e-6)
+        pnl_ratio = net_pnl / prev_equity_safe
+        
+        # Clip and scale reward to reasonable range
+        pnl_reward = np.clip(pnl_ratio * 10.0, -50.0, 50.0)
         
         tp_bonus = 0.0
         if exited_on == 'TP':
-            tp_bonus = 0.2 * (tp_mult / 8.0)
+            tp_bonus = 0.5 * (tp_mult / 8.0)  # Slightly increased TP bonus
         
         reward = pnl_reward + tp_bonus + dd_penalty + risk_violation_penalty
+        
+        # Final reward clipping to prevent extreme values that break value function
+        reward = np.clip(reward, -100.0, 100.0)
         
         self.history_pnl.append(net_pnl / prev_equity)
         
@@ -408,7 +433,9 @@ class RiskManagementEnv(gym.Env):
         
         if self.equity < (self.initial_equity_base * 0.3): 
             terminated = True
-            reward -= 200.0 
+            # Reduced terminal penalty to prevent extreme negative rewards
+            reward -= 50.0
+            reward = np.clip(reward, -100.0, 100.0) 
             
         info = {
             'pnl': net_pnl,
