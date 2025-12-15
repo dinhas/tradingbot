@@ -8,6 +8,7 @@ from datetime import datetime
 from stable_baselines3 import PPO
 from tqdm import tqdm
 import logging
+import gc
 from src.frozen_alpha_env import TradingEnv
 
 # Configure logging
@@ -60,7 +61,7 @@ DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "c
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DEFAULT_OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "risk_dataset.parquet")
 LOOKAHEAD_STEPS = 6 # 30 mins (5m candles)
-BATCH_SIZE = 50000  # Process 50k steps at a time to manage memory
+BATCH_SIZE = 10000  # Process 10k steps at a time to manage memory (reduced from 50k to prevent OOM)
 
 def generate_dataset_batched(model_path, data_dir, output_file):
     """Generates the risk dataset using batched vectorized inference."""
@@ -126,8 +127,6 @@ def generate_dataset_batched(model_path, data_dir, output_file):
         logger.error("Data too short for lookahead window.")
         return
 
-    all_signals = []
-    
     # Cache raw arrays for fast lookups (Global scope for processing)
     assets = env.assets
     close_arrays = {a: env.close_arrays[a] for a in assets}
@@ -135,18 +134,28 @@ def generate_dataset_batched(model_path, data_dir, output_file):
     low_arrays = {a: env.low_arrays[a] for a in assets}
     atr_arrays = {a: env.atr_arrays[a] for a in assets}
 
-    # 3. Batch Processing Loop
+    # 3. Batch Processing Loop with incremental writing
     logger.info(f"Starting batch processing (Batch Size: {BATCH_SIZE})...")
+    
+    # Create output dir if needed
+    os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
     
     # Create valid index chunks
     full_indices = range(start_idx, end_idx)
     chunks = [full_indices[i:i + BATCH_SIZE] for i in range(0, len(full_indices), BATCH_SIZE)]
     
-    for chunk_indices in tqdm(chunks, desc="Processing Batches"):
-        # Slice DataFrame for this chunk
+    # Accumulate DataFrames and write periodically to manage memory
+    accumulated_dfs = []
+    write_interval = 5  # Write every 5 batches to balance memory and I/O
+    total_signals = 0
+    
+    for batch_num, chunk_indices in enumerate(tqdm(chunks, desc="Processing Batches"), 1):
+        # Slice DataFrame for this chunk (use view when possible to save memory)
         # Note: We need continuous slice from df, but features are already computed row-wise.
         # So df.iloc[chunk_indices] is valid.
-        df_chunk = df.iloc[chunk_indices].copy()
+        # Use .copy() only if needed, but we'll need it for the operations below
+        chunk_list = list(chunk_indices)
+        df_chunk = df.iloc[chunk_list].copy()
         current_chunk_size = len(df_chunk)
         
         # --- Construct Feature Matrix for Chunk ---
@@ -209,20 +218,10 @@ def generate_dataset_batched(model_path, data_dir, output_file):
         # Inference
         actions, _ = model.predict(observations, deterministic=True)
         
-        # Process Signals
+        # Process Signals - collect batch signals
         chunk_timestamps = df_chunk.index
+        batch_signals = []
         
-        for i, asset in enumerate(assets):
-            asset_actions = actions[:, i]
-            
-            # Find indices relative to CHUNK
-            buy_indices = np.where(asset_actions > 0.33)[0]
-            sell_indices = np.where(asset_actions < -0.33)[0]
-            
-            # Helper to process hits
-
-
-        # ACTUAL PROCESSING WITH OBSERVATIONS ALIVE
         for i, asset in enumerate(assets):
             asset_actions = actions[:, i]
             buy_indices = np.where(asset_actions > 0.33)[0]
@@ -230,7 +229,7 @@ def generate_dataset_batched(model_path, data_dir, output_file):
             
             for direction, indices in [(1, buy_indices), (-1, sell_indices)]:
                 for idx in indices:
-                    global_step = chunk_indices[idx]
+                    global_step = chunk_list[idx]
                     
                     entry_price = close_arrays[asset][global_step]
                     atr = atr_arrays[asset][global_step]
@@ -251,33 +250,66 @@ def generate_dataset_batched(model_path, data_dir, output_file):
                         max_profit_pct = (entry_price - min_l) / entry_price
                         max_loss_pct = (entry_price - max_h) / entry_price
 
-                    all_signals.append({
+                    # Don't store full feature vector to save memory - it's very large
+                    batch_signals.append({
                         'timestamp': chunk_timestamps[idx],
                         'asset': asset,
                         'direction': direction,
                         'entry_price': entry_price,
                         'atr': atr,
-                        'features': observations[idx].tolist(),
                         'max_profit_pct': max_profit_pct,
                         'max_loss_pct': max_loss_pct,
                         'close_1000_price': future_close
                     })
 
+        # Accumulate batch signals
+        if batch_signals:
+            batch_df = pd.DataFrame(batch_signals)
+            batch_df['timestamp'] = pd.to_datetime(batch_df['timestamp'])
+            accumulated_dfs.append(batch_df)
+            total_signals += len(batch_signals)
+            del batch_df, batch_signals
+
         # Clean up memory after processing for this batch
         del feature_cols
         del observations
+        del df_chunk
+        del actions
+        
+        # Write periodically to manage memory
+        if batch_num % write_interval == 0 or batch_num == len(chunks):
+            if accumulated_dfs:
+                # Concatenate and write
+                if os.path.exists(output_file) and batch_num > write_interval:
+                    # Append mode: read existing, concat, write
+                    existing_df = pd.read_parquet(output_file)
+                    combined_df = pd.concat([existing_df] + accumulated_dfs, ignore_index=True)
+                    combined_df.to_parquet(output_file, index=False)
+                    del existing_df, combined_df
+                else:
+                    # First write or overwrite
+                    combined_df = pd.concat(accumulated_dfs, ignore_index=True)
+                    combined_df.to_parquet(output_file, index=False)
+                    del combined_df
+                
+                accumulated_dfs.clear()
+                gc.collect()  # Force garbage collection after writing
 
-    # 4. Save
-    if all_signals:
-        result_df = pd.DataFrame(all_signals)
-        result_df['timestamp'] = pd.to_datetime(result_df['timestamp'])
-        
-        # Create output dir if needed
-        os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
-        
-        result_df.to_parquet(output_file)
-        logger.info(f"Saved {len(result_df)} rows to {output_file}")
-        
+    # 4. Finalize - write any remaining accumulated data
+    if accumulated_dfs:
+        if os.path.exists(output_file):
+            existing_df = pd.read_parquet(output_file)
+            combined_df = pd.concat([existing_df] + accumulated_dfs, ignore_index=True)
+            combined_df.to_parquet(output_file, index=False)
+            del existing_df, combined_df
+        else:
+            combined_df = pd.concat(accumulated_dfs, ignore_index=True)
+            combined_df.to_parquet(output_file, index=False)
+            del combined_df
+        accumulated_dfs.clear()
+    
+    if total_signals > 0:
+        logger.info(f"Saved {total_signals} rows to {output_file}")
     else:
         logger.warning("No signals generated.")
 
