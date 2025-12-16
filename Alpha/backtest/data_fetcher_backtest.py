@@ -25,9 +25,9 @@ SYMBOL_IDS = {
     'USDJPY': 4     # USD/JPY
 }
 
-# Backtesting Data Range: 2025 (Jan 1 to Dec 3, 2025)
+# Backtesting Data Range: 2025 (Jan 1 to Dec 14, 2025)
 START_DATE = datetime(2025, 1, 1)
-END_DATE = datetime(2025, 12, 11)  # Yesterday
+END_DATE = datetime(2025, 12, 15)  # Fetch until end of Dec 14
 TIMEFRAME = ProtoOATrendbarPeriod.M5
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -36,7 +36,7 @@ class DataFetcherBacktest:
     def __init__(self):
         host = EndPoints.PROTOBUF_LIVE_HOST if CT_HOST_TYPE.lower() == "live" else EndPoints.PROTOBUF_DEMO_HOST
         self.client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
-        self.request_delay = 0.25
+        self.request_delay = 1.0  # Increased delay to 1.0s to avoid rate limits
         self.downloaded_data = {}
 
     def start(self):
@@ -78,27 +78,35 @@ class DataFetcherBacktest:
             yield self.send_proto_request(acc_auth_req)
             logging.info("Account Auth Success.")
             
+            # 2a. Brief pause to stabilize connection
+            d_wait = defer.Deferred()
+            reactor.callLater(2.0, d_wait.callback, None)
+            yield d_wait
+            
             # 3. Fetch Backtesting Data (2025)
-            os.makedirs("backtest/data", exist_ok=True)
+            # Ensure we write to Alpha/backtest/data
+            os.makedirs("Alpha/backtest/data", exist_ok=True)
             
             fetch_tasks = []
-            for asset_name, symbol_id in SYMBOL_IDS.items():
+            # Use enumeration to stagger start times
+            for i, (asset_name, symbol_id) in enumerate(SYMBOL_IDS.items()):
                 if symbol_id == 0:
                     logging.warning(f"Skipping {asset_name}: Symbol ID not set. Please update SYMBOL_IDS.")
                     continue
                 
                 # Check if file already exists
-                fname = f"backtest/data/{asset_name}_5m_2025.parquet"
+                fname = f"Alpha/backtest/data/{asset_name}_5m_2025.parquet"
                 if os.path.exists(fname):
                     logging.info(f"✅ Found existing backtest data for {asset_name}. Skipping download.")
                     continue
                     
-                # Store task for parallel execution
-                d = self.fetch_asset_history(asset_name, symbol_id)
+                # Store task for parallel execution with staggered start
+                # Delay each asset by 2.0s relative to previous
+                d = self.fetch_asset_history(asset_name, symbol_id, initial_delay=i*2.0)
                 fetch_tasks.append(d)
             
             if fetch_tasks:
-                logging.info(f"🚀 Starting parallel fetch for {len(fetch_tasks)} assets...")
+                logging.info(f"🚀 Starting parallel fetch for {len(fetch_tasks)} assets (Staggered)...")
                 yield defer.gatherResults(fetch_tasks, consumeErrors=True)
                 
             logging.info("All backtest data downloads complete. Stopping reactor.")
@@ -109,15 +117,21 @@ class DataFetcherBacktest:
             reactor.stop()
 
     @inlineCallbacks
-    def fetch_asset_history(self, asset_name, symbol_id):
+    def fetch_asset_history(self, asset_name, symbol_id, initial_delay=0.0):
+        # Initial stagger delay
+        if initial_delay > 0:
+            d_delay = defer.Deferred()
+            reactor.callLater(initial_delay, d_delay.callback, None)
+            yield d_delay
+            
         logging.info(f"📥 Starting fetch for {asset_name} (ID: {symbol_id}) - 2025 BACKTEST DATA")
         
         current_start = START_DATE
         all_bars = []
         
         while current_start < END_DATE:
-            # Request 90 days at a time (approx 3 months)
-            chunk_end = current_start + timedelta(days=90)
+            # Request 5 days at a time to be SAFE from size limits
+            chunk_end = current_start + timedelta(days=5)
             if chunk_end > END_DATE:
                 chunk_end = END_DATE
             
@@ -135,7 +149,7 @@ class DataFetcherBacktest:
 
             while retry_count < max_retries:
                 try:
-                    # Rate limit delay
+                    # Rate limit delay (between chunks)
                     d = defer.Deferred()
                     reactor.callLater(self.request_delay, d.callback, None)
                     yield d
@@ -205,7 +219,7 @@ class DataFetcherBacktest:
             full_df = full_df[~full_df.index.duplicated(keep='first')]
             
             # Save Backtest Data
-            fname = f"backtest/data/{asset_name}_5m_2025.parquet"
+            fname = f"Alpha/backtest/data/{asset_name}_5m_2025.parquet"
             full_df.to_parquet(fname)
             logging.info(f"✅ Saved {fname}: {len(full_df)} rows (2025 backtest data).")
         else:

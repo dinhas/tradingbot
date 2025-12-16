@@ -76,7 +76,7 @@ class TradingEnv(gym.Env):
         self.DRAWDOWN_LIMIT = 0.25
         
         # Configuration Constants
-        self.MIN_POSITION_SIZE = 10  # Minimum position size in equity units
+        self.MIN_POSITION_SIZE = 0.1  # Minimum position size in equity units
         self.MIN_ATR_MULTIPLIER = 0.0001  # Fallback if ATR is zero (0.01%)
         self.REWARD_LOG_INTERVAL = 5000  # Steps between reward logging
         
