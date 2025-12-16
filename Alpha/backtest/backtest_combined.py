@@ -26,22 +26,11 @@ import tempfile
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from Alpha.src.trading_env import TradingEnv
-from Alpha.backtest.backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
-
-# Import risk model components
-try:
-    from RiskLayer.src.risk_env import RiskManagementEnv
-except ImportError:
-    # Try alternative path
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../RiskLayer/src')))
-    from risk_env import RiskManagementEnv
+from ..src.trading_env import TradingEnv
+from .backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
+from RiskLayer.src.risk_env import RiskManagementEnv
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -426,59 +415,51 @@ class CombinedBacktest:
 
 def run_combined_backtest(args):
     """Main backtesting function"""
+    project_root = Path(__file__).resolve().parent.parent.parent
+    alpha_model_path = project_root / args.alpha_model
+    risk_model_path = project_root / args.risk_model
+    data_dir_path = project_root / args.data_dir
+    output_dir_path = project_root / args.output_dir
+
     logger.info("Starting combined Alpha-Risk backtest")
-    logger.info(f"Alpha model: {args.alpha_model}")
-    logger.info(f"Risk model: {args.risk_model}")
-    logger.info(f"Data directory: {args.data_dir}")
+    logger.info(f"Alpha model: {alpha_model_path}")
+    logger.info(f"Risk model: {risk_model_path}")
+    logger.info(f"Data directory: {data_dir_path}")
     
     # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
+    output_dir_path.mkdir(parents=True, exist_ok=True)
     
     # Validate model files
-    if not os.path.exists(args.alpha_model):
-        logger.error(f"Alpha model file not found: {args.alpha_model}")
+    if not alpha_model_path.exists():
+        logger.error(f"Alpha model file not found: {alpha_model_path}")
         sys.exit(1)
     
-    if not os.path.exists(args.risk_model):
-        logger.error(f"Risk model file not found: {args.risk_model}")
+    if not risk_model_path.exists():
+        logger.error(f"Risk model file not found: {risk_model_path}")
         sys.exit(1)
     
     # Load Alpha model
     logger.info("Loading Alpha model...")
-    env = DummyVecEnv([lambda: TradingEnv(data_dir=args.data_dir, stage=1, is_training=False)])
+    env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, stage=1, is_training=False)])
     
     # Load VecNormalize stats if available
-    vecnorm_path = args.alpha_model.replace('.zip', '_vecnormalize.pkl')
+    vecnorm_path = str(alpha_model_path).replace('.zip', '_vecnormalize.pkl')
     if os.path.exists(vecnorm_path):
         logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
         env = VecNormalize.load(vecnorm_path, env)
         env.training = False
         env.norm_reward = False
     
-    alpha_model = PPO.load(args.alpha_model, env=env)
+    alpha_model = PPO.load(alpha_model_path, env=env)
     logger.info("Alpha model loaded successfully")
     
     # Load Risk model
     logger.info("Loading Risk model...")
     # Risk model needs an environment for loading, but we can use a dummy dataset path
     # The environment won't be used for inference, just for model loading
-    from RiskLayer.src.risk_env import RiskManagementEnv
+    risk_dataset_path = project_root / 'RiskLayer' / 'risk_dataset.parquet'
     
-    # Try to find risk dataset, use dummy if not found
-    risk_dataset_paths = [
-        os.path.join(os.path.dirname(__file__), '../../RiskLayer/risk_dataset.parquet'),
-        os.path.join(os.path.dirname(__file__), '../../../RiskLayer/risk_dataset.parquet'),
-        'RiskLayer/risk_dataset.parquet',
-        'risk_dataset.parquet'
-    ]
-    
-    risk_dataset_path = None
-    for path in risk_dataset_paths:
-        if os.path.exists(path):
-            risk_dataset_path = path
-            break
-    
-    if risk_dataset_path is None:
+    if not risk_dataset_path.exists():
         # Create a minimal dummy dataset for loading
         logger.warning("Risk dataset not found, creating minimal dummy dataset for model loading")
         import tempfile
@@ -491,20 +472,20 @@ def run_combined_backtest(args):
             'close_1000_price': [1.0] * 100,
             'features': [np.zeros(140, dtype=np.float32)] * 100
         })
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.parquet')
-        dummy_data.to_parquet(temp_file.name)
-        risk_dataset_path = temp_file.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as temp_file:
+            dummy_data.to_parquet(temp_file.name)
+            risk_dataset_path = Path(temp_file.name)
     
     risk_env = RiskManagementEnv(
-        dataset_path=risk_dataset_path,
+        dataset_path=str(risk_dataset_path),
         initial_equity=initial_equity,
         is_training=False
     )
-    risk_model = PPO.load(args.risk_model, env=risk_env)
+    risk_model = PPO.load(risk_model_path, env=risk_env)
     logger.info("Risk model loaded successfully")
     
     # Create combined backtest
-    backtest = CombinedBacktest(alpha_model, risk_model, args.data_dir, initial_equity=initial_equity)
+    backtest = CombinedBacktest(alpha_model, risk_model, data_dir_path, initial_equity=initial_equity)
 
     
     # Run backtest
@@ -554,28 +535,28 @@ def run_combined_backtest(args):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # 1. Save metrics JSON
-    metrics_file = os.path.join(args.output_dir, f"metrics_combined_{timestamp}.json")
+    metrics_file = output_dir_path / f"metrics_combined_{timestamp}.json"
     with open(metrics_file, 'w') as f:
         json.dump(metrics, f, indent=2, cls=NumpyEncoder)
     logger.info(f"Saved metrics to {metrics_file}")
     
     # 2. Save trade log
     if metrics_tracker.trades:
-        trades_file = os.path.join(args.output_dir, f"trades_combined_{timestamp}.csv")
+        trades_file = output_dir_path / f"trades_combined_{timestamp}.csv"
         pd.DataFrame(metrics_tracker.trades).to_csv(trades_file, index=False)
         logger.info(f"Saved trade log to {trades_file}")
     
     # 3. Save per-asset performance
     per_asset = metrics_tracker.get_per_asset_metrics()
     if per_asset:
-        asset_file = os.path.join(args.output_dir, f"asset_breakdown_combined_{timestamp}.csv")
+        asset_file = output_dir_path / f"asset_breakdown_combined_{timestamp}.csv"
         pd.DataFrame(per_asset).T.to_csv(asset_file)
         logger.info(f"Saved per-asset breakdown to {asset_file}")
     
     # 4. Generate all visualizations
     if metrics_tracker.equity_curve and metrics_tracker.trades:
         logger.info("\nGenerating comprehensive charts...")
-        generate_all_charts(metrics_tracker, per_asset, "combined", args.output_dir, timestamp)
+        generate_all_charts(metrics_tracker, per_asset, "combined", output_dir_path, timestamp)
     
     logger.info("\nBacktest complete!")
     return metrics
@@ -584,26 +565,29 @@ def run_combined_backtest(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Combined Alpha-Risk Model Backtest")
     parser.add_argument("--alpha-model", type=str, required=True,
-                       help="Path to Alpha model (.zip file)")
+                        help="Path to Alpha model (.zip file) relative to project root")
     parser.add_argument("--risk-model", type=str, required=True,
-                       help="Path to Risk model (.zip file)")
+                        help="Path to Risk model (.zip file) relative to project root")
     parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data",
-                       help="Path to backtest data directory")
+                        help="Path to backtest data directory relative to project root")
     parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results",
-                       help="Path to save results")
+                        help="Path to save results relative to project root")
     parser.add_argument("--episodes", type=int, default=1,
-                       help="Number of episodes to run")
+                        help="Number of episodes to run")
     
     args = parser.parse_args()
     
+    project_root = Path(__file__).resolve().parent.parent.parent
+    data_dir_path = project_root / args.data_dir
+
     # Validate data directory
-    if not os.path.exists(args.data_dir):
-        logger.error(f"Data directory not found: {args.data_dir}")
+    if not data_dir_path.exists():
+        logger.error(f"Data directory not found: {data_dir_path}")
         sys.exit(1)
     
-    parquet_files = [f for f in os.listdir(args.data_dir) if f.endswith('.parquet')]
+    parquet_files = list(data_dir_path.glob('*.parquet'))
     if not parquet_files:
-        logger.error(f"No .parquet files found in {args.data_dir}")
+        logger.error(f"No .parquet files found in {data_dir_path}")
         sys.exit(1)
     
     run_combined_backtest(args)

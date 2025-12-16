@@ -3,8 +3,9 @@ Verify Transfer Learning: Stage 1 → Stage 2
 Checks if direction weights were correctly transferred
 """
 import numpy as np
+from pathlib import Path
 from stable_baselines3 import PPO
-from src.trading_env import TradingEnv
+from .src.trading_env import TradingEnv
 import torch
 
 def verify_transfer():
@@ -13,10 +14,15 @@ def verify_transfer():
     print("="*80)
     print("TRANSFER LEARNING VERIFICATION")
     print("="*80)
+
+    project_root = Path(__file__).resolve().parent.parent
+    stage1_model_path = project_root / "models" / "checkpoints" / "stage_1_final.zip"
+    stage2_model_path = project_root / "models" / "checkpoints" / "stage_2_final.zip"
+    data_path = project_root / "data"
     
     # Load Stage 1 model
     try:
-        stage1_model = PPO.load("models/checkpoints/stage_1_final.zip")
+        stage1_model = PPO.load(stage1_model_path)
         print("✓ Loaded Stage 1 model")
     except Exception as e:
         print(f"✗ Failed to load Stage 1 model: {e}")
@@ -25,15 +31,15 @@ def verify_transfer():
     # Load Stage 2 model (if exists)
     stage2_model = None
     try:
-        stage2_model = PPO.load("models/checkpoints/stage_2_final.zip")
+        stage2_model = PPO.load(stage2_model_path)
         print("✓ Loaded Stage 2 model")
     except Exception as e:
         print(f"⚠ No Stage 2 model found (this is OK if you're starting fresh)")
         print(f"  Error: {e}")
     
     # Create test environments
-    env1 = TradingEnv(data_dir='data', stage=1, is_training=False, initial_balance=1000)
-    env2 = TradingEnv(data_dir='data', stage=2, is_training=False, initial_balance=1000)
+    env1 = TradingEnv(data_dir=data_path, stage=1, is_training=False, initial_balance=1000)
+    env2 = TradingEnv(data_dir=data_path, stage=2, is_training=False, initial_balance=1000)
     
     # Test Stage 1 performance
     print("\n" + "="*80)
@@ -121,7 +127,7 @@ def verify_transfer():
     if stage2_model is None:
         print("\n2. ℹ️  No Stage 2 model found yet")
         print("   → Make sure you're using --transfer-from:")
-        print("   → python -m src.train --stage 2 --transfer-from models/checkpoints/stage_1_final.zip")
+        print("   → python -m Alpha.src.train --stage 2 --transfer-from models/checkpoints/stage_1_final.zip")
     
     print("\n" + "="*80)
 

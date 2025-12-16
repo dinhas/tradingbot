@@ -3,6 +3,7 @@ from gymnasium import spaces
 import numpy as np
 import pandas as pd
 import logging
+from pathlib import Path
 from .feature_engine import FeatureEngine
 
 class TradingEnv(gym.Env):
@@ -96,9 +97,10 @@ class TradingEnv(gym.Env):
     def _load_data(self):
         """Load market data for all assets."""
         data = {}
+        data_dir_path = Path(self.data_dir)
         for asset in self.assets:
-            file_path = f"{self.data_dir}/{asset}_5m.parquet"
-            file_path_2025 = f"{self.data_dir}/{asset}_5m_2025.parquet"
+            file_path = data_dir_path / f"{asset}_5m.parquet"
+            file_path_2025 = data_dir_path / f"{asset}_5m_2025.parquet"
             
             
             df = None

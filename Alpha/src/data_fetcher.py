@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 import pandas as pd
 from datetime import datetime, timedelta
 from twisted.internet import reactor, defer
@@ -39,6 +40,8 @@ class DataFetcher:
         self.client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
         self.request_delay = 0.25
         self.downloaded_data = {}
+        # Define a robust path to the data directory at the project root
+        self.data_dir = Path(__file__).resolve().parent.parent.parent / "data"
 
     def start(self):
         self.client.setConnectedCallback(self.on_connected)
@@ -80,7 +83,7 @@ class DataFetcher:
             logging.info("Account Auth Success.")
             
             # 3. Fetch Data
-            os.makedirs("data", exist_ok=True)
+            self.data_dir.mkdir(parents=True, exist_ok=True)
             
             fetch_tasks = []
             for asset_name, symbol_id in SYMBOL_IDS.items():
@@ -89,8 +92,8 @@ class DataFetcher:
                     continue
                 
                 # Check if file already exists
-                fname = f"data/{asset_name}_5m.parquet"
-                if os.path.exists(fname):
+                fname = self.data_dir / f"{asset_name}_5m.parquet"
+                if fname.exists():
                     logging.info(f"✅ Found existing data for {asset_name}. Skipping download.")
                     continue
                     
@@ -207,7 +210,7 @@ class DataFetcher:
             full_df = full_df[~full_df.index.duplicated(keep='first')]
             
             # Save Raw Data
-            fname = f"data/{asset_name}_5m.parquet"
+            fname = self.data_dir / f"{asset_name}_5m.parquet"
             full_df.to_parquet(fname)
             logging.info(f"✅ Saved {fname}: {len(full_df)} rows.")
         else:

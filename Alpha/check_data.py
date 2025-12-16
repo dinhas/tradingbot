@@ -1,7 +1,10 @@
 import pandas as pd
 import os
+from pathlib import Path
 
-data_dir = r"e:\tradingbot\data"
+# Construct a path to the data directory, assuming this script is in Alpha/
+# and the data directory is at the project root (../data)
+data_dir = Path(__file__).resolve().parent.parent / "data"
 files = [f for f in os.listdir(data_dir) if f.endswith(".parquet")]
 
 for f in files:

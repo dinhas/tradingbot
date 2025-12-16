@@ -1,5 +1,5 @@
 
-import os
+from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -10,14 +10,13 @@ import logging
 app = FastAPI()
 
 # Configuration
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(BASE_DIR)
-DATA_DIR = os.path.join(ROOT_DIR, "backtest", "data")
-RESULTS_DIR = os.path.join(ROOT_DIR, "backtest", "results")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR.parent / "backtest" / "data"
+RESULTS_DIR = BASE_DIR.parent / "backtest" / "results"
 
 # Setup Static and Templates
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -29,26 +28,26 @@ async def read_root(request: Request):
 async def get_datasets():
     # List Parquet files (Assets)
     assets = []
-    if os.path.exists(DATA_DIR):
-        for f in os.listdir(DATA_DIR):
-            if f.endswith(".parquet") and "5m_2025" in f:
-                asset_name = f.replace("_5m_2025.parquet", "")
+    if DATA_DIR.exists():
+        for f in DATA_DIR.iterdir():
+            if f.name.endswith(".parquet") and "5m_2025" in f.name:
+                asset_name = f.name.replace("_5m_2025.parquet", "")
                 assets.append(asset_name)
     
     # List CSV files (Backtest Results)
     results = []
-    if os.path.exists(RESULTS_DIR):
-        for f in os.listdir(RESULTS_DIR):
-            if f.endswith(".csv"):
-                results.append(f)
+    if RESULTS_DIR.exists():
+        for f in RESULTS_DIR.iterdir():
+            if f.name.endswith(".csv"):
+                results.append(f.name)
                 
     return {"assets": sorted(assets), "results": sorted(results, reverse=True)}
 
 @app.get("/api/candles")
 async def get_candles(asset: str):
     # Load Parquet
-    fname = os.path.join(DATA_DIR, f"{asset}_5m_2025.parquet")
-    if not os.path.exists(fname):
+    fname = DATA_DIR / f"{asset}_5m_2025.parquet"
+    if not fname.exists():
         raise HTTPException(status_code=404, detail="Asset data not found")
     
     try:
@@ -68,8 +67,8 @@ async def get_candles(asset: str):
 
 @app.get("/api/trades")
 async def get_trades(result_file: str, asset: str):
-    fname = os.path.join(RESULTS_DIR, result_file)
-    if not os.path.exists(fname):
+    fname = RESULTS_DIR / result_file
+    if not fname.exists():
         raise HTTPException(status_code=404, detail="Result file not found")
         
     try:
