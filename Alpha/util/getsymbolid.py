@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from twisted.internet import reactor, defer
 from twisted.internet.defer import inlineCallbacks
 from ctrader_open_api import Client, Protobuf, TcpProtocol, EndPoints
@@ -113,7 +114,8 @@ class SymbolIdFetcher:
         print("FOUND SYMBOL IDS - COPY THESE TO CONFIG")
         print("="*50)
         
-        with open("all_symbols.txt", "w") as f:
+        output_path = Path(__file__).resolve().parent / "all_symbols.txt"
+        with open(output_path, "w") as f:
             for s in payload.symbol:
                 f.write(f"{s.symbolId}: {s.symbolName}\n")
                 

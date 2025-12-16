@@ -1,6 +1,6 @@
 import logging
 import json
-import os
+from pathlib import Path
 from twisted.internet import reactor, defer
 from twisted.internet.defer import inlineCallbacks
 from ctrader_open_api import Client, Protobuf, TcpProtocol, EndPoints
@@ -102,7 +102,7 @@ class SymbolIdFetcher:
             }
             all_symbols.append(symbol_data)
             
-        json_path = os.path.join(os.path.dirname(__file__), 'symbols.json')
+        json_path = Path(__file__).resolve().parent / "symbols.json"
         try:
             with open(json_path, 'w') as f:
                 json.dump(all_symbols, f, indent=4)

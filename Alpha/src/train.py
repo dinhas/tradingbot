@@ -1,4 +1,6 @@
 import os
+import os
+from pathlib import Path
 import argparse
 import logging
 import gymnasium as gym
@@ -69,9 +71,10 @@ class MetricsCallback(BaseCallback):
         """Create and save training progress plots."""
         try:
             import matplotlib.pyplot as plt
-            import os
             
-            os.makedirs("logs/plots", exist_ok=True)
+            project_root = Path(__file__).resolve().parent.parent.parent
+            plot_dir = project_root / "logs" / "plots"
+            plot_dir.mkdir(parents=True, exist_ok=True)
             
             # Create figure with subplots
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
@@ -99,10 +102,11 @@ class MetricsCallback(BaseCallback):
             ax2.grid(True, alpha=0.3)
             
             plt.tight_layout()
-            plt.savefig(f'logs/plots/training_progress_{self.num_timesteps}.png', dpi=100)
+            plot_path = plot_dir / f"training_progress_{self.num_timesteps}.png"
+            plt.savefig(plot_path, dpi=100)
             plt.close()
             
-            logger.info(f"Saved training plot to logs/plots/training_progress_{self.num_timesteps}.png")
+            logger.info(f"Saved training plot to {plot_path}")
         except Exception as e:
             logger.warning(f"Could not create plots: {e}")
 
@@ -141,11 +145,17 @@ def train(args):
     """
     Main training loop.
     """
+    project_root = Path(__file__).resolve().parent.parent.parent
+    log_dir_path = project_root / args.log_dir
+    checkpoint_dir_path = project_root / args.checkpoint_dir
+    data_dir_path = project_root / args.data_dir
+    config_path = project_root / args.config
+
     logger.info(f"Starting training for Stage {args.stage}")
     
     # Create directories
-    os.makedirs(args.log_dir, exist_ok=True)
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    log_dir_path.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir_path.mkdir(parents=True, exist_ok=True)
     
     import multiprocessing
 
@@ -159,15 +169,15 @@ def train(args):
     # Use SubprocVecEnv for true parallelism
     # Note: If this crashes due to RAM, reduce n_envs manually or switch to DummyVecEnv
     if n_envs > 1:
-        env = SubprocVecEnv([make_env(i, data_dir=args.data_dir, stage=args.stage) for i in range(n_envs)])
+        env = SubprocVecEnv([make_env(i, data_dir=data_dir_path, stage=args.stage) for i in range(n_envs)])
     else:
-        env = DummyVecEnv([make_env(0, data_dir=args.data_dir, stage=args.stage)])
+        env = DummyVecEnv([make_env(0, data_dir=data_dir_path, stage=args.stage)])
     
     # Apply Normalization
     env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
     
     # 2. Initialize Model
-    ppo_config = load_ppo_config(args.config, args.stage)
+    ppo_config = load_ppo_config(config_path, args.stage)
     
     # Extract total_timesteps from config before removing it (it's not a PPO init argument)
     config_timesteps = ppo_config.pop('total_timesteps', 1500000)  # Default fallback
@@ -178,11 +188,12 @@ def train(args):
         logger.info(f"Using total_timesteps from config: {args.total_timesteps}")
     
     if args.load_model:
-        logger.info(f"Loading model from {args.load_model}")
+        load_model_path = project_root / args.load_model
+        logger.info(f"Loading model from {load_model_path}")
         # For Stage 1: Safe to load since action space is constant (5 outputs)
         # For Stage 2/3: Only load if resuming same stage, otherwise start fresh
         try:
-            model = PPO.load(args.load_model, env=env, **ppo_config)
+            model = PPO.load(load_model_path, env=env, **ppo_config)
             logger.info("✅ Model loaded successfully - continuing training")
         except Exception as e:
             logger.warning(f"⚠️ Could not load model: {e}")
@@ -195,7 +206,7 @@ def train(args):
     # 3. Callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=max(100000 // n_envs, 1), # Adjust freq for parallel envs
-        save_path=args.checkpoint_dir,
+        save_path=str(checkpoint_dir_path),
         name_prefix=f"ppo_stage{args.stage}"
     )
     
@@ -210,7 +221,7 @@ def train(args):
     
     # Configure file logging
     from datetime import datetime
-    log_file = os.path.join(args.log_dir, f"train_stage{args.stage}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    log_file = log_dir_path / f"train_stage{args.stage}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     
     # Add FileHandler to existing logger
     file_handler = logging.FileHandler(log_file)
@@ -227,9 +238,9 @@ def train(args):
     )
     
     # 5. Save Final Model
-    final_path = os.path.join(args.checkpoint_dir, f"stage_{args.stage}_final")
+    final_path = checkpoint_dir_path / f"stage_{args.stage}_final.zip"
     model.save(final_path)
-    env.save(os.path.join(args.checkpoint_dir, f"stage_{args.stage}_vecnormalize.pkl"))
+    env.save(checkpoint_dir_path / f"stage_{args.stage}_vecnormalize.pkl")
     
     logger.info(f"Training complete. Model saved to {final_path}")
     env.close()
@@ -238,11 +249,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train RL Trading Bot")
     parser.add_argument("--stage", type=int, default=1, choices=[1, 2, 3], help="Curriculum stage (1, 2, or 3)")
     parser.add_argument("--total_timesteps", type=int, default=None, help="Total timesteps to train (default: from config file)")
-    parser.add_argument("--data_dir", type=str, default="data", help="Path to data directory")
-    parser.add_argument("--log_dir", type=str, default="logs", help="Path to log directory")
-    parser.add_argument("--checkpoint_dir", type=str, default="models/checkpoints", help="Path to save checkpoints")
-    parser.add_argument("--load_model", type=str, default=None, help="Path to load existing model (for continuing training)")
-    parser.add_argument("--config", type=str, default="config/ppo_config.yaml", help="Path to PPO configuration file")
+    parser.add_argument("--data_dir", type=str, default="data", help="Path to data directory relative to project root")
+    parser.add_argument("--log_dir", type=str, default="logs", help="Path to log directory relative to project root")
+    parser.add_argument("--checkpoint_dir", type=str, default="models/checkpoints", help="Path to save checkpoints relative to project root")
+    parser.add_argument("--load_model", type=str, default=None, help="Path to load existing model relative to project root")
+    parser.add_argument("--config", type=str, default="Alpha/config/ppo_config.yaml", help="Path to PPO configuration file relative to project root")
     parser.add_argument("--dry-run", action="store_true", help="Run a short test training loop")
     
     args = parser.parse_args()

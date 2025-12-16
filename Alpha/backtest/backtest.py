@@ -19,12 +19,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from src.trading_env import TradingEnv
+from ..src.trading_env import TradingEnv
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -185,26 +182,31 @@ class NumpyEncoder(json.JSONEncoder):
 
 def run_backtest(args):
     """Main backtesting function"""
+    project_root = Path(__file__).resolve().parent.parent.parent
+    model_path = project_root / args.model
+    data_dir_path = project_root / args.data_dir
+    output_dir_path = project_root / args.output_dir
+
     logger.info(f"Starting backtest for Stage {args.stage}")
-    logger.info(f"Model: {args.model}")
-    logger.info(f"Data directory: {args.data_dir}")
+    logger.info(f"Model: {model_path}")
+    logger.info(f"Data directory: {data_dir_path}")
     
     # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
+    output_dir_path.mkdir(parents=True, exist_ok=True)
     
     # Load model
     logger.info("Loading model...")
-    env = DummyVecEnv([make_backtest_env(args.data_dir, args.stage)])
+    env = DummyVecEnv([make_backtest_env(data_dir_path, args.stage)])
     
     # Load VecNormalize stats if available
-    vecnorm_path = args.model.replace('.zip', '_vecnormalize.pkl')
+    vecnorm_path = str(model_path).replace('.zip', '_vecnormalize.pkl')
     if os.path.exists(vecnorm_path):
         logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
         env = VecNormalize.load(vecnorm_path, env)
         env.training = False  # Disable training mode for deterministic evaluation
         env.norm_reward = False  # Don't normalize rewards during evaluation
     
-    model = PPO.load(args.model, env=env)
+    model = PPO.load(model_path, env=env)
     logger.info("Model loaded successfully")
     
     # Initialize metrics tracker
@@ -291,28 +293,28 @@ def run_backtest(args):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # 1. Save metrics JSON
-    metrics_file = os.path.join(args.output_dir, f"metrics_stage{args.stage}_{timestamp}.json")
+    metrics_file = output_dir_path / f"metrics_stage{args.stage}_{timestamp}.json"
     with open(metrics_file, 'w') as f:
         json.dump(metrics, f, indent=2, cls=NumpyEncoder)
     logger.info(f"Saved metrics to {metrics_file}")
     
     # 2. Save trade log
     if metrics_tracker.trades:
-        trades_file = os.path.join(args.output_dir, f"trades_stage{args.stage}_{timestamp}.csv")
+        trades_file = output_dir_path / f"trades_stage{args.stage}_{timestamp}.csv"
         pd.DataFrame(metrics_tracker.trades).to_csv(trades_file, index=False)
         logger.info(f"Saved trade log to {trades_file}")
     
     # 3. Save per-asset performance
     per_asset = metrics_tracker.get_per_asset_metrics()
     if per_asset:
-        asset_file = os.path.join(args.output_dir, f"asset_breakdown_stage{args.stage}_{timestamp}.csv")
+        asset_file = output_dir_path / f"asset_breakdown_stage{args.stage}_{timestamp}.csv"
         pd.DataFrame(per_asset).T.to_csv(asset_file)
         logger.info(f"Saved per-asset breakdown to {asset_file}")
     
     # 4. Generate all visualizations
     if metrics_tracker.equity_curve and metrics_tracker.trades:
         logger.info("\nGenerating comprehensive charts...")
-        generate_all_charts(metrics_tracker, per_asset, args.stage, args.output_dir, timestamp)
+        generate_all_charts(metrics_tracker, per_asset, args.stage, output_dir_path, timestamp)
     
     logger.info("\nBacktest complete!")
     return metrics
@@ -468,7 +470,7 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
                  fontsize=16, fontweight='bold', y=0.995)
     
     # Save comprehensive chart
-    chart_file = os.path.join(output_dir, f"comprehensive_analysis_stage{stage}_{timestamp}.png")
+    chart_file = output_dir / f"comprehensive_analysis_stage{stage}_{timestamp}.png"
     plt.savefig(chart_file, dpi=150, bbox_inches='tight')
     plt.close()
     
@@ -541,7 +543,7 @@ def create_detailed_trade_chart(df_trades, stage, output_dir, timestamp):
     
     plt.tight_layout()
     
-    detail_file = os.path.join(output_dir, f"trade_details_stage{stage}_{timestamp}.png")
+    detail_file = output_dir / f"trade_details_stage{stage}_{timestamp}.png"
     plt.savefig(detail_file, dpi=150, bbox_inches='tight')
     plt.close()
     
@@ -551,35 +553,39 @@ def create_detailed_trade_chart(df_trades, stage, output_dir, timestamp):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Backtest RL Trading Bot")
-    parser.add_argument("--model", type=str, required=True, help="Path to trained model (.zip file)")
-    parser.add_argument("--stage", type=int, required=True, choices=[1, 2, 3], 
-                       help="Curriculum stage (1=Direction, 2=+Sizing, 3=Full)")
-    parser.add_argument("--data-dir", type=str, default="backtest/data", 
-                       help="Path to backtest data directory")
-    parser.add_argument("--output-dir", type=str, default="backtest/results", 
-                       help="Path to save results")
-    parser.add_argument("--episodes", type=int, default=1, 
-                       help="Number of episodes to run")
+    parser.add_argument("--model", type=str, required=True, help="Path to trained model (.zip file) relative to project root")
+    parser.add_argument("--stage", type=int, required=True, choices=[1, 2, 3],
+                        help="Curriculum stage (1=Direction, 2=+Sizing, 3=Full)")
+    parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data",
+                        help="Path to backtest data directory relative to project root")
+    parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results",
+                        help="Path to save results relative to project root")
+    parser.add_argument("--episodes", type=int, default=1,
+                        help="Number of episodes to run")
     
     args = parser.parse_args()
     
+    project_root = Path(__file__).resolve().parent.parent.parent
+    model_path = project_root / args.model
+    data_dir_path = project_root / args.data_dir
+
     # Validate model exists
-    if not os.path.exists(args.model):
-        logger.error(f"Model file not found: {args.model}")
+    if not model_path.exists():
+        logger.error(f"Model file not found: {model_path}")
         sys.exit(1)
     
     # Validate data directory exists and is not empty
-    if not os.path.exists(args.data_dir):
-        logger.error(f"Data directory not found: {args.data_dir}")
-        logger.info("Please run: python backtest/data_fetcher_backtest.py")
+    if not data_dir_path.exists():
+        logger.error(f"Data directory not found: {data_dir_path}")
+        logger.info("Please run: python -m Alpha.backtest.data_fetcher_backtest")
         sys.exit(1)
         
     # Check for parquet files
-    parquet_files = [f for f in os.listdir(args.data_dir) if f.endswith('.parquet')]
+    parquet_files = list(data_dir_path.glob('*.parquet'))
     if not parquet_files:
-        logger.error(f"No .parquet files found in {args.data_dir}")
-        logger.info(f"Target directory '{args.data_dir}' is empty or contains no data.")
-        logger.info("Please run: python backtest/data_fetcher_backtest.py")
+        logger.error(f"No .parquet files found in {data_dir_path}")
+        logger.info(f"Target directory '{data_dir_path}' is empty or contains no data.")
+        logger.info("Please run: python -m Alpha.backtest.data_fetcher_backtest")
         sys.exit(1)
     
     run_backtest(args)

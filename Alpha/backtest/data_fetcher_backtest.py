@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 import pandas as pd
 from datetime import datetime, timedelta
 from twisted.internet import reactor, defer
@@ -38,6 +39,8 @@ class DataFetcherBacktest:
         self.client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
         self.request_delay = 1.0  # Increased delay to 1.0s to avoid rate limits
         self.downloaded_data = {}
+        # Define a robust path to the data directory inside Alpha/backtest/
+        self.data_dir = Path(__file__).resolve().parent / "data"
 
     def start(self):
         self.client.setConnectedCallback(self.on_connected)
@@ -85,7 +88,7 @@ class DataFetcherBacktest:
             
             # 3. Fetch Backtesting Data (2025)
             # Ensure we write to Alpha/backtest/data
-            os.makedirs("Alpha/backtest/data", exist_ok=True)
+            self.data_dir.mkdir(parents=True, exist_ok=True)
             
             fetch_tasks = []
             # Use enumeration to stagger start times
@@ -95,8 +98,8 @@ class DataFetcherBacktest:
                     continue
                 
                 # Check if file already exists
-                fname = f"Alpha/backtest/data/{asset_name}_5m_2025.parquet"
-                if os.path.exists(fname):
+                fname = self.data_dir / f"{asset_name}_5m_2025.parquet"
+                if fname.exists():
                     logging.info(f"✅ Found existing backtest data for {asset_name}. Skipping download.")
                     continue
                     
@@ -219,7 +222,7 @@ class DataFetcherBacktest:
             full_df = full_df[~full_df.index.duplicated(keep='first')]
             
             # Save Backtest Data
-            fname = f"Alpha/backtest/data/{asset_name}_5m_2025.parquet"
+            fname = self.data_dir / f"{asset_name}_5m_2025.parquet"
             full_df.to_parquet(fname)
             logging.info(f"✅ Saved {fname}: {len(full_df)} rows (2025 backtest data).")
         else:
