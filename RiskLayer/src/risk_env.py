@@ -42,6 +42,15 @@ class RiskManagementEnv(gym.Env):
         self.MIN_LOTS = 0.01
         self.CONTRACT_SIZE = 100000     # Standard Lot
         
+        # BLOCKING REWARD PARAMS
+        self.BLOCK_REWARD_SCALE = 100.0  # Scale for avoided loss
+        self.BLOCK_PENALTY_SCALE = 100.0 # Scale for missed profit
+        self.CONSTANT_BLOCK_PENALTY = -0.02 # Small cost per block
+        
+        # Tradeable Signal Definitions
+        self.TARGET_PROFIT_PCT = 0.001   # 0.1% Target Gain (10 pips)
+        self.MAX_DRAWDOWN_PCT = 0.0005   # 0.05% Drawdown Tolerance (5 pips)
+        
         # --- Load Data ---
         self._load_data()
         
@@ -216,19 +225,7 @@ class RiskManagementEnv(gym.Env):
         tp_mult = np.clip((action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)   # 0.5 - 4.0 ATR
         risk_raw = np.clip((action[2] + 1) / 2, 0.0, 1.0)              # 0.0 - 1.0 (Percentage of MAX_RISK)
 
-        # SKIP TRADE Check (Low Risk Request)
-        if risk_raw < 1e-3:
-             self.history_actions.append(np.array([sl_mult, tp_mult, 0.0], dtype=np.float32))
-             self.history_pnl.append(0.0)
-             
-             self.current_step += 1
-             terminated = False
-             truncated = (self.current_step >= self.EPISODE_LENGTH)
-             
-             return self._get_observation(), 0.0, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED', 'lots': 0.0, 'equity': self.equity}
-        
-        # Get Trade Data
-        # Get Trade Data (Optimized Numpy Access)
+        # --- 2. Get Trade Data (Moved Before Logic) ---
         global_idx = self.episode_start_idx + self.current_step
         if global_idx >= self.n_samples:
              return self._get_observation(), 0, True, True, {}
@@ -239,8 +236,79 @@ class RiskManagementEnv(gym.Env):
         
         is_usd_quote = self.is_usd_quote_arr[global_idx]
         is_usd_base = self.is_usd_base_arr[global_idx]
+
+        # Use pre-loaded Arrays for Shadow Simulation
+        max_favorable = self.max_profit_pcts[global_idx] 
+        max_adverse = self.max_loss_pcts[global_idx] # Always negative (e.g. -0.001)
+
+        # --- 3. Check for Block/Skip ---
+        # Implicit Block: Requesting very low risk
+        is_blocked = (risk_raw < 1e-3)
         
-        # --- 2. Calculate Position ---
+        if is_blocked:
+             # SHADOW TRADE LOGIC (Oracle)
+             # Determine if the signal was "Tradeable" (Good) or "Risky" (Bad)
+             # Independent of agent's SL/TP - purely market potential
+             
+             # Metric: Did price move favorably enough without hitting safety stop?
+             # We assume a standard sensible trade seeks TARGET_PROFIT with MAX_DRAWDOWN 
+             
+             # Note: max_loss_pct is from entry. If direction is SHORT, max_loss_pct is (entry - max_h)/entry (neg).
+             # It is already correctly computed in dataset generation relative to direction.
+             
+             # Is the signal "Tradeable"?
+             # 1. Did it have potential? (Max Favorable > Target)
+             # 2. Was it safe? (Max Adverse > -Tolerance) -> Note: Adverse is negative number
+             is_safe = (max_adverse > -self.MAX_DRAWDOWN_PCT) 
+             has_potential = (max_favorable > self.TARGET_PROFIT_PCT)
+             
+             is_tradeable_signal = is_safe and has_potential
+             
+             reward = self.CONSTANT_BLOCK_PENALTY
+             
+             block_type = "NEUTRAL"
+             
+             if not is_tradeable_signal:
+                 # Scenario 1: Good Block (Avoided Bad/Risky Trade)
+                 # Reward proportional to the mess we avoided
+                 # If it was unsafe (crashed), reward for avoided loss
+                 if not is_safe:
+                     avoided_loss_magnitude = abs(max_adverse) # e.g. 0.002
+                     reward += avoided_loss_magnitude * self.BLOCK_REWARD_SCALE
+                     block_type = "GOOD_BLOCK_SAVED"
+                 else:
+                     # It was safe but had no potential (stagnant) -> Small reward or neutral
+                     reward += 0.1 # Small pat on back for not wasting capital
+                     block_type = "GOOD_BLOCK_STAGNANT"
+             else:
+                 # Scenario 2: Bad Block (Missed Good Trade)
+                 # Penalty proportional to missed profit
+                 missed_profit_magnitude = abs(max_favorable)
+                 reward -= missed_profit_magnitude * self.BLOCK_PENALTY_SCALE
+                 block_type = "BAD_BLOCK"
+                 
+             # Record zero-risk action
+             self.history_actions.append(np.array([sl_mult, tp_mult, 0.0], dtype=np.float32))
+             self.history_pnl.append(0.0)
+             
+             self.current_step += 1
+             terminated = False
+             truncated = (self.current_step >= self.EPISODE_LENGTH)
+             
+             info = {
+                 'pnl': 0.0, 
+                 'exit': 'BLOCKED', 
+                 'lots': 0.0, 
+                 'equity': self.equity,
+                 'block_type': block_type,
+                 'block_reward': reward,
+                 'is_blocked': True,
+                 'max_fav': max_favorable,
+                 'max_adv': max_adverse
+             }
+             return self._get_observation(), reward, terminated, truncated, info
+
+        # --- 4. Normal Trade Execution (If Not Blocked) ---
         
         # BUG FIX 5: Safer Drawdown Calc (Div by Zero Protection)
         peak_safe = max(self.peak_equity, 1e-9)
@@ -265,10 +333,6 @@ class RiskManagementEnv(gym.Env):
                  # Standard: Risk($) / (SL_Dist * Contract)
                  lots = risk_amount_cash / (sl_dist_price * self.CONTRACT_SIZE)
             elif is_usd_base:
-                 # Inverted (USDJPY): Risk($) * Price / (SL_Dist * Contract)
-                 # Because SL_Dist is in JPY, we need to fund risk in JPY terms ?? 
-                 # Wait: Risk(USD) = (SL_Dist(JPY) * Contract * Lots) / Price
-                 # -> Lots = Risk(USD) * Price / (SL_Dist(JPY) * Contract)
                  lots = (risk_amount_cash * entry_price) / (sl_dist_price * self.CONTRACT_SIZE)
             else:
                  # Cross-pair fallback (approx)
@@ -293,20 +357,27 @@ class RiskManagementEnv(gym.Env):
         # BUG FIX 2: Forced Position Size Check
         # If sensible risk calc results in lots < MIN_LOTS, we SKIP instead of forcing 0.01
         if lots < self.MIN_LOTS:
-            # Register as skipped/no-trade
+            # Register as skipped/no-trade (Treated as BLOCK)
+            # We recursively call step with 0 risk to trigger block logic? 
+            # Or just duplicate logic? Since we're in 'step', modifying action is tricky because we're past parsing.
+            # Let's simple treat as neutral block for now to keep simple, or apply standard penalty.
+            
+            # Applying standard block logic with 0 risk
+            # For simplicity, Recurse by returning block logic manually here
+            # Copy-paste Block Logic (Scenario: Too Small) -> Treat as Stagnant Block
+            reward = self.CONSTANT_BLOCK_PENALTY
+            
             self.history_actions.append(np.array([sl_mult, tp_mult, 0.0], dtype=np.float32))
             self.history_pnl.append(0.0)
             self.current_step += 1
             terminated = False
             truncated = (self.current_step >= self.EPISODE_LENGTH)
-            return self._get_observation(), 0.0, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED_SMALL', 'lots': 0.0, 'equity': self.equity}
+            return self._get_observation(), reward, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED_SMALL', 'lots': 0.0, 'equity': self.equity, 'is_blocked': True, 'block_type': 'SKIPPED_SMALL'}
 
         # Safe to clip now
         lots = np.clip(lots, self.MIN_LOTS, 100.0)
         
-        # Risk Violation Penalty Calculation (Monitoring only now, since we skip smalls)
-        # But we still check if we exceeded intended risk significantly due to rounding up to MIN_LOTS (if close)
-        # or max clamp.
+        # Risk Violation Penalty Calculation 
         risk_violation_penalty = 0.0
         
         # Re-calc risk based on final lots
@@ -330,16 +401,11 @@ class RiskManagementEnv(gym.Env):
         decoded_action = np.array([sl_mult, tp_mult, actual_risk_pct], dtype=np.float32)
         self.history_actions.append(decoded_action)
 
-        # --- 3. Simulate Outcome (Oracle) ---
+        # --- 5. Simulate Outcome (Normal Trade) ---
         tp_dist_price = tp_mult * atr
         
         sl_price = entry_price - (direction * sl_dist_price)
         tp_price = entry_price + (direction * tp_dist_price)
-        
-        # Use pre-loaded Arrays
-        max_favorable = self.max_profit_pcts[global_idx] 
-        max_adverse = self.max_loss_pcts[global_idx]
-     
         
         if direction == 1: # LONG
              sl_pct_dist = -abs(sl_dist_price / entry_price)
@@ -347,7 +413,6 @@ class RiskManagementEnv(gym.Env):
              hit_sl = max_adverse <= sl_pct_dist 
              hit_tp = max_favorable >= tp_pct_dist
         else: # SHORT
-             # Fixed Direction Logic
              sl_pct_dist = abs(sl_dist_price / entry_price)
              tp_pct_dist = -abs(tp_dist_price / entry_price)
              hit_sl = max_favorable >= sl_pct_dist
@@ -373,7 +438,8 @@ class RiskManagementEnv(gym.Env):
                 exited_on = 'TIME_LIMIT'
             
             exit_price = self.close_prices[global_idx]
-        # --- 4. Calculate Rewards ---
+            
+        # --- 6. Calculate Rewards ---
         price_change = exit_price - entry_price
         gross_pnl_quote = price_change * lots * self.CONTRACT_SIZE * direction
         
@@ -382,10 +448,8 @@ class RiskManagementEnv(gym.Env):
         if is_usd_quote:
              gross_pnl_usd = gross_pnl_quote
         elif is_usd_base:
-             # Convert Quote (JPY) to USD. Divide by Exit Price.
              gross_pnl_usd = gross_pnl_quote / exit_price 
         else:
-             # Fallback
              gross_pnl_usd = gross_pnl_quote
 
         costs = position_val * self.TRADING_COST_PCT
@@ -408,7 +472,6 @@ class RiskManagementEnv(gym.Env):
         dd_penalty = -(dd_increase ** 2) * 50.0
         
         # Normalized PnL reward (clip to prevent extreme values)
-        # Use log scale for better stability when equity is small
         prev_equity_safe = max(prev_equity, 1e-6)
         pnl_ratio = net_pnl / prev_equity_safe
         
@@ -426,7 +489,7 @@ class RiskManagementEnv(gym.Env):
         
         self.history_pnl.append(net_pnl / prev_equity)
         
-        # --- 5. Termination ---
+        # --- 7. Termination ---
         self.current_step += 1
         terminated = False
         truncated = (self.current_step >= self.EPISODE_LENGTH)
@@ -441,7 +504,11 @@ class RiskManagementEnv(gym.Env):
             'pnl': net_pnl,
             'exit': exited_on,
             'lots': lots,
-            'equity': self.equity
+            'equity': self.equity,
+            'is_blocked': False,
+            'block_reward': 0.0,
+            'max_fav': max_favorable,
+            'max_adv': max_adverse
         }
         
         return self._get_observation(), reward, terminated, truncated, info
