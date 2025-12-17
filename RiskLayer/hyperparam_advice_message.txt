@@ -1,0 +1,49 @@
+Hey! I'm working on this reinforcement learning trading bot and currently tuning the Risk Agent. I know you're an expert with hyperparameters, so I wanted to get your advice on my current setup.
+
+Here is the full breakdown of the system:
+
+### **1. The Goal**
+The agent receives trade signals from an existing Alpha model and needs to output strict risk management parameters (Stop Loss, Take Profit, Position Size) to survive on a small account ($10 start) while maximizing growth.
+
+### **2. Dataset**
+- **Size**: ~1.9 Million rows (Trade signals + Market features).
+- **Type**: Sequential financial time-series data.
+
+### **3. Observation Space (Inputs)**
+Total **165 Features** per step:
+- **[0-139] Market State**: 140 Alpha model features (volatility, regression slopes, etc.).
+- **[140-144] Account State**: 5 features (Current Equity, Drawdown %, Leverage, Risk Cap, Padding).
+- **[145-149] PnL History**: Floating point results of last 5 trades.
+- **[150-164] Action History**: Flattened array of the last 5 decisions made (SL, TP, Risk).
+
+### **4. Action Space (Outputs)**
+Continuous Box with **3 values** (Tanh normalized -1 to 1):
+1.  **Stop Loss Multiplier**: Maps to 0.2x – 2.0x ATR.
+2.  **Take Profit Multiplier**: Maps to 0.5x – 4.0x ATR.
+3.  **Position Size (Risk Factor)**: Maps to 0% – 100% of Max Allowed Risk.
+    *   *Special Logic*: If Position Size < 0.5%, the trade is **BLOCKED**.
+
+### **5. Current PPO Hyperparameters (Stable Baselines 3)**
+I'm using **PPO** with an `MlpPolicy`.
+
+| Parameter | Current Value | Notes |
+| :--- | :--- | :--- |
+| **Learning Rate** | `3e-4` | Standard default. |
+| **Batch Size** | `512` | |
+| **N Steps** | `2048` | Steps per environment per update. |
+| **N Epochs** | `10` | |
+| **Gamma** | `0.99` | Discount factor. |
+| **GAE Lambda** | `0.95` | |
+| **Clip Range** | `0.2` | |
+| **Entropy Coef** | `0.01` | To encourage exploration. |
+| **VF Coef** | `0.5` | Value Function coefficient. |
+| **Max Grad Norm** | `0.5` | Gradient clipping. |
+| **Total Timesteps**| `5,000,000` | |
+
+### **6. Network Architecture**
+- **Policy**: Default SB3 `MlpPolicy` (likely 2 layers of 64 units: `[64, 64]`).
+- **Parallel Envs**: Running on `N_CPU - 1` processes.
+
+Given the 1.9M dataset and the noisy nature of financial data, do you think I should adjust the **Network Size** (maybe deeper/wider?) or tweak the **Batch Size/Learning Rate**? The agent sometimes struggles to converge on the "blocking" behavior specifically.
+
+Thanks!

@@ -5,9 +5,10 @@ import numpy as np
 import multiprocessing
 from datetime import datetime
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.utils import set_random_seed
+from torch.nn import LeakyReLU
 
 # Add src to path so we can import the environment
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -56,22 +57,28 @@ class TeeStderr:
 # --- Configuration for MAX SPEED ---
 # CPU Utilization
 N_CPU = multiprocessing.cpu_count()
-# Leave 2 cores for system/backtesting if user is doing other things, or use all if dedicated.
-# Using N_CPU - 2 is safer for responsiveness, but for "MAX SPEED" we'll use max(1, N - 1)
-N_ENVS = max(1, N_CPU - 1)
+# User requested MAXIMUM SPEED. Using ALL available cores.
+# Warning: System might become sluggish during training.
+N_ENVS = N_CPU
 
-print(f"Detected {N_CPU} CPUs. Using {N_ENVS} parallel environments.")
+print(f"Detected {N_CPU} CPUs. Using {N_ENVS} parallel environments for MAX SPEED.")
 
-# PPO Hyperparameters (Optimized for Throughput)
-TOTAL_TIMESTEPS = 5_000_000 # Increased since we train faster
-LEARNING_RATE = 3e-4
-N_STEPS = 2048 # Steps per env per update. Total batch = N_STEPS * N_ENVS
-BATCH_SIZE = 512 # Larger batch size for GPU efficiency
-GAMMA = 0.99
-GAE_LAMBDA = 0.95
-ENT_COEF = 0.01 
+# Optimize for fixed input size
+if torch.cuda.is_available():
+    torch.backends.cudnn.benchmark = True
+
+# PPO Hyperparameters (Expert Tuned for Financial Data)
+TOTAL_TIMESTEPS = 10_000_000 # Increased for better convergence
+LEARNING_RATE = 1e-4 # Reduced for stability with noisy data
+N_STEPS = 8192 # Increased experience per update
+BATCH_SIZE = 2048 # Larger batch size to average out noise
+GAMMA = 0.97 # Slightly lower (trades are relatively independent)
+GAE_LAMBDA = 0.92
+ENT_COEF = 0.02 # Higher initial entropy 
 VF_COEF = 0.5
 MAX_GRAD_NORM = 0.5
+CLIP_RANGE = 0.15 # Tighter clipping
+N_EPOCHS = 6
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -103,6 +110,23 @@ CHECKPOINT_DIR = os.path.join(MODELS_DIR, 'checkpoints')
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+class EntropyDecayCallback(BaseCallback):
+    """
+    Decays entropy coefficient linearly over time to encourage 
+    exploration early (learning to block) and exploitation later.
+    """
+    def __init__(self, initial_ent=0.05, final_ent=0.005, decay_steps=3_000_000):
+        super().__init__()
+        self.initial_ent = initial_ent
+        self.final_ent = final_ent
+        self.decay_steps = decay_steps
+    
+    def _on_step(self):
+        progress = min(1.0, self.num_timesteps / self.decay_steps)
+        new_ent = self.initial_ent - progress * (self.initial_ent - self.final_ent)
+        self.model.ent_coef = new_ent
+        return True
 
 class TensorboardCallback(BaseCallback):
     """
@@ -145,7 +169,28 @@ def train():
     # SubprocVecEnv runs each env in a separate process
     env_fns = [make_env(i) for i in range(N_ENVS)]
     vec_env = SubprocVecEnv(env_fns)
+    
+    # CRITICAL: Normalize observations. 
+    # Financial features are on vastly different scales (Prices vs Slopes vs PnL)
+    vec_env = VecNormalize(
+        vec_env,
+        norm_obs=True,
+        norm_reward=True,
+        clip_obs=10.0,
+        clip_reward=10.0,
+    )
+    
     vec_env = VecMonitor(vec_env, LOG_DIR) # Monitor wrapper for logging
+
+    # Network Architecture (Expert Recommended: Larger for 165 features)
+    policy_kwargs = dict(
+        net_arch=dict(
+            pi=[512, 256, 128],  # Policy network (actor)
+            vf=[512, 256, 128]   # Value network (critic)
+        ),
+        activation_fn=LeakyReLU,  # Better for financial data
+        log_std_init=-1.0,  # Start with lower action variance
+    )
 
     # 2. Define Model (PPO)
     model = PPO(
@@ -154,39 +199,45 @@ def train():
         learning_rate=LEARNING_RATE,
         n_steps=N_STEPS,
         batch_size=BATCH_SIZE,
-        n_epochs=10,
+        n_epochs=N_EPOCHS,
         gamma=GAMMA,
         gae_lambda=GAE_LAMBDA,
-        clip_range=0.2,
+        clip_range=CLIP_RANGE,
         ent_coef=ENT_COEF,
         vf_coef=VF_COEF,
         max_grad_norm=MAX_GRAD_NORM,
+        policy_kwargs=policy_kwargs,
         verbose=1,
         tensorboard_log=LOG_DIR,
         device=device
     )
 
     # 3. Callbacks
+    # 3. Callbacks
     checkpoint_callback = CheckpointCallback(
-        save_freq=50_000 // (N_ENVS), # Save roughly every 50k total steps
+        save_freq=500_000 // N_ENVS, # Roughly 500k steps (adjusted for parallel envs)
         save_path=CHECKPOINT_DIR,
         name_prefix="risk_model_ppo"
     )
     
+    entropy_callback = EntropyDecayCallback(initial_ent=0.05, final_ent=0.005)
     tb_callback = TensorboardCallback()
 
     # 4. Train
     try:
         model.learn(
             total_timesteps=TOTAL_TIMESTEPS, 
-            callback=[checkpoint_callback, tb_callback],
+            callback=[checkpoint_callback, entropy_callback, tb_callback],
             progress_bar=True
         )
         
-        # 5. Save Final Model
+        # 5. Save Final Model and Normalization Stats
         final_path = os.path.join(MODELS_DIR, "risk_model_final")
         model.save(final_path)
+        # Important: Save the environment normalization statistics
+        vec_env.save(os.path.join(MODELS_DIR, "vec_normalize.pkl"))
         print(f"Training Complete. Model saved to {final_path}")
+        print(f"Normalization stats saved to {os.path.join(MODELS_DIR, 'vec_normalize.pkl')}")
         
     except KeyboardInterrupt:
         print("\nTraining interrupted manually.")

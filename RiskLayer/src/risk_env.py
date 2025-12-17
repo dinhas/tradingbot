@@ -275,7 +275,15 @@ class RiskManagementEnv(gym.Env):
 
         # --- 3. Check for Block/Skip ---
         # Implicit Block: Requesting very low risk (Threshold relaxed to 0.5% for learnability)
-        is_blocked = (risk_raw < 5e-3)
+        # USER REALIZATION FIX: Bottom 10% of action knob = Explicit BLOCK (Dead-zone)
+        # This makes finding "Block" much easier (action < -0.80) vs (action < -0.99)
+        BLOCK_THRESHOLD = 0.10
+        is_blocked = (risk_raw < BLOCK_THRESHOLD)
+        
+        if not is_blocked:
+             # Rescale risk to allow full range [0, 1] starting after the threshold
+             # This ensures we don't accidentally ban valid small trades (0.001% risk)
+             risk_raw = (risk_raw - BLOCK_THRESHOLD) / (1.0 - BLOCK_THRESHOLD)
         
         if is_blocked:
              # SHADOW TRADE LOGIC (Oracle)
