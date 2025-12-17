@@ -70,94 +70,139 @@ class RiskManagementEnv(gym.Env):
         self.history_actions = deque(maxlen=5)
         
     def _load_data(self):
-        """Load and pre-process the risk dataset."""
-        try:
-            self.df = pd.read_parquet(self.dataset_path)
-            
-            # Validation
-            chk_cols = ['max_profit_pct', 'max_loss_pct', 'close_1000_price']
-            for c in chk_cols:
-                if c not in self.df.columns:
-                    raise ValueError(f"Missing column {c} in dataset")
-            
-            # Handle features column
-            if 'features' in self.df.columns:
-                # Convert features to numpy stack for speed
-                # Features may be stored as lists, convert to array
-                features_data = self.df['features'].values
-                if isinstance(features_data[0], (list, np.ndarray)):
-                    self.features_array = np.stack(features_data).astype(np.float32)
+        """
+        Load and pre-process the risk dataset with Memory Mapping (mmap) optimization.
+        This allows multiple environments to share RAM, preventing crashes.
+        """
+        import gc
+        import time
+        
+        cache_dir = os.path.splitext(self.dataset_path)[0] + "_cache"
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # Check timestamps
+        parquet_mtime = os.path.getmtime(self.dataset_path)
+        cache_valid = True
+        required_files = ['features.npy', 'metadata.npy', 'entry_prices.npy', 'atrs.npy', 
+                         'directions.npy', 'max_profit_pcts.npy', 'max_loss_pcts.npy', 
+                         'close_prices.npy', 'is_usd_quote.npy', 'is_usd_base.npy']
+                         
+        for f in required_files:
+            fp = os.path.join(cache_dir, f)
+            if not os.path.exists(fp) or os.path.getmtime(fp) < parquet_mtime:
+                cache_valid = False
+                break
+        
+        # Lock file for race conditions in multiprocessing
+        lock_file = os.path.join(cache_dir, "generating.lock")
+        
+        # Wait if another process is generating cache
+        if os.path.exists(lock_file):
+            print(f"[{os.getpid()}] Waiting for cache generation...")
+            while os.path.exists(lock_file):
+                time.sleep(1)
+            # Re-check validity after wait
+            cache_valid = True
+        
+        if not cache_valid:
+            # Create Lock
+            try:
+                with open(lock_file, 'w') as f: f.write(str(os.getpid()))
+                
+                print(f"[{os.getpid()}] Generating memory-mapped cache at {cache_dir}...")
+                self.df = pd.read_parquet(self.dataset_path)
+                
+                # --- Sanity Checks & Preprocessing ---
+                if 'direction' not in self.df.columns:
+                     raise ValueError("Missing 'direction' column")
+                     
+                chk_cols = ['max_profit_pct', 'max_loss_pct', 'close_1000_price']
+                for c in chk_cols:
+                    if c not in self.df.columns:
+                         raise ValueError(f"Missing {c}")
+
+                # Features
+                if 'features' in self.df.columns:
+                    features_data = self.df['features'].values
+                    if len(features_data) > 0 and isinstance(features_data[0], (list, np.ndarray)):
+                        # Stack is heavy, but necessary once
+                        features_array = np.stack(features_data).astype(np.float32)
+                    else:
+                        features_array = np.array(features_data).astype(np.float32)
                 else:
-                    # If already arrays, just convert
-                    self.features_array = np.array(features_data).astype(np.float32)
-            else:
-                # Create dummy features array (140 features) if missing
-                # This allows training to continue but agent won't have market context
-                print("WARNING: 'features' column missing in dataset. Using zero-filled features.")
-                print("         Regenerate dataset with features for proper training.")
-                n_samples = len(self.df)
-                self.features_array = np.zeros((n_samples, 140), dtype=np.float32)
-            
-            # BUG FIX 6: Missing Dataset Validation
-            if 'direction' not in self.df.columns:
-                raise ValueError("Missing 'direction' column in dataset")
-            if not self.df['direction'].isin([1, -1]).all():
-                raise ValueError("Direction must be 1 (LONG) or -1 (SHORT)")
-            
-            # BUG FIX: Validate feature shape
-            if self.features_array.shape[1] != 140:
-                raise ValueError(f"Expected 140 features, got {self.features_array.shape[1]}")
+                    print("WARNING: Missing features column. Using zeros.")
+                    features_array = np.zeros((len(self.df), 140), dtype=np.float32)
 
-            # Validation for Non-USD and hours_to_exit
-            if 'hours_to_exit' not in self.df.columns:
-                 print("INFO: Dataset missing 'hours_to_exit'. Time limit feature disabled.")
-            
-            if 'pair' in self.df.columns:
-                 non_usd_mask = ~self.df['pair'].astype(str).str.upper().str.endswith('USD')
-                 if non_usd_mask.any():
-                     bad_pairs = self.df.loc[non_usd_mask, 'pair'].unique()
-                     print(f"WARNING: Non-USD pairs detected: {bad_pairs}. Using approximate $100k valuation.")
+                # Metadata checking for non-USDs
+                if 'pair' in self.df.columns:
+                     pairs = self.df['pair'].astype(str).str.upper()
+                     is_usd_quote = pairs.str.endswith('USD').values
+                     is_usd_base = (pairs.str.startswith('USD') & ~is_usd_quote).values
+                else:
+                     # Fallback
+                     n = len(self.df)
+                     is_usd_quote = np.ones(n, dtype=bool)
+                     is_usd_base = np.zeros(n, dtype=bool)
 
-            self.n_samples = len(self.df)
-
-            # SPEED OPTIMIZATION: Convert common columns to Numpy arrays
-            # Accessing dataframe via .iloc depends on python overhead and is slow. 
-            # Numpy arrays are much faster for RL inner loops.
-            self.entry_prices = self.df['entry_price'].values.astype(np.float32)
-            self.atrs = self.df['atr'].values.astype(np.float32)
-            self.directions = self.df['direction'].values.astype(np.float32)
-            self.max_profit_pcts = self.df['max_profit_pct'].values.astype(np.float32)
-            self.max_loss_pcts = self.df['max_loss_pct'].values.astype(np.float32)
-            self.close_prices = self.df['close_1000_price'].values.astype(np.float32)
+                # Save arrays
+                np.save(os.path.join(cache_dir, 'features.npy'), features_array)
+                np.save(os.path.join(cache_dir, 'entry_prices.npy'), self.df['entry_price'].values.astype(np.float32))
+                np.save(os.path.join(cache_dir, 'atrs.npy'), self.df['atr'].values.astype(np.float32))
+                np.save(os.path.join(cache_dir, 'directions.npy'), self.df['direction'].values.astype(np.float32))
+                np.save(os.path.join(cache_dir, 'max_profit_pcts.npy'), self.df['max_profit_pct'].values.astype(np.float32))
+                np.save(os.path.join(cache_dir, 'max_loss_pcts.npy'), self.df['max_loss_pct'].values.astype(np.float32))
+                np.save(os.path.join(cache_dir, 'close_prices.npy'), self.df['close_1000_price'].values.astype(np.float32))
+                np.save(os.path.join(cache_dir, 'is_usd_quote.npy'), is_usd_quote)
+                np.save(os.path.join(cache_dir, 'is_usd_base.npy'), is_usd_base)
+                
+                # Optional time limit
+                if 'hours_to_exit' in self.df.columns:
+                    np.save(os.path.join(cache_dir, 'hours_to_exits.npy'), self.df['hours_to_exit'].values.astype(np.float32))
+                
+                # Free memory immediately
+                del self.df
+                del features_array
+                gc.collect()
+                
+            except Exception as e:
+                print(f"CRITICAL ERROR generating cache: {e}")
+                # Remove lock if failed to avoid deadlock
+                if os.path.exists(lock_file): os.remove(lock_file)
+                raise e
+            finally:
+                if os.path.exists(lock_file): os.remove(lock_file)
+                
+        # --- Load from Cache (Memory Mapped) ---
+        try:
+            # mmap_mode='r' means Read-Only, Shared Memory. 
+            # The OS loads pages once and shares them across processes.
+            self.features_array = np.load(os.path.join(cache_dir, 'features.npy'), mmap_mode='r')
+            self.entry_prices = np.load(os.path.join(cache_dir, 'entry_prices.npy'), mmap_mode='r')
+            self.atrs = np.load(os.path.join(cache_dir, 'atrs.npy'), mmap_mode='r')
+            self.directions = np.load(os.path.join(cache_dir, 'directions.npy'), mmap_mode='r')
+            self.max_profit_pcts = np.load(os.path.join(cache_dir, 'max_profit_pcts.npy'), mmap_mode='r')
+            self.max_loss_pcts = np.load(os.path.join(cache_dir, 'max_loss_pcts.npy'), mmap_mode='r')
+            self.close_prices = np.load(os.path.join(cache_dir, 'close_prices.npy'), mmap_mode='r')
+            self.is_usd_quote_arr = np.load(os.path.join(cache_dir, 'is_usd_quote.npy'), mmap_mode='r')
+            self.is_usd_base_arr = np.load(os.path.join(cache_dir, 'is_usd_base.npy'), mmap_mode='r')
             
-            # Optional Time limit
-            if 'hours_to_exit' in self.df.columns:
-                self.hours_to_exits = self.df['hours_to_exit'].values.astype(np.float32)
+            p_time = os.path.join(cache_dir, 'hours_to_exits.npy')
+            if os.path.exists(p_time):
+                self.hours_to_exits = np.load(p_time, mmap_mode='r')
                 self.has_time_limit = True
             else:
                 self.has_time_limit = False
 
-            # Pre-compute Currency Flags
-            pairs = self.df['pair'].astype(str).str.upper()
-            self.is_usd_quote_arr = pairs.str.endswith('USD').values
-            self.is_usd_base_arr = (pairs.str.startswith('USD') & ~self.is_usd_quote_arr).values
+            self.n_samples = len(self.entry_prices)
+            # print(f"[{os.getpid()}] Successfully loaded mmap dataset ({self.n_samples} rows)")
             
         except Exception as e:
-            print(f"CRITICAL: Failed to load dataset: {e}")
-            # Create dummy data for sanity checks if file missing
-            self.features_array = np.zeros((100, 140), dtype=np.float32)
-            self.n_samples = 100
-            
-            # Dummy Arrays
-            self.entry_prices = np.ones(100, dtype=np.float32)
-            self.atrs = np.full(100, 0.001, dtype=np.float32)
-            self.directions = np.ones(100, dtype=np.float32)
-            self.max_profit_pcts = np.full(100, 0.01, dtype=np.float32)
-            self.max_loss_pcts = np.full(100, -0.01, dtype=np.float32)
-            self.close_prices = np.ones(100, dtype=np.float32)
-            self.has_time_limit = False
-            self.is_usd_quote_arr = np.ones(100, dtype=bool)
-            self.is_usd_base_arr = np.zeros(100, dtype=bool)
+            print(f"Error loading mmap cache: {e}. Falling back to clean load.")
+            # Verify cache might be corrupted
+            import shutil
+            if os.path.exists(cache_dir):
+                shutil.rmtree(cache_dir)
+            self._load_data() # Retry (recursive, will regenerate)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)

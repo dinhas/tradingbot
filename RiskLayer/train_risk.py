@@ -165,6 +165,12 @@ def train():
     if not os.path.exists(DATASET_PATH):
         raise FileNotFoundError(f"Dataset not found at {DATASET_PATH}")
 
+    # 0. Pre-generate Cache (Sequentially) to avoid race conditions
+    print("Pre-validating dataset cache...")
+    temp_env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
+    del temp_env
+    print("Cache validated. Starting parallel environments...")
+
     # 1. Create Vectorized Environment (Parallel)
     # SubprocVecEnv runs each env in a separate process
     env_fns = [make_env(i) for i in range(N_ENVS)]
