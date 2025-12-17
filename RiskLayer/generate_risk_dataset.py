@@ -140,7 +140,43 @@ def generate_dataset_batched(model_path, data_dir, output_file):
     # Create output dir if needed
     os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
     
-    # Create valid index chunks
+    # Create valid index chunks (Pre-calculation)
+    # Check for incomplete data (Swiss Cheese effect)
+    if total_rows < 400000:
+        logger.warning(f"Data seems incomplete (only {total_rows} rows). Expected >400k for 9 years.")
+        logger.warning("Triggering forced re-download to fix gaps...")
+        
+        try:
+            import subprocess
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            downloader = os.path.join(script_dir, "download_training_data.py")
+            
+            if os.path.exists(downloader):
+                # Run with --force
+                subprocess.check_call([sys.executable, downloader, "--output", data_dir, "--force"])
+                
+                # Re-initialize environment to load new data
+                logger.info("Re-initializing environment with new data...")
+                env = TradingEnv(data_dir=data_dir, stage=1, is_training=False)
+                df = env.processed_data
+                total_rows = len(df)
+                logger.info(f"New total data points: {total_rows}")
+                
+                # Update cached arrays
+                assets = env.assets
+                close_arrays = {a: env.close_arrays[a] for a in assets}
+                high_arrays = {a: env.high_arrays[a] for a in assets}
+                low_arrays = {a: env.low_arrays[a] for a in assets}
+                atr_arrays = {a: env.atr_arrays[a] for a in assets}
+                
+                # Update indices
+                end_idx = total_rows - LOOKAHEAD_STEPS
+            else:
+                logger.error("Downloader not found, cannot fix data.")
+                
+        except Exception as e:
+            logger.error(f"Failed to auto-fix data: {e}")
+
     full_indices = range(start_idx, end_idx)
     chunks = [full_indices[i:i + BATCH_SIZE] for i in range(0, len(full_indices), BATCH_SIZE)]
     

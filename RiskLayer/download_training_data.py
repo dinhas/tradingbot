@@ -74,11 +74,12 @@ TIMEFRAME = ProtoOATrendbarPeriod.M5
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DataFetcherTraining:
-    def __init__(self, output_dir="Alpha/data"):
+    def __init__(self, output_dir="Alpha/data", force=False):
         host = EndPoints.PROTOBUF_LIVE_HOST if CT_HOST_TYPE.lower() == "live" else EndPoints.PROTOBUF_DEMO_HOST
         self.client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
         self.request_delay = 0.25
         self.output_dir = output_dir
+        self.force = force
 
     def start(self):
         self.client.setConnectedCallback(self.on_connected)
@@ -127,7 +128,7 @@ class DataFetcherTraining:
                 if symbol_id == 0: continue
                 
                 fname = os.path.join(self.output_dir, f"{asset_name}_5m.parquet") # Standard naming for training data
-                if os.path.exists(fname):
+                if os.path.exists(fname) and not self.force:
                     logging.info(f"✅ Found existing data for {asset_name}. Skipping download.")
                     continue
                     
@@ -166,20 +167,23 @@ class DataFetcherTraining:
             req.fromTimestamp = int(current_start.timestamp() * 1000)
             req.toTimestamp = int(chunk_end.timestamp() * 1000)
             
-            max_retries = 5
+            max_retries = 30  # Increased from 5 to 30 to handle flaky connections
             retry_count = 0
             chunk_success = False
-
+            
             while retry_count < max_retries:
                 try:
                     d = defer.Deferred()
-                    reactor.callLater(self.request_delay, d.callback, None)
+                    # Exponential backoff with cap
+                    delay = min(self.request_delay * (1.5 ** retry_count), 30.0)
+                    reactor.callLater(delay, d.callback, None)
                     yield d
                     
                     res_msg = yield self.send_proto_request(req)
                     payload = Protobuf.extract(res_msg)
                     
                     if not hasattr(payload, 'trendbar') or not payload.trendbar:
+                        # Empty data from server = Valid gap (e.g. holiday or no history)
                         chunk_success = True
                         break
                     
@@ -196,6 +200,7 @@ class DataFetcherTraining:
                         })
                     
                     if not bars_data:
+                        # Empty list = Valid gap
                         chunk_success = True
                         break
 
@@ -210,14 +215,13 @@ class DataFetcherTraining:
 
                 except Exception as e:
                     retry_count += 1
-                    logging.error(f"⚠️ Error {asset_name} retry {retry_count}: {e}")
-                    backoff = 2.0 ** retry_count
-                    d_wait = defer.Deferred()
-                    reactor.callLater(backoff, d_wait.callback, None)
-                    yield d_wait
+                    logging.error(f"⚠️ Error {asset_name} retry {retry_count}/{max_retries}: {e}")
+                    
+                    if retry_count >= max_retries:
+                        logging.error(f"❌ CRITICAL FAIL: Could not fetch chunk {current_start}. Data will be MISSING.")
             
             if not chunk_success:
-                logging.error(f"❌ Failed chunk {current_start} for {asset_name}. Skipping.")
+                logging.error(f"❌ GAP created at {current_start} for {asset_name} due to exhaust retries.")
             
             current_start = chunk_end
         
@@ -233,6 +237,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="Alpha/data", help="Output directory")
+    parser.add_argument("--force", action="store_true", help="Force redownload even if files exist")
     parser.add_argument("--log_dir", type=str, default=None, help="Log directory (default: logs in script directory)")
     args = parser.parse_args()
     
@@ -245,7 +250,7 @@ if __name__ == "__main__":
     
     try:
         print(f"All terminal output will be saved to: {log_file}")
-        fetcher = DataFetcherTraining(output_dir=args.output)
+        fetcher = DataFetcherTraining(output_dir=args.output, force=args.force)
         print("Starting Training Data Fetcher... (Press Ctrl+C to stop manually)")
         fetcher.start()
     except KeyboardInterrupt:
