@@ -62,7 +62,7 @@ def test_reward_logic():
     else:
         print("FAIL: Expected positive reward for Good Block.")
 
-    print("\n--- Test 2: Blocking a GOOD SIGNAL (Should be PENALIZED) ---")
+    print("\n--- Test 2: Blocking a GOOD SIGNAL (Should be PENALIZED - ASYMMETRIC) ---")
     env.set_step(1) # Index 1 is GOOD
     # Action: Block
     action = np.array([0.0, 0.0, -1.0], dtype=np.float32)
@@ -72,10 +72,11 @@ def test_reward_logic():
     print(f"Action: BLOCKED. Reward: {reward:.4f}")
     print(f"Info: {info}")
     
-    if reward < 0 and info['block_type'] == "BAD_BLOCK":
-        print("PASS: Correctly penalized for blocking good signal.")
+    # Expected: -0.01 * 50.0 = -0.5 (approx)
+    if reward < 0 and reward > -1.0 and info['block_type'] == "BAD_BLOCK":
+        print(f"PASS: Correctly penalized (Asymmetric). Reward {reward:.4f} is approx -0.5.")
     else:
-        print("FAIL: Expected negative penalty for Bad Block.")
+        print(f"FAIL: Expected approx -0.5, got {reward:.4f}")
 
     print("\n--- Test 3: Trading a BAD SIGNAL (Should be PENALIZED by PnL) ---")
     # For this to generate PnL, we need close price to reflect the crash.
@@ -98,6 +99,27 @@ def test_reward_logic():
         print("PASS: Correctly penalized for trading bad signal (Hit SL).")
     else:
         print("FAIL: Expected negative PnL reward.")
+
+    print("\n--- Test 4: SKIPPED_SMALL (Position Size < MIN_LOTS) ---")
+    env.set_step(0) # Index 0 is BAD
+    # Action: Risk very small but NOT blocked explicitly (e.g. 0.006 -> >0.005 but results in tiny lots)
+    # Wait, MAX_RISK=0.40. RiskRaw=0.006 -> 0.0024 risk. 
+    # Equity=100. Risk$=0.24. SL=0.001(100pips). Contract=100k.
+    # Lots = 0.24 / (0.001 * 100000) = 0.24 / 100 = 0.0024 lots.
+    # MIN_LOTS = 0.01. So this will trigger SKIPPED_SMALL.
+    
+    # Action[2] -> RiskRaw. Mapped: (a+1)/2. 
+    # want 0.006. (x+1)/2 = 0.006 => x+1 = 0.012 => x = -0.988
+    action = np.array([0.0, 0.0, -0.988], dtype=np.float32) 
+    obs, reward, terminated, truncated, info = env.step(action)
+    
+    print(f"Action: SMALL RISK. Lots: {info.get('lots')}")
+    print(f"Reward: {reward:.4f}, BlockType: {info.get('block_type')}")
+    
+    if info['block_type'] == "SKIPPED_SMALL_GOOD_BLOCK_SAVED" and reward > 0:
+         print("PASS: SKIPPED_SMALL correctly triggered Oracle logic.")
+    else:
+         print(f"FAIL: Expected oracle reward for SKIPPED_SMALL. Got {info.get('block_type')}")
 
 if __name__ == "__main__":
     test_reward_logic()

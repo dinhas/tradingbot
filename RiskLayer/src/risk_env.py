@@ -18,8 +18,8 @@ class RiskManagementEnv(gym.Env):
         [150..164]: History (Last 5 Actions - flattened [SL_Mult, TP_Mult, Risk_Pct])
         
     Action Space (3):
-        0: SL Multiplier (0.5x - 4.0x ATR)
-        1: TP Multiplier (1.0x - 8.0x ATR)
+        0: SL Multiplier (0.2x - 2.0x ATR)
+        1: TP Multiplier (0.5x - 4.0x ATR)
         2: Risk Factor (0.01% - 100% of Max Risk) -> Scaled to Actual Risk %
     """
     metadata = {'render_modes': ['human']}
@@ -44,7 +44,7 @@ class RiskManagementEnv(gym.Env):
         
         # BLOCKING REWARD PARAMS
         self.BLOCK_REWARD_SCALE = 100.0  # Scale for avoided loss
-        self.BLOCK_PENALTY_SCALE = 100.0 # Scale for missed profit
+        self.BLOCK_PENALTY_SCALE = 50.0 # Scale for missed profit (Psychological Asymmetry)
         self.CONSTANT_BLOCK_PENALTY = -0.02 # Small cost per block
         
         # Tradeable Signal Definitions
@@ -218,6 +218,38 @@ class RiskManagementEnv(gym.Env):
             
         return obs
 
+    def _evaluate_block_reward(self, max_favorable, max_adverse):
+        """
+        Helper to calculate reward for blocked/skipped trades using Oracle.
+        Implements Tiered Blocking Rewards (Loss Avoidance) vs Scaled Win-Miss Penalties.
+        """
+        # 1. Tiered Blocking Rewards (Loss Avoidance)
+        # Priority: Survival. Detect Catastrophic/Major losses first.
+        # User Instruction: "Catastrophic Loss (>3% loss)" -> max_adverse < -0.03
+        if max_adverse < -0.03:
+            return 200.0, "BLOCKED_CATASTROPHIC"
+        
+        if max_adverse < -0.015:
+             # Major Loss (1.5% - 3%)
+             return 50.0, "BLOCKED_MAJOR_LOSS"
+             
+        # 2. Scaled Win-Miss Penalties (Opportunity Cost)
+        # "Missed >2% profit"
+        if max_favorable > 0.02:
+             return -300.0, "MISSED_HUGE_WIN"
+             
+        # "Missed 1% - 2% profit"
+        if max_favorable > 0.01:
+             return -100.0, "MISSED_BIG_WIN"
+             
+        # "Missed <1% profit" (Assuming positive profit)
+        if max_favorable > 0.0:
+             return -30.0, "MISSED_SMALL_WIN"
+             
+        # 3. Minor Loss / Noise (<1.5% Loss and No Profit)
+        # "Minor Loss (<1.5%)" -> reward +5
+        return 5.0, "BLOCKED_MINOR_LOSS"
+
     def step(self, action):
         # --- 1. Parse Action ---
         # Clip actions to valid ranges (SCALPING ADJUSTED)
@@ -242,53 +274,16 @@ class RiskManagementEnv(gym.Env):
         max_adverse = self.max_loss_pcts[global_idx] # Always negative (e.g. -0.001)
 
         # --- 3. Check for Block/Skip ---
-        # Implicit Block: Requesting very low risk
-        is_blocked = (risk_raw < 1e-3)
+        # Implicit Block: Requesting very low risk (Threshold relaxed to 0.5% for learnability)
+        is_blocked = (risk_raw < 5e-3)
         
         if is_blocked:
              # SHADOW TRADE LOGIC (Oracle)
-             # Determine if the signal was "Tradeable" (Good) or "Risky" (Bad)
-             # Independent of agent's SL/TP - purely market potential
-             
-             # Metric: Did price move favorably enough without hitting safety stop?
-             # We assume a standard sensible trade seeks TARGET_PROFIT with MAX_DRAWDOWN 
-             
-             # Note: max_loss_pct is from entry. If direction is SHORT, max_loss_pct is (entry - max_h)/entry (neg).
-             # It is already correctly computed in dataset generation relative to direction.
-             
-             # Is the signal "Tradeable"?
-             # 1. Did it have potential? (Max Favorable > Target)
-             # 2. Was it safe? (Max Adverse > -Tolerance) -> Note: Adverse is negative number
-             is_safe = (max_adverse > -self.MAX_DRAWDOWN_PCT) 
-             has_potential = (max_favorable > self.TARGET_PROFIT_PCT)
-             
-             is_tradeable_signal = is_safe and has_potential
-             
-             reward = self.CONSTANT_BLOCK_PENALTY
-             
-             block_type = "NEUTRAL"
-             
-             if not is_tradeable_signal:
-                 # Scenario 1: Good Block (Avoided Bad/Risky Trade)
-                 # Reward proportional to the mess we avoided
-                 # If it was unsafe (crashed), reward for avoided loss
-                 if not is_safe:
-                     avoided_loss_magnitude = abs(max_adverse) # e.g. 0.002
-                     reward += avoided_loss_magnitude * self.BLOCK_REWARD_SCALE
-                     block_type = "GOOD_BLOCK_SAVED"
-                 else:
-                     # It was safe but had no potential (stagnant) -> Small reward or neutral
-                     reward += 0.1 # Small pat on back for not wasting capital
-                     block_type = "GOOD_BLOCK_STAGNANT"
-             else:
-                 # Scenario 2: Bad Block (Missed Good Trade)
-                 # Penalty proportional to missed profit
-                 missed_profit_magnitude = abs(max_favorable)
-                 reward -= missed_profit_magnitude * self.BLOCK_PENALTY_SCALE
-                 block_type = "BAD_BLOCK"
+             # Use Helper for consistent logic
+             reward, block_type = self._evaluate_block_reward(max_favorable, max_adverse)
                  
-             # Record zero-risk action
-             self.history_actions.append(np.array([sl_mult, tp_mult, 0.0], dtype=np.float32))
+             # Record zero-risk action (Clean History)
+             self.history_actions.append(np.array([0.0, 0.0, 0.0], dtype=np.float32))
              self.history_pnl.append(0.0)
              
              self.current_step += 1
@@ -319,7 +314,7 @@ class RiskManagementEnv(gym.Env):
         actual_risk_pct = risk_raw * self.MAX_RISK_PER_TRADE * risk_cap_mult
         
         # Calculate Lots (Risk Based)
-        sl_dist_price = sl_mult * atr
+        sl_dist_price = max(sl_mult * atr, 1e-9) # Safety clip
         
         # ATR-based Min SL (SCALPING ADJUSTED)
         min_sl_dist = max(0.0001 * entry_price, 0.2 * atr)
@@ -358,21 +353,17 @@ class RiskManagementEnv(gym.Env):
         # If sensible risk calc results in lots < MIN_LOTS, we SKIP instead of forcing 0.01
         if lots < self.MIN_LOTS:
             # Register as skipped/no-trade (Treated as BLOCK)
-            # We recursively call step with 0 risk to trigger block logic? 
-            # Or just duplicate logic? Since we're in 'step', modifying action is tricky because we're past parsing.
-            # Let's simple treat as neutral block for now to keep simple, or apply standard penalty.
+            # Recursively apply Oracle Logic for SKIPPED_SMALL
+            reward, block_type = self._evaluate_block_reward(max_favorable, max_adverse)
+            block_type = "SKIPPED_SMALL_" + block_type
             
-            # Applying standard block logic with 0 risk
-            # For simplicity, Recurse by returning block logic manually here
-            # Copy-paste Block Logic (Scenario: Too Small) -> Treat as Stagnant Block
-            reward = self.CONSTANT_BLOCK_PENALTY
-            
-            self.history_actions.append(np.array([sl_mult, tp_mult, 0.0], dtype=np.float32))
+            # Record zero-risk action
+            self.history_actions.append(np.array([0.0, 0.0, 0.0], dtype=np.float32))
             self.history_pnl.append(0.0)
             self.current_step += 1
             terminated = False
             truncated = (self.current_step >= self.EPISODE_LENGTH)
-            return self._get_observation(), reward, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED_SMALL', 'lots': 0.0, 'equity': self.equity, 'is_blocked': True, 'block_type': 'SKIPPED_SMALL'}
+            return self._get_observation(), reward, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED_SMALL', 'lots': 0.0, 'equity': self.equity, 'is_blocked': True, 'block_type': block_type}
 
         # Safe to clip now
         lots = np.clip(lots, self.MIN_LOTS, 100.0)
@@ -471,12 +462,16 @@ class RiskManagementEnv(gym.Env):
         # Reduced penalty multiplier to prevent extreme values (was 2000.0)
         dd_penalty = -(dd_increase ** 2) * 50.0
         
-        # Normalized PnL reward (clip to prevent extreme values)
+        # Normalized PnL reward (User Requested: Scaled Trade Rewards)
         prev_equity_safe = max(prev_equity, 1e-6)
         pnl_ratio = net_pnl / prev_equity_safe
         
-        # Clip and scale reward to reasonable range
-        pnl_reward = np.clip(pnl_ratio * 10.0, -50.0, 50.0)
+        # TRADE_REWARD_SCALE = 100.0, +1% profit -> +1.0 reward
+        pnl_reward = pnl_ratio * 100.0
+        
+        # Clip to ensure numerical stability while allowing competitive rewards 
+        # (needs to match magnitude of +/- 300 blocking rewards)
+        pnl_reward = np.clip(pnl_reward, -300.0, 300.0)
         
         tp_bonus = 0.0
         if exited_on == 'TP':
