@@ -72,6 +72,9 @@ class CombinedBacktest:
         self.equity = initial_equity
         self.peak_equity = initial_equity
         
+        # Track blocked trades
+        self.blocked_trades = []
+        
     def build_risk_observation(self, asset):
         """Build 165-feature observation for risk model"""
         # 1. Market state (140 features) - same as Alpha observation
@@ -281,9 +284,83 @@ class CombinedBacktest:
                     # Parse risk action
                     sl_mult, tp_mult, risk_raw = self.parse_risk_action(risk_action)
                     
+                    # --- BLOCKING LOGIC ---
+                    # Threshold: 10% risk knob (0.10).
+                    # If risk_raw < 0.10, we BLOCK.
+                    
+                    if risk_raw < 0.10:
+                        # BLOCKED TRADE
+                        # Simulate what would have happened (Virtual Trade) since we have the direction and SL/TP
+                        
+                        # 1. Get current market data for simulation
+                        current_prices = self.env._get_current_prices()
+                        atrs = self.env._get_current_atrs()
+                        entry_price = current_prices[asset]
+                        atr = atrs[asset]
+                        
+                        # Handle zero ATR (rare)
+                        if atr <= 0: atr = entry_price * 0.0001
+
+                        # Calculate absolute SL/TP prices for simulation
+                        sl_dist = sl_mult * atr
+                        tp_dist = tp_mult * atr
+                        sl_price = entry_price - (direction * sl_dist)
+                        tp_price = entry_price + (direction * tp_dist)
+                        
+                        # 2. Create Virtual Position (Notional Size 1.0 for PnL %)
+                        # We just want the % return, size doesn't matter for sign checking
+                        virtual_pos = {
+                            'direction': direction,
+                            'entry_price': entry_price,
+                            'size': 1.0, # Dummy size
+                            'sl': sl_price,
+                            'tp': tp_price,
+                            'entry_step': self.env.current_step,
+                            'sl_dist': sl_dist,
+                            'tp_dist': tp_dist
+                        }
+                        
+                        # 3. Inject Virtual Position
+                        # Store existing (should be None if we are checking new entry, but safety first)
+                        original_pos = self.env.positions[asset]
+                        self.env.positions[asset] = virtual_pos
+                        
+                        # 4. Simulate Outcome (Peek Ahead)
+                        # This looks ahead up to 1000 steps to see if SL or TP is hit
+                        # Returns PnL amount. Since size is 1.0, this is roughly PnL % (times leverage if calc used it)
+                        # In _simulate_trade_outcome: pnl = price_change_pct * (pos['size'] * self.leverage)
+                        # Env leverage is 100.
+                        simulated_pnl_value = self.env._simulate_trade_outcome(asset)
+                        
+                        # 5. Restore State
+                        self.env.positions[asset] = original_pos
+                        
+                        # 6. Record Blocked Trade
+                        # PnL > 0 means we blocked a WIN (Bad Block / Missed Opportunity)
+                        # PnL < 0 means we blocked a LOSS (Good Block / Saved Money)
+                        self.blocked_trades.append({
+                            'timestamp': self.env._get_current_timestamp(),
+                            'asset': asset,
+                            'direction': direction,
+                            'risk_raw': risk_raw,
+                            'sl_mult': sl_mult,
+                            'tp_mult': tp_mult,
+                            'theoretical_pnl': simulated_pnl_value,
+                            'outcome': 'WIN' if simulated_pnl_value > 0 else ('LOSS' if simulated_pnl_value < 0 else 'NEUTRAL')
+                        })
+                        
+                        if step_count % 1000 == 0:
+                             logger.info(f"DEBUG Step {step_count} [{asset}]: BLOCKED. Risk {risk_raw:.4f} < 0.10. Avoided: {simulated_pnl_value:.4f}")
+                        
+                        continue # Skip actual trade execution logic for this asset
+
+                    # If NOT blocked, Rescale Risk to use full range [0, 1]
+                    # Map [0.10, 1.0] -> [0.0, 1.0]
+                    risk_raw = (risk_raw - 0.10) / 0.90
+                    
                     # Debug logging for Risk outputs (occasional)
                     if step_count % 1000 == 0:
-                         logger.info(f"DEBUG Step {step_count} [{asset}]: Dir {direction}, Risk Raw {risk_raw:.4f}, SL {sl_mult:.2f}, TP {tp_mult:.2f}")
+                         logger.info(f"DEBUG Step {step_count} [{asset}]: Dir {direction}, Risk Raw (Rescaled) {risk_raw:.4f}, SL {sl_mult:.2f}, TP {tp_mult:.2f}")
 
                     # Get current price and ATR
                     current_prices = self.env._get_current_prices()
@@ -310,7 +387,7 @@ class CombinedBacktest:
                             'tp_mult': tp_mult
                         }
                     elif step_count % 1000 == 0:
-                         logger.info(f"DEBUG Step {step_count} [{asset}]: Trade skipped. Size pct: {size_pct}")
+                         logger.info(f"DEBUG Step {step_count} [{asset}]: Trade skipped (Size 0). Size pct: {size_pct}")
                 
                 # Reset step trackers
                 self.env.peeked_pnl_step = 0.0
@@ -455,34 +532,71 @@ def run_combined_backtest(args):
     
     # Load Risk model
     logger.info("Loading Risk model...")
-    # Risk model needs an environment for loading, but we can use a dummy dataset path
-    # The environment won't be used for inference, just for model loading
-    risk_dataset_path = project_root / 'RiskLayer' / 'risk_dataset.parquet'
     
-    if not risk_dataset_path.exists():
-        # Create a minimal dummy dataset for loading
-        logger.warning("Risk dataset not found, creating minimal dummy dataset for model loading")
-        import tempfile
-        dummy_data = pd.DataFrame({
-            'direction': [1] * 100,
-            'entry_price': [1.0] * 100,
-            'atr_14': [0.001] * 100,
-            'max_profit_pct': [0.01] * 100,
-            'max_loss_pct': [-0.01] * 100,
-            'close_1000_price': [1.0] * 100,
-            'features': [np.zeros(140, dtype=np.float32)] * 100
-        })
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as temp_file:
-            dummy_data.to_parquet(temp_file.name)
-            risk_dataset_path = Path(temp_file.name)
+    # FORCE DUMMY DATASET to avoid OSError and speed up loading
+    # The environment is only used for model initialization, not for actual backtest data
+    import tempfile
     
-    risk_env = RiskManagementEnv(
-        dataset_path=str(risk_dataset_path),
-        initial_equity=initial_equity,
-        is_training=False
-    )
-    risk_model = PPO.load(risk_model_path, env=risk_env)
-    logger.info("Risk model loaded successfully")
+    logger.info("Creating dummy dataset for Risk Model loading (bypassing full dataset cache)...")
+    dummy_data = pd.DataFrame({
+        'direction': [1] * 100,
+        'entry_price': [1.0] * 100,
+        'atr': [0.001] * 100, # Note: 'atr' column name expected by RiskEnv defaults
+        'atr_14': [0.001] * 100, # Backup
+        'max_profit_pct': [0.01] * 100,
+        'max_loss_pct': [-0.01] * 100,
+        'close_1000_price': [1.0] * 100,
+        'features': [np.zeros(140, dtype=np.float32)] * 100,
+        'pair': ['EURUSD'] * 100
+    })
+    
+    # specific columns required by risk_env _load_data sanity check
+    # 'max_profit_pct', 'max_loss_pct', 'close_1000_price'
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as temp_file:
+        dummy_data.to_parquet(temp_file.name)
+        dummy_risk_dataset_path = Path(temp_file.name)
+    
+    try:
+        risk_env = RiskManagementEnv(
+            dataset_path=str(dummy_risk_dataset_path),
+            initial_equity=initial_equity,
+            is_training=False
+        )
+        
+        # Check for VecNormalize for Risk Model
+        # Assuming it might be named similar to model or generic 'vec_normalize.pkl' in model dir
+        risk_model_dir = risk_model_path.parent
+        possible_vec_paths = [
+            str(risk_model_path).replace('.zip', '_vecnormalize.pkl'),
+            risk_model_dir / 'vec_normalize.pkl',
+            risk_model_dir / 'risk_model_final_vecnormalize.pkl'
+        ]
+        
+        found_vec = False
+        for vp in possible_vec_paths:
+            if os.path.exists(vp):
+                logger.info(f"Loading Risk Model VecNormalize stats from {vp}")
+                risk_env = DummyVecEnv([lambda: risk_env]) # Wrap in VecEnv first
+                risk_env = VecNormalize.load(vp, risk_env)
+                risk_env.training = False
+                risk_env.norm_reward = False
+                found_vec = True
+                break
+        
+        if not found_vec:
+            logger.warning("CRITICAL: No VecNormalize stats found for Risk Model! Predictions may be garbage if model expects normalized inputs.")
+            logger.warning(f"Checked: {possible_vec_paths}")
+
+        risk_model = PPO.load(risk_model_path, env=risk_env)
+        logger.info("Risk model loaded successfully")
+        
+    finally:
+        # Cleanup dummy file
+        try:
+            os.remove(dummy_risk_dataset_path)
+        except:
+            pass
     
     # Create combined backtest
     backtest = CombinedBacktest(alpha_model, risk_model, data_dir_path, initial_equity=initial_equity)
@@ -547,11 +661,37 @@ def run_combined_backtest(args):
         logger.info(f"Saved trade log to {trades_file}")
     
     # 3. Save per-asset performance
-    per_asset = metrics_tracker.get_per_asset_metrics()
     if per_asset:
         asset_file = output_dir_path / f"asset_breakdown_combined_{timestamp}.csv"
         pd.DataFrame(per_asset).T.to_csv(asset_file)
         logger.info(f"Saved per-asset breakdown to {asset_file}")
+    
+    # 3.5. Save Blocked Trades Analysis
+    if hasattr(backtest, 'blocked_trades') and backtest.blocked_trades:
+        blocked_file = output_dir_path / f"blocked_trades_combined_{timestamp}.csv"
+        df_blocked = pd.DataFrame(backtest.blocked_trades)
+        df_blocked.to_csv(blocked_file, index=False)
+        logger.info(f"Saved blocked trades log to {blocked_file}")
+        
+        # Calculate Stats
+        total_blocked = len(df_blocked)
+        blocked_wins = len(df_blocked[df_blocked['outcome'] == 'WIN'])
+        blocked_losses = len(df_blocked[df_blocked['outcome'] == 'LOSS'])
+        
+        # Avoided Loss (Sum of negative PnL that was blocked)
+        # Note: 'theoretical_pnl' is raw value from simulation. Negative means we saved that loss.
+        avoided_loss_sum = df_blocked[df_blocked['theoretical_pnl'] < 0]['theoretical_pnl'].sum()
+        missed_profit_sum = df_blocked[df_blocked['theoretical_pnl'] > 0]['theoretical_pnl'].sum()
+        
+        logger.info(f"\n{'BLOCKED TRADES ANALYSIS':^60}")
+        logger.info("="*60)
+        logger.info(f"{'Total Blocked Trades:':<40} {total_blocked}")
+        logger.info(f"{'Blocked LOSSES (Good Blocks):':<40} {blocked_losses} ({blocked_losses/total_blocked:.1%})")
+        logger.info(f"{'Blocked WINS (Missed Opport.):':<40} {blocked_wins} ({blocked_wins/total_blocked:.1%})")
+        logger.info(f"{'Total Avoided Loss Value (Red Saved):':<40} {abs(avoided_loss_sum):.4f}")
+        logger.info(f"{'Total Missed Profit Value (Green Lost):':<40} {missed_profit_sum:.4f}")
+        logger.info("="*60)
+
     
     # 4. Generate all visualizations
     if metrics_tracker.equity_curve and metrics_tracker.trades:
