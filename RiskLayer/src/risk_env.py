@@ -2,6 +2,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import pandas as pd
+import os
 from collections import deque
 
 class RiskManagementEnv(gym.Env):
