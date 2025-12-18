@@ -13,9 +13,10 @@ from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
 # --- Configuration ---
 CT_APP_ID = "17481_ejoPRnjMkFdEkcZTHbjYt5n98n6wRE2wESCkSSHbLIvdWzRkRp"
 CT_APP_SECRET = "AaIrnTNyz47CC9t5nsCXU67sCXtKOm7samSkpNFIvqKOaz1vJ1"
-CT_ACCOUNT_ID = 44663862
-CT_ACCESS_TOKEN = "INnzhrurLIS2OSQDgzzckzZr1IbSf10VkS0sDx-cEVU"
+CT_ACCOUNT_ID = 45587524
+CT_ACCESS_TOKEN = "LdaPB-XNiM9fNkw53AqUXQU82xuq6vo5GVu9eYSEEDU"
 CT_HOST_TYPE = "demo"
+
 
 # Asset Universe (same as training)
 SYMBOL_IDS = {
@@ -28,7 +29,7 @@ SYMBOL_IDS = {
 
 # Backtesting Data Range: 2025 (Jan 1 to Dec 14, 2025)
 START_DATE = datetime(2025, 1, 1)
-END_DATE = datetime(2025, 12, 15)  # Fetch until end of Dec 14
+END_DATE = datetime(2025, 12, 17)  # Fetch until end of Dec 17
 TIMEFRAME = ProtoOATrendbarPeriod.M5
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -39,7 +40,8 @@ class DataFetcherBacktest:
         self.client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
         self.request_delay = 1.0  # Increased delay to 1.0s to avoid rate limits
         self.downloaded_data = {}
-        # Define a robust path to the data directory inside Alpha/backtest/
+        # Define a robust path to the backtest data directory at the project root
+        # Define a robust path to the backtest data directory
         self.data_dir = Path(__file__).resolve().parent / "data"
 
     def start(self):
@@ -235,3 +237,7 @@ if __name__ == "__main__":
         fetcher.start()
     except KeyboardInterrupt:
         logging.info("Interrupted.")
+
+
+
+

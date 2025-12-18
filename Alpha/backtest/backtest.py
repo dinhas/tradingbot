@@ -9,19 +9,25 @@ Usage:
 
 import os
 import sys
+from pathlib import Path
+
+# Add project root to sys.path to allow absolute imports
+project_root = str(Path(__file__).resolve().parent.parent.parent)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import argparse
 import logging
 import json
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from ..src.trading_env import TradingEnv
+from Alpha.src.trading_env import TradingEnv
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

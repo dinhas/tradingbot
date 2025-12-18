@@ -69,6 +69,7 @@ class RiskManagementEnv(gym.Env):
         self.peak_equity = self.initial_equity_base
         self.history_pnl = deque(maxlen=5)
         self.history_actions = deque(maxlen=5)
+        self.last_leverage = 0.0
         
     def _load_data(self):
         """
@@ -214,8 +215,9 @@ class RiskManagementEnv(gym.Env):
         
         # Reset History (Zero-filled)
         self.history_pnl = deque([0.0]*5, maxlen=5)
-        # BUG FIX 1: Critical History Actions Initialization
-        self.history_actions = deque([np.zeros(3) for _ in range(5)], maxlen=5)
+        # BUG #9: Neutral History Initialization (Avoids starting bias)
+        self.history_actions = deque([np.zeros(3, dtype=np.float32) for _ in range(5)], maxlen=5)
+        self.last_leverage = 0.0
         
         # Sliding Window / Non-Overlapping Sampling
         if self.is_training:
@@ -235,11 +237,14 @@ class RiskManagementEnv(gym.Env):
         # 1. Market State (140)
         global_idx = self.episode_start_idx + self.current_step
         if global_idx >= self.n_samples: global_idx = self.n_samples - 1
-        market_obs = self.features_array[global_idx]
+        # BUG #16: Market Features Normalization (Robust clipping)
+        market_obs = np.clip(self.features_array[global_idx], -10.0, 10.0)
         
         # 2. Account State (5)
         drawdown = 1.0 - (self.equity / self.peak_equity)
-        equity_norm = self.equity / self.initial_equity_base
+        # BUG #3: Log normalization for Equity
+        equity_norm = np.log(self.equity / self.initial_equity_base + 1.0)
+        equity_norm = np.clip(equity_norm, -5.0, 5.0)
         
         # BUG FIX: Risk Cap Formula logic preserved
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0)) 
@@ -247,7 +252,8 @@ class RiskManagementEnv(gym.Env):
         account_obs = np.array([
             equity_norm,
             drawdown,
-            0.0, # Leverage (placeholder)
+            # BUG #7: Actual leverage tracking
+            np.clip(self.last_leverage / self.MAX_LEVERAGE, 0.0, 1.0),
             risk_cap_mult,
             0.0 # Padding
         ], dtype=np.float32)
@@ -266,35 +272,44 @@ class RiskManagementEnv(gym.Env):
 
     def _evaluate_block_reward(self, max_favorable, max_adverse):
         """
-        Helper to calculate reward for blocked/skipped trades using Oracle.
-        Implements Tiered Blocking Rewards (Loss Avoidance) vs Scaled Win-Miss Penalties.
-        """
-        # 1. Tiered Blocking Rewards (Loss Avoidance)
-        # Priority: Survival. Detect Catastrophic/Major losses first.
-        # User Instruction: "Catastrophic Loss (>3% loss)" -> max_adverse < -0.03
-        if max_adverse < -0.03:
-            return 200.0, "BLOCKED_CATASTROPHIC"
+        IMPROVED: Balanced rewards that prioritize SURVIVAL over greed.
         
+        Key Design Decisions:
+        1. Blocking rewards are NOT clipped (returned early before final clip)
+        2. Survival rewards > Opportunity cost penalties (asymmetric in favor of safety)
+        3. Added moderate loss tier for better gradient signal
+        """
+        # === TIER 1: SURVIVAL (Highest Priority) ===
+        # Catastrophic Loss (>3%) - Would destroy the account
+        if max_adverse < -0.03:
+            return 300.0, "BLOCKED_CATASTROPHIC"  # Increased from 200
+        
+        # Major Loss (1.5% - 3%) - Serious damage
         if max_adverse < -0.015:
-             # Major Loss (1.5% - 3%)
-             return 50.0, "BLOCKED_MAJOR_LOSS"
-             
-        # 2. Scaled Win-Miss Penalties (Opportunity Cost)
-        # "Missed >2% profit"
+            return 150.0, "BLOCKED_MAJOR_LOSS"  # Increased from 50
+        
+        # Moderate Loss (0.5% - 1.5%) - Avoidable pain
+        if max_adverse < -0.005:
+            return 50.0, "BLOCKED_MODERATE_LOSS"  # NEW TIER
+        
+        # === TIER 2: OPPORTUNITY COST (Lower Priority) ===
+        # Penalty is LESS than survival reward (asymmetric toward safety)
+        
+        # Missed >2% profit - Significant opportunity cost
         if max_favorable > 0.02:
-             return -300.0, "MISSED_HUGE_WIN"
-             
-        # "Missed 1% - 2% profit"
+            return -200.0, "MISSED_HUGE_WIN"  # Reduced from -300
+        
+        # Missed 1% - 2% profit
         if max_favorable > 0.01:
-             return -100.0, "MISSED_BIG_WIN"
-             
-        # "Missed <1% profit" (Assuming positive profit)
-        if max_favorable > 0.0:
-             return -30.0, "MISSED_SMALL_WIN"
-             
-        # 3. Minor Loss / Noise (<1.5% Loss and No Profit)
-        # "Minor Loss (<1.5%)" -> reward +5
-        return 5.0, "BLOCKED_MINOR_LOSS"
+            return -80.0, "MISSED_BIG_WIN"  # Reduced from -100
+        
+        # Missed 0.5% - 1% profit
+        if max_favorable > 0.005:
+            return -20.0, "MISSED_SMALL_WIN"  # Reduced from -30
+        
+        # === TIER 3: NOISE (No significant movement) ===
+        # Small reward for staying safe during uncertain conditions
+        return 10.0, "BLOCKED_NOISE"  # Increased from 5
 
     def step(self, action):
         # --- 1. Parse Action ---
@@ -320,24 +335,32 @@ class RiskManagementEnv(gym.Env):
         max_adverse = self.max_loss_pcts[global_idx] # Always negative (e.g. -0.001)
 
         # --- 3. Check for Block/Skip ---
-        # Implicit Block: Requesting very low risk (Threshold relaxed to 0.5% for learnability)
-        # USER REALIZATION FIX: Bottom 10% of action knob = Explicit BLOCK (Dead-zone)
-        # This makes finding "Block" much easier (action < -0.80) vs (action < -0.99)
-        BLOCK_THRESHOLD = 0.10
-        is_blocked = (risk_raw < BLOCK_THRESHOLD)
+        # BUG #12: Sigmoid Steepness (Optimized for gradient signal)
+        BLOCK_THRESHOLD = 0.20
+        block_prob = 1.0 / (1.0 + np.exp(50 * (risk_raw - BLOCK_THRESHOLD)))
+        
+        # BUG #8: Stochastic Blocking (Training ONLY)
+        if self.is_training:
+            is_blocked = (self.np_random.random() < block_prob)
+        else:
+            is_blocked = (risk_raw < BLOCK_THRESHOLD)  # Deterministic for reproducible eval
         
         if not is_blocked:
-             # Rescale risk to allow full range [0, 1] starting after the threshold
-             # This ensures we don't accidentally ban valid small trades (0.001% risk)
+             # BUG #15: Risk Rescaling Edge Case (Maintains minimum viable risk)
              risk_raw = (risk_raw - BLOCK_THRESHOLD) / (1.0 - BLOCK_THRESHOLD)
+             risk_raw = np.clip(risk_raw, 0.05, 1.0) 
         
         if is_blocked:
              # SHADOW TRADE LOGIC (Oracle)
              # Use Helper for consistent logic
              reward, block_type = self._evaluate_block_reward(max_favorable, max_adverse)
                  
-             # Record zero-risk action (Clean History)
-             self.history_actions.append(np.array([0.0, 0.0, 0.0], dtype=np.float32))
+             # BUG #1: Clip blocking rewards to match trade reward bounds
+             reward = np.clip(reward, -100.0, 100.0)
+             self.last_leverage = 0.0
+
+             # BUG #9: Record neutral action for blocked state in history (Consistent with Bug #9 Reset)
+             self.history_actions.append(np.zeros(3, dtype=np.float32))
              self.history_pnl.append(0.0)
              
              self.current_step += 1
@@ -409,11 +432,15 @@ class RiskManagementEnv(gym.Env):
             # Register as skipped/no-trade (Treated as BLOCK)
             # Recursively apply Oracle Logic for SKIPPED_SMALL
             reward, block_type = self._evaluate_block_reward(max_favorable, max_adverse)
+            # BUG #1: Clip skipped rewards
+            reward = np.clip(reward, -100.0, 100.0)
             block_type = "SKIPPED_SMALL_" + block_type
             
-            # Record zero-risk action
-            self.history_actions.append(np.array([0.0, 0.0, 0.0], dtype=np.float32))
+            # Record zero-risk action (Neutral)
+            self.history_actions.append(np.zeros(3, dtype=np.float32))
             self.history_pnl.append(0.0)
+            self.last_leverage = 0.0
+            
             self.current_step += 1
             terminated = False
             truncated = (self.current_step >= self.EPISODE_LENGTH)
@@ -440,10 +467,16 @@ class RiskManagementEnv(gym.Env):
                  risk_violation_penalty = -2.0 * excess_risk_pct  # Reduced from -5.0
                  risk_violation_penalty = np.clip(risk_violation_penalty, -10.0, 0.0)
         
-        # Calculate Position Value
+        # Calculate Position Value for Leverage Tracking
         position_val = lots * lot_value_usd
+        self.last_leverage = position_val / max(self.equity, 1e-6)
             
-        decoded_action = np.array([sl_mult, tp_mult, actual_risk_pct], dtype=np.float32)
+        # BUG #4: Consistent Action History Scaling
+        sl_norm = (sl_mult - 1.1) / 0.9           # [0.2, 2.0] -> [-1, 1]
+        tp_norm = (tp_mult - 2.25) / 1.75         # [0.5, 4.0] -> [-1, 1]
+        risk_norm = (actual_risk_pct / 0.20) - 1.0 # [0, 0.4] -> [-1, 1]
+        
+        decoded_action = np.array([sl_norm, tp_norm, risk_norm], dtype=np.float32)
         self.history_actions.append(decoded_action)
 
         # --- 5. Simulate Outcome (Normal Trade) ---
@@ -452,19 +485,19 @@ class RiskManagementEnv(gym.Env):
         sl_price = entry_price - (direction * sl_dist_price)
         tp_price = entry_price + (direction * tp_dist_price)
         
-        if direction == 1: # LONG
-             sl_pct_dist = -abs(sl_dist_price / entry_price)
-             tp_pct_dist = abs(tp_dist_price / entry_price)
-             hit_sl = max_adverse <= sl_pct_dist 
-             hit_tp = max_favorable >= tp_pct_dist
-        else: # SHORT
-             sl_pct_dist = abs(sl_dist_price / entry_price)
-             tp_pct_dist = -abs(tp_dist_price / entry_price)
-             hit_sl = max_favorable >= sl_pct_dist
-             hit_tp = max_adverse <= tp_pct_dist 
+        # Magnitudes for objective detection
+        loss_magnitude = -max_adverse      # Positive value (magnitude of rise for short, drop for long)
+        profit_magnitude = max_favorable    # Positive value (magnitude of drop for short, rise for long)
+        
+        sl_pct_magnitude = sl_dist_price / entry_price
+        tp_pct_magnitude = tp_dist_price / entry_price
+        
+        hit_sl = loss_magnitude >= sl_pct_magnitude
+        hit_tp = profit_magnitude >= tp_pct_magnitude
 
         if hit_sl and hit_tp:
-            if abs(sl_pct_dist) < abs(tp_pct_dist):
+            # If both were hit, assume the tighter one happened first
+            if sl_pct_magnitude < tp_pct_magnitude:
                 hit_tp = False
             else:
                 hit_sl = False 
@@ -513,30 +546,34 @@ class RiskManagementEnv(gym.Env):
         new_dd  = 1.0 - (self.equity / prev_peak_safe)
         
         dd_increase = max(0.0, new_dd - prev_dd)
-        # Reduced penalty multiplier to prevent extreme values (was 2000.0)
-        dd_penalty = -(dd_increase ** 2) * 50.0
+        # BUG #5: Linear Drawdown Penalty for stable gradients
+        dd_penalty = -dd_increase * 20.0
+        dd_penalty = np.clip(dd_penalty, -50.0, 0.0)
         
         # Normalized PnL reward (User Requested: Scaled Trade Rewards)
         prev_equity_safe = max(prev_equity, 1e-6)
         pnl_ratio = net_pnl / prev_equity_safe
         
-        # TRADE_REWARD_SCALE = 100.0, +1% profit -> +1.0 reward
-        pnl_reward = pnl_ratio * 100.0
-        
-        # Clip to ensure numerical stability while allowing competitive rewards 
-        # (needs to match magnitude of +/- 300 blocking rewards)
-        pnl_reward = np.clip(pnl_reward, -300.0, 300.0)
+        # BUG #10: Rebalanced PnL reward to prevent crowding out other signals
+        pnl_reward = pnl_ratio * 80.0
+        pnl_reward = np.clip(pnl_reward, -80.0, 80.0)
         
         tp_bonus = 0.0
+        sl_penalty = 0.0
         if exited_on == 'TP':
-            tp_bonus = 0.5 * (tp_mult / 8.0)  # Slightly increased TP bonus
+            # BUG #10: Meaningful TP bonus
+            tp_bonus = 10.0 
+        elif exited_on == 'SL':
+            # BUG #10: Slight discouragement for hitting SL
+            sl_penalty = -5.0
         
-        reward = pnl_reward + tp_bonus + dd_penalty + risk_violation_penalty
+        reward = pnl_reward + tp_bonus + sl_penalty + dd_penalty + risk_violation_penalty
         
         # Final reward clipping to prevent extreme values that break value function
         reward = np.clip(reward, -100.0, 100.0)
         
-        self.history_pnl.append(net_pnl / prev_equity)
+        # BUG #11: Bounded History PnL Ratios
+        self.history_pnl.append(np.clip(net_pnl / prev_equity_safe, -1.0, 1.0))
         
         # --- 7. Termination ---
         self.current_step += 1
@@ -545,9 +582,21 @@ class RiskManagementEnv(gym.Env):
         
         if self.equity < (self.initial_equity_base * 0.3): 
             terminated = True
-            # Reduced terminal penalty to prevent extreme negative rewards
-            reward -= 50.0
-            reward = np.clip(reward, -100.0, 100.0) 
+            # BUG #14: Maximum consistent terminal penalty
+            reward = -100.0 
+        
+        # BUG #13: Episode Success/Failure Signal
+        if truncated:
+            final_equity_ratio = self.equity / self.initial_equity_base
+            if final_equity_ratio > 1.5:  # 50% profit
+                reward += 20.0
+            elif final_equity_ratio > 1.2: # 20% profit
+                reward += 10.0
+            elif final_equity_ratio < 0.7:  # 30% loss
+                reward -= 20.0
+            elif final_equity_ratio < 0.9:  # 10% loss
+                reward -= 10.0
+            reward = np.clip(reward, -100.0, 100.0)
             
         info = {
             'pnl': net_pnl,

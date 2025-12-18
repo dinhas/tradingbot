@@ -14,13 +14,19 @@ Usage:
 
 import os
 import sys
+from pathlib import Path
+
+# Add project root to sys.path to allow absolute imports
+project_root = str(Path(__file__).resolve().parent.parent.parent)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import argparse
 import logging
 import json
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from pathlib import Path
 from collections import deque
 import tempfile
 import matplotlib.pyplot as plt
@@ -28,8 +34,10 @@ import matplotlib.dates as mdates
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from ..src.trading_env import TradingEnv
-from .backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
+
+# Absolute imports from project root
+from Alpha.src.trading_env import TradingEnv
+from Alpha.backtest.backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
 from RiskLayer.src.risk_env import RiskManagementEnv
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -53,7 +61,7 @@ class CombinedBacktest:
         self.env.peak_equity = initial_equity
         
         # Risk model constants (from RiskManagementEnv)
-        self.MAX_RISK_PER_TRADE = 0.40  # 40% max risk per trade
+        self.MAX_RISK_PER_TRADE = 0.80  # 80% max risk per trade (to reach margin limit)
         self.MAX_MARGIN_PER_TRADE_PCT = 0.80
         self.MAX_LEVERAGE = 400.0
         self.MIN_LOTS = 0.01
@@ -285,10 +293,10 @@ class CombinedBacktest:
                     sl_mult, tp_mult, risk_raw = self.parse_risk_action(risk_action)
                     
                     # --- BLOCKING LOGIC ---
-                    # Threshold: 10% risk knob (0.10).
-                    # If risk_raw < 0.10, we BLOCK.
+                    # Threshold: 20% risk knob (0.20) - MATCHES TRAINING ENVIRONMENT.
+                    # If risk_raw < 0.20, we BLOCK.
                     
-                    if risk_raw < 0.10:
+                    if risk_raw < 0.20:
                         # BLOCKED TRADE
                         # Simulate what would have happened (Virtual Trade) since we have the direction and SL/TP
                         
@@ -355,8 +363,8 @@ class CombinedBacktest:
                         continue # Skip actual trade execution logic for this asset
 
                     # If NOT blocked, Rescale Risk to use full range [0, 1]
-                    # Map [0.10, 1.0] -> [0.0, 1.0]
-                    risk_raw = (risk_raw - 0.10) / 0.90
+                    # Map [0.20, 1.0] -> [0.0, 1.0] - MATCHES TRAINING ENVIRONMENT
+                    risk_raw = (risk_raw - 0.20) / 0.80
                     
                     # Debug logging for Risk outputs (occasional)
                     if step_count % 1000 == 0:
@@ -519,14 +527,6 @@ def run_combined_backtest(args):
     logger.info("Loading Alpha model...")
     env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, stage=1, is_training=False)])
     
-    # Load VecNormalize stats if available
-    vecnorm_path = str(alpha_model_path).replace('.zip', '_vecnormalize.pkl')
-    if os.path.exists(vecnorm_path):
-        logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
-        env = VecNormalize.load(vecnorm_path, env)
-        env.training = False
-        env.norm_reward = False
-    
     alpha_model = PPO.load(alpha_model_path, env=env)
     logger.info("Alpha model loaded successfully")
     
@@ -564,29 +564,8 @@ def run_combined_backtest(args):
             is_training=False
         )
         
-        # Check for VecNormalize for Risk Model
-        # Assuming it might be named similar to model or generic 'vec_normalize.pkl' in model dir
-        risk_model_dir = risk_model_path.parent
-        possible_vec_paths = [
-            str(risk_model_path).replace('.zip', '_vecnormalize.pkl'),
-            risk_model_dir / 'vec_normalize.pkl',
-            risk_model_dir / 'risk_model_final_vecnormalize.pkl'
-        ]
-        
-        found_vec = False
-        for vp in possible_vec_paths:
-            if os.path.exists(vp):
-                logger.info(f"Loading Risk Model VecNormalize stats from {vp}")
-                risk_env = DummyVecEnv([lambda: risk_env]) # Wrap in VecEnv first
-                risk_env = VecNormalize.load(vp, risk_env)
-                risk_env.training = False
-                risk_env.norm_reward = False
-                found_vec = True
-                break
-        
-        if not found_vec:
-            logger.warning("CRITICAL: No VecNormalize stats found for Risk Model! Predictions may be garbage if model expects normalized inputs.")
-            logger.warning(f"Checked: {possible_vec_paths}")
+        # Wrap in DummyVecEnv for consistency
+        risk_env = DummyVecEnv([lambda: risk_env])
 
         risk_model = PPO.load(risk_model_path, env=risk_env)
         logger.info("Risk model loaded successfully")
@@ -647,6 +626,7 @@ def run_combined_backtest(args):
     
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    per_asset = metrics_tracker.get_per_asset_metrics()
     
     # 1. Save metrics JSON
     metrics_file = output_dir_path / f"metrics_combined_{timestamp}.json"
