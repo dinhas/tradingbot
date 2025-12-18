@@ -49,12 +49,12 @@ class TeeStderr:
     def flush(self):
         self.file.flush()
         self.stderr.flush()
-
+        
 # --- Configuration ---
 CT_APP_ID = "17481_ejoPRnjMkFdEkcZTHbjYt5n98n6wRE2wESCkSSHbLIvdWzRkRp"
 CT_APP_SECRET = "AaIrnTNyz47CC9t5nsCXU67sCXtKOm7samSkpNFIvqKOaz1vJ1"
-CT_ACCOUNT_ID = 44663862
-CT_ACCESS_TOKEN = "INnzhrurLIS2OSQDgzzckzZr1IbSf10VkS0sDx-cEVU"
+CT_ACCOUNT_ID = 45587524
+CT_ACCESS_TOKEN = "LdaPB-XNiM9fNkw53AqUXQU82xuq6vo5GVu9eYSEEDU"
 CT_HOST_TYPE = "demo"
 
 # Asset Universe
