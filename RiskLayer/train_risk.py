@@ -68,17 +68,24 @@ if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
 # PPO Hyperparameters (Expert Tuned for Financial Data)
-TOTAL_TIMESTEPS = 10_000_000 # Increased for better convergence
-LEARNING_RATE = 1e-4 # Reduced for stability with noisy data
-N_STEPS = 8192 # Increased experience per update
-BATCH_SIZE = 2048 # Larger batch size to average out noise
-GAMMA = 0.97 # Slightly lower (trades are relatively independent)
-GAE_LAMBDA = 0.92
-ENT_COEF = 0.02 # Higher initial entropy 
+# HYPERPARAMETERS - "Anti-Collapse" Edition 🛡️
+
+TOTAL_TIMESTEPS = 10_000_000 
+LEARNING_RATE = 5e-5      # 📉 HALVED. Slower learning = more stable updates.
+N_STEPS = 4096            # ✂️ REDUCED. Update more frequently so policy doesn't get stale.
+BATCH_SIZE = 512          # 📉 SMALLER. More updates per epoch, better gradient estimation.
+GAMMA = 0.99              # ⬆️ INCREASED. Care a bit more about future rewards (trends).
+GAE_LAMBDA = 0.95         # ⬆️ STANDARD. Smoothes out variance better.
+ENT_COEF = 0.05           # 🚀 DOUBLED+. Force it to explore. "Don't get cocky."
 VF_COEF = 0.5
-MAX_GRAD_NORM = 0.5
-CLIP_RANGE = 0.15 # Tighter clipping
-N_EPOCHS = 6
+MAX_GRAD_NORM = 0.3       # 🔒 TIGHTER. Cap those violent gradients.
+CLIP_RANGE = 0.2          # 🔓 LOOSER. Gives the new LR room to work without clipping instantly.
+N_EPOCHS = 3              # 📉 REDUCED. Stop memorizing the batch! 3 passes is enough.
+
+# Why this works:
+# 1. Lower LR + Fewer Epochs = The model stops overfitting on a single batch of data.
+# 2. Higher Ent_Coef = It stops spamming the same "buy" button and actually thinks.
+# 3. Higher Gamma = It looks for the bigger bag 💰, not just the next tick.
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
