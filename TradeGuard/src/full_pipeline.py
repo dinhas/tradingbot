@@ -1,6 +1,10 @@
 import os
 import subprocess
 from pathlib import Path
+import sys
+project_root = str(Path(__file__).resolve().parent.parent.parent)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 from TradeGuard.src.generate_dataset import TradeGuardDataGenerator
 from TradeGuard.src.train_lgbm import _train, _evaluate
 def ensure_training_data(output_dir):
