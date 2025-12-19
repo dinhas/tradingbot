@@ -60,15 +60,97 @@ class TeeStderr:
         self.stderr.flush()
 
 # Defaults
-# Defaults
-DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "checkpoints", "8.03.zip") # Relative path from RiskLayer to checkpoints
+DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "checkpoints", "8.03.zip")
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DEFAULT_OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "risk_dataset.parquet")
 LOOKAHEAD_STEPS = 6 # 30 mins (5m candles)
-BATCH_SIZE = 10000  # Process 10k steps at a time to manage memory (reduced from 50k to prevent OOM)
+BATCH_SIZE = 50000  # Increased batch size as we use less memory now
+
+def build_observation_matrix(df, assets, start_idx, end_idx):
+    """
+    Constructs the full observation matrix (N x 140) efficiently using vectorized operations.
+    Returns:
+        np.ndarray: The observation matrix of shape (end_idx - start_idx, 140)
+    """
+    num_rows = end_idx - start_idx
+    # Pre-allocate matrix with float32
+    obs_matrix = np.zeros((num_rows, 140), dtype=np.float32)
+    
+    # Slice the dataframe once
+    df_slice = df.iloc[start_idx:end_idx]
+    
+    current_col = 0
+    
+    # 1. Per-Asset Features (25 * 5 = 125 columns)
+    for asset in assets:
+        # Define the 13 data columns in order
+        data_cols = [
+            f"{asset}_close", f"{asset}_return_1", f"{asset}_return_12",
+            f"{asset}_atr_14", f"{asset}_atr_ratio", f"{asset}_bb_position",
+            f"{asset}_ema_9", f"{asset}_ema_21", f"{asset}_price_vs_ema9", f"{asset}_ema9_vs_ema21",
+            f"{asset}_rsi_14", f"{asset}_macd_hist", f"{asset}_volume_ratio"
+        ]
+        
+        # Copy data columns
+        # Using .values ensures we get numpy array
+        obs_matrix[:, current_col:current_col+13] = df_slice[data_cols].values.astype(np.float32)
+        current_col += 13
+        
+        # Portfolio Features (Zero State) - 7 columns
+        # Already zeros, just skip
+        current_col += 7
+        
+        # Cross-Asset Features - 5 columns
+        cross_cols = [
+             f"{asset}_corr_basket", f"{asset}_rel_strength",
+             f"{asset}_corr_xauusd", f"{asset}_corr_eurusd", f"{asset}_rank"
+        ]
+        obs_matrix[:, current_col:current_col+5] = df_slice[cross_cols].values.astype(np.float32)
+        current_col += 5
+
+    # 2. Global Features (15 columns)
+    
+    # Portfolio State (Global) - 4 columns
+    # Equity = 10000.0
+    obs_matrix[:, current_col] = 10000.0
+    current_col += 1
+    # Margin, Drawdown, Num Pos - 3 columns (zeros)
+    current_col += 3
+    
+    # Market Regime - 3 columns
+    # Risk On Score
+    gbp_ret = df_slice.get("GBPUSD_return_1", 0)
+    xau_ret = df_slice.get("XAUUSD_return_1", 0)
+    # Handle scalar or series
+    if isinstance(gbp_ret, (int, float)) and gbp_ret == 0:
+        obs_matrix[:, current_col] = 0
+    else:
+        obs_matrix[:, current_col] = ((gbp_ret + xau_ret) / 2).values.astype(np.float32)
+    current_col += 1
+    
+    # Asset Dispersion
+    ret_cols = [f"{a}_return_1" for a in assets]
+    obs_matrix[:, current_col] = df_slice[ret_cols].std(axis=1).values.astype(np.float32)
+    current_col += 1
+    
+    # Market Volatility
+    atr_ratio_cols = [f"{a}_atr_ratio" for a in assets]
+    obs_matrix[:, current_col] = df_slice[atr_ratio_cols].mean(axis=1).values.astype(np.float32)
+    current_col += 1
+    
+    # Session Features - 8 columns
+    sess_cols = ['hour_sin', 'hour_cos', 'day_sin', 'day_cos', 'session_asian', 'session_london', 'session_ny', 'session_overlap']
+    obs_matrix[:, current_col:current_col+8] = df_slice[sess_cols].values.astype(np.float32)
+    current_col += 8
+    
+    # Verification
+    if current_col != 140:
+        logger.warning(f"Feature matrix construction mismatch! Expected 140 columns, filled {current_col}")
+        
+    return obs_matrix
 
 def generate_dataset_batched(model_path, data_dir, output_file):
-    """Generates the risk dataset using batched vectorized inference."""
+    """Generates the risk dataset using optimized batched inference."""
     
     # 1. Load Model
     if not os.path.exists(model_path):
@@ -77,7 +159,6 @@ def generate_dataset_batched(model_path, data_dir, output_file):
 
     logger.info(f"Loading Alpha Model from {model_path}...")
     try:
-        # Load model on CPU
         model = PPO.load(model_path, device='cpu')
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
@@ -86,7 +167,7 @@ def generate_dataset_batched(model_path, data_dir, output_file):
     # 2. Load Data
     logger.info(f"Loading and preprocessing data from {data_dir}...")
     
-    # Check if data exists, if not try to download
+    # Check data availability logic (same as before)
     required_assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
     data_missing = False
     for asset in required_assets:
@@ -97,13 +178,12 @@ def generate_dataset_batched(model_path, data_dir, output_file):
             break
             
     if data_missing:
+        # ... (Auto download logic kept same)
         logger.warning(f"Data missing in {data_dir}. Attempting to download...")
         try:
             import subprocess
-            # Assume download_training_data.py is in same dir as this script
             script_dir = os.path.dirname(os.path.abspath(__file__))
             downloader = os.path.join(script_dir, "download_training_data.py")
-            
             if os.path.exists(downloader):
                 logger.info(f"Running {downloader}...")
                 subprocess.check_call([sys.executable, downloader, "--output", data_dir])
@@ -111,7 +191,6 @@ def generate_dataset_batched(model_path, data_dir, output_file):
                 logger.error(f"Downloader script not found at {downloader}")
         except Exception as e:
             logger.error(f"Failed to auto-download data: {e}")
-            logger.info("Please run download_training_data.py manually.")
 
     try:
         env = TradingEnv(data_dir=data_dir, stage=1, is_training=False)
@@ -123,249 +202,163 @@ def generate_dataset_batched(model_path, data_dir, output_file):
     total_rows = len(df)
     logger.info(f"Total data points: {total_rows}")
     
-    # Range of valid data
     start_idx = 500
     end_idx = total_rows - LOOKAHEAD_STEPS
     
     if start_idx >= end_idx:
-        logger.error("Data too short for lookahead window.")
+        logger.error("Data too short.")
         return
 
-    # Cache raw arrays for fast lookups (Global scope for processing)
+    # Cache raw arrays for fast lookups
     assets = env.assets
+    # Using numpy arrays from the environment for speed
     close_arrays = {a: env.close_arrays[a] for a in assets}
     high_arrays = {a: env.high_arrays[a] for a in assets}
     low_arrays = {a: env.low_arrays[a] for a in assets}
     atr_arrays = {a: env.atr_arrays[a] for a in assets}
-
-    # 3. Batch Processing Loop with incremental writing
-    logger.info(f"Starting batch processing (Batch Size: {BATCH_SIZE})...")
     
-    # Create output dir if needed
+    # 3. Build Observation Matrix (Vectorized)
+    logger.info("Constructing feature matrix...")
+    # This might take a moment but is much faster than doing it in a loop
+    all_observations = build_observation_matrix(df, assets, start_idx, end_idx)
+    logger.info(f"Feature matrix built. Shape: {all_observations.shape}. Size: {all_observations.nbytes / 1024**2:.2f} MB")
+    
+    # 4. Batch Processing Loop
+    logger.info(f"Starting batched inference (Batch Size: {BATCH_SIZE})...")
+    
     os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
     
-    # Create valid index chunks (Pre-calculation)
-    # Check for incomplete data (Swiss Cheese effect)
-    if total_rows < 400000:
-        logger.warning(f"Data seems incomplete (only {total_rows} rows). Expected >400k for 9 years.")
-        logger.warning("Triggering forced re-download to fix gaps...")
+    # Remove existing file to start fresh
+    if os.path.exists(output_file):
+        os.remove(output_file)
         
-        try:
-            import subprocess
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            downloader = os.path.join(script_dir, "download_training_data.py")
-            
-            if os.path.exists(downloader):
-                # Run with --force
-                subprocess.check_call([sys.executable, downloader, "--output", data_dir, "--force"])
-                
-                # Re-initialize environment to load new data
-                logger.info("Re-initializing environment with new data...")
-                env = TradingEnv(data_dir=data_dir, stage=1, is_training=False)
-                df = env.processed_data
-                total_rows = len(df)
-                logger.info(f"New total data points: {total_rows}")
-                
-                # Update cached arrays
-                assets = env.assets
-                close_arrays = {a: env.close_arrays[a] for a in assets}
-                high_arrays = {a: env.high_arrays[a] for a in assets}
-                low_arrays = {a: env.low_arrays[a] for a in assets}
-                atr_arrays = {a: env.atr_arrays[a] for a in assets}
-                
-                # Update indices
-                end_idx = total_rows - LOOKAHEAD_STEPS
-            else:
-                logger.error("Downloader not found, cannot fix data.")
-                
-        except Exception as e:
-            logger.error(f"Failed to auto-fix data: {e}")
-
-    full_indices = range(start_idx, end_idx)
-    chunks = [full_indices[i:i + BATCH_SIZE] for i in range(0, len(full_indices), BATCH_SIZE)]
+    # Indices relative to start_idx (0 to num_rows)
+    num_rows = end_idx - start_idx
+    indices = np.arange(num_rows)
     
-    # Accumulate DataFrames and write periodically to manage memory
-    accumulated_dfs = []
-    write_interval = 5  # Write every 5 batches to balance memory and I/O
+    # Batches
+    batch_starts = np.arange(0, num_rows, BATCH_SIZE)
+    
     total_signals = 0
+    timestamps = df.index[start_idx:end_idx]
     
-    for batch_num, chunk_indices in enumerate(tqdm(chunks, desc="Processing Batches"), 1):
-        # Slice DataFrame for this chunk (use view when possible to save memory)
-        # Note: We need continuous slice from df, but features are already computed row-wise.
-        # So df.iloc[chunk_indices] is valid.
-        # Use .copy() only if needed, but we'll need it for the operations below
-        chunk_list = list(chunk_indices)
-        df_chunk = df.iloc[chunk_list].copy()
-        current_chunk_size = len(df_chunk)
+    for b_start in tqdm(batch_starts, desc="Processing Batches"):
+        b_end = min(b_start + BATCH_SIZE, num_rows)
+        batch_indices = indices[b_start:b_end]
         
-        # --- Construct Feature Matrix for Chunk ---
-        feature_cols = []
-        
-        # Pre-calculate chunk metrics
-        gbp_ret = df_chunk.get(f"GBPUSD_return_1", 0)
-        xau_ret = df_chunk.get(f"XAUUSD_return_1", 0)
-        risk_on_score = (gbp_ret + xau_ret) / 2
-        
-        ret_cols = [f"{a}_return_1" for a in assets]
-        asset_dispersion = df_chunk[ret_cols].std(axis=1)
-        
-        atr_ratio_cols = [f"{a}_atr_ratio" for a in assets]
-        market_volatility = df_chunk[atr_ratio_cols].mean(axis=1)
-        
-        # Per-Asset Features
-        zeros = np.zeros(current_chunk_size, dtype=np.float32)
-        
-        for asset in assets:
-            # Data Features
-            cols = [
-                f"{asset}_close", f"{asset}_return_1", f"{asset}_return_12",
-                f"{asset}_atr_14", f"{asset}_atr_ratio", f"{asset}_bb_position",
-                f"{asset}_ema_9", f"{asset}_ema_21", f"{asset}_price_vs_ema9", f"{asset}_ema9_vs_ema21",
-                f"{asset}_rsi_14", f"{asset}_macd_hist", f"{asset}_volume_ratio"
-            ]
-            for c in cols:
-                feature_cols.append(df_chunk[c].values.astype(np.float32))
-            
-            # Portfolio Features (Zero State)
-            for _ in range(7):
-                feature_cols.append(zeros)
-                
-            # Cross-Asset
-            cross_cols = [
-                 f"{asset}_corr_basket", f"{asset}_rel_strength",
-                 f"{asset}_corr_xauusd", f"{asset}_corr_eurusd", f"{asset}_rank"
-            ]
-            for c in cross_cols:
-                feature_cols.append(df_chunk[c].values.astype(np.float32))
-                
-        # Global Features
-        feature_cols.append(np.full(current_chunk_size, 10000.0, dtype=np.float32)) # equity
-        feature_cols.append(zeros) # margin
-        feature_cols.append(zeros) # drawdown
-        feature_cols.append(zeros) # num_pos
-        
-        feature_cols.append(risk_on_score.values.astype(np.float32))
-        feature_cols.append(asset_dispersion.values.astype(np.float32))
-        feature_cols.append(market_volatility.values.astype(np.float32))
-        
-        sess_cols = ['hour_sin', 'hour_cos', 'day_sin', 'day_cos', 'session_asian', 'session_london', 'session_ny', 'session_overlap']
-        for c in sess_cols:
-            feature_cols.append(df_chunk[c].values.astype(np.float32))
-            
-        # Stack
-        observations = np.column_stack(feature_cols).astype(np.float32)
+        # Get observations for this batch
+        batch_obs = all_observations[b_start:b_end]
         
         # Inference
-        actions, _ = model.predict(observations, deterministic=True)
+        actions, _ = model.predict(batch_obs, deterministic=True)
         
-        # Process Signals - collect batch signals
-        chunk_timestamps = df_chunk.index
-        batch_signals = []
+        # Collect Signals
+        # Use column-oriented storage (dict of lists) instead of row-oriented (list of dicts)
+        # to save memory and avoid object overhead
+        batch_results = {
+            'timestamp': [],
+            'asset': [],
+            'direction': [],
+            'entry_price': [],
+            'atr': [],
+            'features': [],
+            'max_profit_pct': [],
+            'max_loss_pct': [],
+            'close_1000_price': []
+        }
+        
+        has_data = False
         
         for i, asset in enumerate(assets):
             asset_actions = actions[:, i]
-            buy_indices = np.where(asset_actions > 0.33)[0]
-            sell_indices = np.where(asset_actions < -0.33)[0]
             
-            for direction, indices in [(1, buy_indices), (-1, sell_indices)]:
-                for idx in indices:
-                    global_step = chunk_list[idx]
-                    
-                    entry_price = close_arrays[asset][global_step]
-                    atr = atr_arrays[asset][global_step]
-                    
-                    end_step = global_step + LOOKAHEAD_STEPS
-                    future_highs = high_arrays[asset][global_step+1 : end_step]
-                    future_lows = low_arrays[asset][global_step+1 : end_step]
-                    future_close = close_arrays[asset][end_step-1]
-                    
-                    if len(future_highs) == 0: continue
-                    max_h = np.max(future_highs)
-                    min_l = np.min(future_lows)
-                    
-                    if direction == 1:
-                        max_profit_pct = (max_h - entry_price) / entry_price
-                        max_loss_pct = (min_l - entry_price) / entry_price
-                    else:
-                        max_profit_pct = (entry_price - min_l) / entry_price
-                        max_loss_pct = (entry_price - max_h) / entry_price
-
-                    # Store features as list (needed for risk environment observation)
-                    # This is memory intensive but required for training
-                    batch_signals.append({
-                        'timestamp': chunk_timestamps[idx],
-                        'asset': asset,
-                        'direction': direction,
-                        'entry_price': entry_price,
-                        'atr': atr,
-                        'features': observations[idx].tolist(),  # Required for risk env
-                        'max_profit_pct': max_profit_pct,
-                        'max_loss_pct': max_loss_pct,
-                        'close_1000_price': future_close
-                    })
-
-        # Accumulate batch signals
-        if batch_signals:
-            batch_df = pd.DataFrame(batch_signals)
-            batch_df['timestamp'] = pd.to_datetime(batch_df['timestamp'])
-            accumulated_dfs.append(batch_df)
-            total_signals += len(batch_signals)
-            del batch_df, batch_signals
-
-        # Clean up memory after processing for this batch
-        del feature_cols
-        del observations
-        del df_chunk
-        del actions
-        
-        # Write periodically to manage memory
-        if batch_num % write_interval == 0 or batch_num == len(chunks):
-            if accumulated_dfs:
-                # Concatenate and write
-                if os.path.exists(output_file) and batch_num > write_interval:
-                    # Append mode: read existing, concat, write
-                    existing_df = pd.read_parquet(output_file)
-                    combined_df = pd.concat([existing_df] + accumulated_dfs, ignore_index=True)
-                    combined_df.to_parquet(output_file, index=False)
-                    del existing_df, combined_df
-                else:
-                    # First write or overwrite
-                    combined_df = pd.concat(accumulated_dfs, ignore_index=True)
-                    combined_df.to_parquet(output_file, index=False)
-                    del combined_df
+            # Vectorized finding of indices
+            buy_mask = asset_actions > 0.33
+            sell_mask = asset_actions < -0.33
+            
+            # Combine
+            mask = buy_mask | sell_mask
+            if not np.any(mask):
+                continue
                 
-                accumulated_dfs.clear()
-                gc.collect()  # Force garbage collection after writing
+            active_local_indices = np.where(mask)[0]
+            
+            # Global indices in the original dataframe
+            # start_idx + b_start + local_index
+            global_indices = start_idx + b_start + active_local_indices
+            
+            for local_idx, global_idx in zip(active_local_indices, global_indices):
+                direction = 1 if asset_actions[local_idx] > 0.33 else -1
+                
+                entry_price = close_arrays[asset][global_idx]
+                atr = atr_arrays[asset][global_idx]
+                
+                # Lookahead logic
+                f_end_step = global_idx + LOOKAHEAD_STEPS
+                # Safety check
+                if f_end_step >= len(high_arrays[asset]):
+                    continue
+                    
+                future_highs = high_arrays[asset][global_idx+1 : f_end_step]
+                future_lows = low_arrays[asset][global_idx+1 : f_end_step]
+                future_close = close_arrays[asset][f_end_step-1]
+                
+                if len(future_highs) == 0: continue
+                
+                max_h = np.max(future_highs)
+                min_l = np.min(future_lows)
+                
+                if direction == 1:
+                    max_profit_pct = (max_h - entry_price) / entry_price
+                    max_loss_pct = (min_l - entry_price) / entry_price
+                else:
+                    max_profit_pct = (entry_price - min_l) / entry_price
+                    max_loss_pct = (entry_price - max_h) / entry_price
 
-    # 4. Finalize - write any remaining accumulated data
-    if accumulated_dfs:
-        if os.path.exists(output_file):
-            existing_df = pd.read_parquet(output_file)
-            combined_df = pd.concat([existing_df] + accumulated_dfs, ignore_index=True)
-            combined_df.to_parquet(output_file, index=False)
-            del existing_df, combined_df
-        else:
-            combined_df = pd.concat(accumulated_dfs, ignore_index=True)
-            combined_df.to_parquet(output_file, index=False)
-            del combined_df
-        accumulated_dfs.clear()
-    
-    if total_signals > 0:
-        logger.info(f"Saved {total_signals} rows to {output_file}")
-    else:
-        logger.warning("No signals generated.")
+                # Append to lists
+                batch_results['timestamp'].append(timestamps[b_start + local_idx])
+                batch_results['asset'].append(asset)
+                batch_results['direction'].append(direction)
+                batch_results['entry_price'].append(entry_price)
+                batch_results['atr'].append(atr)
+                batch_results['features'].append(batch_obs[local_idx].tolist()) # Convert only this one
+                batch_results['max_profit_pct'].append(max_profit_pct)
+                batch_results['max_loss_pct'].append(max_loss_pct)
+                batch_results['close_1000_price'].append(future_close)
+                
+                has_data = True
+
+        if has_data:
+            batch_df = pd.DataFrame(batch_results)
+            total_signals += len(batch_df)
+            
+            if os.path.exists(output_file):
+                # Append to existing
+                existing_df = pd.read_parquet(output_file)
+                combined = pd.concat([existing_df, batch_df], ignore_index=True)
+                combined.to_parquet(output_file, index=False)
+                del existing_df, combined
+            else:
+                batch_df.to_parquet(output_file, index=False)
+            
+            del batch_df
+        
+        del batch_results
+        gc.collect()
+
+    logger.info(f"Processing complete. Total signals: {total_signals}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate Risk Dataset (Batched)")
-    parser.add_argument("--model", type=str, default=DEFAULT_MODEL_PATH, help="Path to model .zip")
-    parser.add_argument("--data", type=str, default=DEFAULT_DATA_DIR, help="Path to data directory")
-    parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_FILE, help="Path to output .parquet")
-    parser.add_argument("--batch", type=int, default=BATCH_SIZE, help="Batch size")
-    parser.add_argument("--log_dir", type=str, default=None, help="Log directory (default: logs in script directory)")
+    parser = argparse.ArgumentParser(description="Generate Risk Dataset (Optimized)")
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--data", type=str, default=DEFAULT_DATA_DIR)
+    parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_FILE)
+    parser.add_argument("--batch", type=int, default=BATCH_SIZE)
+    parser.add_argument("--log_dir", type=str, default=None)
     
     args = parser.parse_args()
     
-    # Setup logging to file - capture all terminal output
+    # Setup logging
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     log_dir = args.log_dir if args.log_dir else os.path.join(BASE_DIR, "logs")
     os.makedirs(log_dir, exist_ok=True)
@@ -374,8 +367,7 @@ if __name__ == "__main__":
     
     try:
         BATCH_SIZE = args.batch
-        logger.info(f"All output will be saved to: {log_file}")
-        print(f"All terminal output will be saved to: {log_file}")
+        logger.info("Starting optimized generation...")
         generate_dataset_batched(args.model, args.data, args.output)
     except Exception as e:
         import traceback
@@ -383,5 +375,3 @@ if __name__ == "__main__":
         logger.error(f"CRITICAL ERROR: {e}")
     finally:
         tee.close()
-        logger.info(f"Log saved to: {log_file}")
-        print(f"Log saved to: {log_file}")
