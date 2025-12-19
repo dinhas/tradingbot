@@ -259,8 +259,11 @@ class TradeGuardDataGenerator:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    # Updated to actual checkpoint found on disk
     parser.add_argument("--alpha-model", type=str, default="Alpha/models/checkpoints/8.03.zip")
-    parser.add_argument("--risk-model", type=str, default="RiskLayer/models/risk_model_final(1).zip")
+    # Updated to actual checkpoint found in RiskLayer/models
+    parser.add_argument("--risk_model", type=str, default="RiskLayer/models/2.15.zip")
+    # Reverted to primary training data directory
     parser.add_argument("--data-dir", type=str, default="TradeGuard/data")
     parser.add_argument("--output", type=str, default="TradeGuard/data/dataset_2016_2024.parquet")
     args = parser.parse_args()
@@ -271,6 +274,18 @@ if __name__ == "__main__":
     risk_path = project_root / args.risk_model
     data_dir = project_root / args.data_dir
     output_path = project_root / args.output
+
+    # Check if data directory exists and has parquet files
+    if not data_dir.exists():
+        logger.error(f"Data directory does not exist: {data_dir}. Please run download_data.py first.")
+        sys.exit(1)
+    
+    parquet_files = list(data_dir.glob("*.parquet"))
+    if not parquet_files:
+        logger.error(f"No parquet files found in {data_dir}. Please ensure historical data is downloaded.")
+        sys.exit(1)
+
+    logger.info(f"Using data from: {data_dir} ({len(parquet_files)} files found)")
 
     generator = TradeGuardDataGenerator(
         alpha_model_path=str(alpha_path),
