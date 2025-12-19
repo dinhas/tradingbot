@@ -67,6 +67,11 @@ class CombinedBacktest:
         self.MIN_LOTS = 0.01
         self.CONTRACT_SIZE = 100000
         
+        # Slippage Configuration (Match RiskLayer logic)
+        self.ENABLE_SLIPPAGE = True
+        self.SLIPPAGE_MIN_PIPS = 0.5
+        self.SLIPPAGE_MAX_PIPS = 1.5
+        
         # Per-asset history tracking
         self.asset_histories = {
             asset: {
@@ -303,8 +308,16 @@ class CombinedBacktest:
                         # 1. Get current market data for simulation
                         current_prices = self.env._get_current_prices()
                         atrs = self.env._get_current_atrs()
-                        entry_price = current_prices[asset]
+                        entry_price_raw = current_prices[asset]
                         atr = atrs[asset]
+                        
+                        # Apply Slippage to entry price
+                        if self.ENABLE_SLIPPAGE:
+                            slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
+                            slippage_price = slippage_pips * 0.0001 * entry_price_raw
+                            entry_price = entry_price_raw + (direction * -1 * slippage_price)
+                        else:
+                            entry_price = entry_price_raw
                         
                         # Handle zero ATR (rare)
                         if atr <= 0: atr = entry_price * 0.0001
@@ -408,8 +421,16 @@ class CombinedBacktest:
                 for asset, act in combined_actions.items():
                     direction = act['direction']
                     current_pos = self.env.positions[asset]
-                    price = current_prices[asset]
+                    price_raw = current_prices[asset]
                     atr = atrs[asset]
+                    
+                    # Apply Slippage to entry price
+                    if self.ENABLE_SLIPPAGE:
+                        slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
+                        slippage_price = slippage_pips * 0.0001 * price_raw
+                        price = price_raw + (direction * -1 * slippage_price)
+                    else:
+                        price = price_raw
                     
                     # Execute trade manually
                     if current_pos is None:

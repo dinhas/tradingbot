@@ -60,9 +60,12 @@ class TradeGuardDataGenerator:
         # Risk Model Constants (match RiskManagementEnv)
         self.MAX_RISK_PER_TRADE = 0.40  # 40%
         self.MAX_MARGIN_PER_TRADE_PCT = 0.80
-        self.MAX_LEVERAGE = 400.0
-        self.MIN_LOTS = 0.01
         self.CONTRACT_SIZE = 100000
+        
+        # Realism Constants (Match RiskLayer logic for training TradeGuard)
+        self.TRADING_COST_PCT = 0.0002  # 2.0 pips roundtrip cost
+        self.SLIPPAGE_MIN_PIPS = 0.5    # 0.5 pip min slippage
+        self.SLIPPAGE_MAX_PIPS = 1.5    # 1.5 pip max slippage
         
         # Cumulative results
         self.collected_data = []
@@ -97,8 +100,13 @@ class TradeGuardDataGenerator:
         current_prices = self.env._get_current_prices()
         atrs = self.env._get_current_atrs()
         
-        entry_price = current_prices[asset]
+        entry_price_raw = current_prices[asset]
         atr = atrs[asset]
+        
+        # Apply Adverse Slippage
+        slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
+        slippage_price = slippage_pips * 0.0001 * entry_price_raw
+        entry_price = entry_price_raw + (direction * -1 * slippage_price)
         
         sl_dist = sl_mult * atr
         tp_dist = tp_mult * atr
@@ -124,15 +132,24 @@ class TradeGuardDataGenerator:
             'tp_dist': tp_dist
         }
         
-        # This returns pnl which is roughly price_change_pct * 100 (leverage in AlphaEnv)
-        pnl_val = self.env._simulate_trade_outcome(asset)
+        # This returns gross pnl (price_change_pct * leverage * size)
+        gross_pnl = self.env._simulate_trade_outcome(asset)
         
-        # We want the exit type and R-multiple
-        # Logic duplicated from RiskManagementEnv for accuracy
-        max_profit_pct = 0
-        max_loss_pct = 0 # Not directly returned by env, but we can approximate or use pnl
+        # 1. Convert gross pnl to USD amount (assuming 1.0 notional size)
+        # Note: AlphaEnv leverage is 100, pos['size'] is 1.0. 
+        # So return is (price_change_pct * 100)
         
-        # Let's get more detail
+        # 2. Subtract trading costs (2.0 pips = 0.0002)
+        # Cost is applied to notional value (1.0 in this simulation)
+        # but the pnl_val is scaled by leverage 100.
+        # Cost of 0.0002 on notional 1.0 is 0.0002 USD.
+        # Scaled to leverage 100, that's 0.02 units of PnL?
+        # Let's check: PnL = Price_Change_Pct * Notional * Leverage
+        # Cost_Pct * Notional * Leverage = 0.0002 * 1 * 100 = 0.02
+        
+        cost_pnl = self.TRADING_COST_PCT * self.env.leverage # 0.0002 * 100 = 0.02
+        pnl_val = gross_pnl - cost_pnl
+        
         # We define outcome as:
         # 1 if pnl > 0 else 0
         outcome = 1 if pnl_val > 0 else 0
