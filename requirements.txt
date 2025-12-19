@@ -1,7 +1,7 @@
 ctrader-open-api
 twisted
 pandas
-numpy
+numpy<2
 ta
 gymnasium
 stable-baselines3

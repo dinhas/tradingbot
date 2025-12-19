@@ -16,6 +16,13 @@ project_root = str(Path(__file__).resolve().parent.parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+import numpy as np
+
+# Add numpy 1.x/2.x compatibility shim for SB3 model loading
+if not hasattr(np, "_core"):
+    import sys
+    sys.modules["numpy._core"] = np.core
+
 import argparse
 import logging
 import json

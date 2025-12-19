@@ -11,6 +11,11 @@ from tqdm import tqdm
 import logging
 import gc
 
+# Add numpy 1.x/2.x compatibility shim for SB3 model loading
+# This fixes "ModuleNotFoundError: No module named 'numpy._core.numeric'"
+if not hasattr(np, "_core"):
+    sys.modules["numpy._core"] = np.core
+
 # Add project root to sys.path to allow absolute imports
 # Since this script is now in TradeGuard/src/, parent.parent is the root
 project_root = str(Path(__file__).resolve().parent.parent.parent)

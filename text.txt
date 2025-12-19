@@ -1,0 +1,24 @@
+Traceback (most recent call last):
+  File "/kaggle/working/TradingBot/TradeGuard/src/full_pipeline.py", line 55, in <module>
+    main()
+  File "/kaggle/working/TradingBot/TradeGuard/src/full_pipeline.py", line 41, in main
+    generate_dataset(tg_data, alpha_model, risk_model, train_dataset)
+  File "/kaggle/working/TradingBot/TradeGuard/src/full_pipeline.py", line 31, in generate_dataset
+    g = TradeGuardDataGenerator(alpha_model_path=str(alpha_model), risk_model_path=str(risk_model), data_dir=str(data_dir))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/kaggle/working/TradingBot/TradeGuard/src/generate_dataset.py", line 47, in __init__
+    self.risk_model = PPO.load(risk_model_path, device='cpu')
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/dist-packages/stable_baselines3/common/base_class.py", line 679, in load
+    data, params, pytorch_variables = load_from_zip_file(
+                                      ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/dist-packages/stable_baselines3/common/save_util.py", line 421, in load_from_zip_file
+    data = json_to_data(json_data, custom_objects=custom_objects)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/dist-packages/stable_baselines3/common/save_util.py", line 164, in json_to_data
+    deserialized_object = cloudpickle.loads(base64_object)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'numpy._core.numeri
+
+
+fix this errer i got when i trined the TradeGuard

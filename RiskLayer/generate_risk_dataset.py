@@ -11,6 +11,10 @@ import logging
 import gc
 from src.frozen_alpha_env import TradingEnv
 
+# Add numpy 1.x/2.x compatibility shim for SB3 model loading
+if not hasattr(np, "_core"):
+    sys.modules["numpy._core"] = np.core
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
