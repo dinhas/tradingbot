@@ -19,12 +19,12 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [x] Task: Implement Synthetic News Proxies features [30679e3]
 - [x] Task: Conductor - User Manual Verification 'Feature Engineering - Alpha, Risk & News' (Protocol in workflow.md)
 
-## Phase 3: Feature Engineering - Regime & Session (Features 21-40)
-- [ ] Task: Create tests for Market Regime features (21-30)
-- [ ] Task: Implement Market Regime features
-- [ ] Task: Create tests for Session Edge features (31-40)
-- [ ] Task: Implement Session Edge features
-- [ ] Task: Conductor - User Manual Verification 'Feature Engineering - Regime & Session' (Protocol in workflow.md)
+## Phase 3: Feature Engineering - Regime & Session (Features 21-40) [checkpoint: b7b45e5]
+- [x] Task: Create tests for Market Regime features (21-30) [4c81d0e]
+- [x] Task: Implement Market Regime features [84a8ad4]
+- [x] Task: Create tests for Session Edge features (31-40) [84a8ad4]
+- [x] Task: Implement Session Edge features [84a8ad4]
+- [x] Task: Conductor - User Manual Verification 'Feature Engineering - Regime & Session' (Protocol in workflow.md) [b7b45e5]
 
 ## Phase 4: Feature Engineering - Stats & Price Action (Features 41-60)
 - [ ] Task: Create tests for Execution Statistics features (41-50, including SL/TP distances)
