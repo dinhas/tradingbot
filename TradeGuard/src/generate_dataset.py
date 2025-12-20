@@ -222,7 +222,14 @@ class FeatureEngine:
         return features
 
     def calculate_risk_output(self, risk_params):
-        raise NotImplementedError("calculate_risk_output not implemented")
+        """
+        Calculates Risk Model Output features.
+        """
+        features = []
+        features.append(risk_params.get('sl_mult', 1.0))
+        features.append(risk_params.get('tp_mult', 1.0))
+        features.append(risk_params.get('risk_factor', 1.0))
+        return features
 
 if __name__ == "__main__":
     generator = DatasetGenerator()
