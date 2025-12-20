@@ -13,6 +13,9 @@ import joblib
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
+from datetime import datetime
+from scipy.stats import ks_2samp
+from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import classification_report, precision_score, recall_score, accuracy_score
 from sklearn.model_selection import train_test_split
 
@@ -42,14 +45,20 @@ def train_guard():
     logger.info(f"Total dataset size: {len(df)} rows")
     
     # 2. Preprocessing
-    # Features: f_0 to f_139, risk_raw, sl_mult, tp_mult
+    # Features: f_0 to f_139, risk_raw, sl_mult, tp_mult, direction
     feature_cols = [c for c in df.columns if c.startswith('f_')]
-    feature_cols += ['risk_raw', 'sl_mult', 'tp_mult']
+    feature_cols += ['risk_raw', 'sl_mult', 'tp_mult', 'direction']
     
-    # Handle Asset ID (Categorical)
-    # LightGBM handles categorical features natively if typed as 'category'
-    df['asset'] = df['asset'].astype('category')
-    feature_cols.append('asset')
+    # Handle Asset ID (Label Encoding with generic handling)
+    # We add 'UNKNOWN' to the encoder to handle unseen assets in production
+    le = LabelEncoder()
+    unique_assets = list(df['asset'].unique()) + ['UNKNOWN']
+    le.fit(unique_assets)
+    df['asset_encoded'] = le.transform(df['asset'])
+    feature_cols.append('asset_encoded')
+    
+    # Save Encoder
+    joblib.dump(le, os.path.join(MODEL_DIR, "asset_encoder.joblib"))
     
     X = df[feature_cols]
     y = df['label']
@@ -64,6 +73,19 @@ def train_guard():
     logger.info(f"Training set: {len(X_train)}, Test set: {len(X_test)}")
     logger.info(f"Baseline Win Rate (Train): {y_train.mean():.2%}")
     logger.info(f"Baseline Win Rate (Test): {y_test.mean():.2%}")
+
+    # DISTRIBUTION CHECK
+    logger.info("Checking Feature Distributions...")
+    dist_warns = 0
+    for col in feature_cols:
+        stat, pval = ks_2samp(X_train[col], X_test[col])
+        if pval < 0.01:
+            # Only warn if statistic is significant (large drift)
+            if stat > 0.1: 
+                logger.warning(f"Feature {col} has different distributions (KS={stat:.3f})")
+                dist_warns += 1
+    if dist_warns > 0:
+        logger.warning(f"{dist_warns} features show significant drift between Train and Test.")
     
     # 4. Train LightGBM
     logger.info("Training LightGBM Classifier...")
@@ -79,11 +101,13 @@ def train_guard():
         'bagging_fraction': 0.8,
         'bagging_freq': 5,
         'verbose': -1,
-        'n_jobs': -1
+        'n_jobs': -1,
+        'is_unbalance': True # Handle class imbalance
     }
     
-    train_data = lgb.Dataset(X_train, label=y_train, categorical_feature=['asset'])
-    test_data = lgb.Dataset(X_test, label=y_test, reference=train_data, categorical_feature=['asset'])
+    # categorical_feature must be list of indices or names
+    train_data = lgb.Dataset(X_train, label=y_train, categorical_feature=['asset_encoded'])
+    test_data = lgb.Dataset(X_test, label=y_test, reference=train_data, categorical_feature=['asset_encoded'])
     
     model = lgb.train(
         params,
@@ -96,6 +120,16 @@ def train_guard():
         ]
     )
     
+    # Feature Importance
+    importance = model.feature_importance(importance_type='gain')
+    feature_importance_df = pd.DataFrame({
+        'feature': feature_cols,
+        'importance': importance
+    }).sort_values('importance', ascending=False)
+    
+    logger.info("\nTop 10 Features:")
+    logger.info(feature_importance_df.head(10))
+    
     # 5. Evaluation
     logger.info("Evaluating model...")
     y_pred_prob = model.predict(X_test, num_iteration=model.best_iteration)
@@ -105,10 +139,17 @@ def train_guard():
     logger.info(f"Accuracy: {accuracy_score(y_test, y_pred):.4f}")
     logger.info(f"Precision: {precision_score(y_test, y_pred):.4f}")
     
-    # 6. Save Model
-    model_path = os.path.join(MODEL_DIR, "tradeguard_lgbm.txt")
+    # 6. Save Model with Versioning
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_filename = f"tradeguard_lgbm_v{timestamp}.txt"
+    model_path = os.path.join(MODEL_DIR, model_filename)
     model.save_model(model_path)
-    logger.info(f"Model saved to {model_path}")
+    
+    # Update 'latest' pointer (symlink or just overwrite a 'latest' file)
+    latest_path = os.path.join(MODEL_DIR, "tradeguard_lgbm_latest.txt")
+    model.save_model(latest_path)
+    
+    logger.info(f"Model saved to {model_path} and {latest_path}")
 
 if __name__ == "__main__":
     train_guard()

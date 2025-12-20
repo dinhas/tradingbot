@@ -6,22 +6,33 @@ Used for real-time inference to filter trade signals.
 """
 
 import os
+import joblib
+import logging
 import lightgbm as lgb
 import pandas as pd
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 class TradeGuard:
     def __init__(self, model_path="Guard/models/tradeguard_lgbm.txt"):
         self.model_path = model_path
+        self.encoder_path = os.path.join(os.path.dirname(model_path), "asset_encoder.joblib")
         self.model = None
-        self._load_model()
+        self.encoder = None
+        self._load_resources()
         
-    def _load_model(self):
+    def _load_resources(self):
         if not os.path.exists(self.model_path):
             raise FileNotFoundError(f"Guard model not found at {self.model_path}")
         self.model = lgb.Booster(model_file=self.model_path)
         
-    def predict_proba(self, market_features, sl_mult, tp_mult, risk_raw, asset_name):
+        if os.path.exists(self.encoder_path):
+            self.encoder = joblib.load(self.encoder_path)
+        else:
+            logger.warning(f"Asset encoder not found at {self.encoder_path}. Inference may fail on asset columns.")
+        
+    def predict_proba(self, market_features, sl_mult, tp_mult, risk_raw, asset_name, direction):
         """
         Predict the probability of a trade winning.
         
@@ -31,40 +42,63 @@ class TradeGuard:
             tp_mult (float): Take Profit Multiplier
             risk_raw (float): Risk Parameter (0-1)
             asset_name (str): Symbol name (e.g., 'EURUSD')
+            direction (int): Trade direction (1 or -1)
             
         Returns:
             float: Probability of Win (0.0 to 1.0)
         """
-        # Construct input DataFrame (must match training schema)
-        # Schema: f_0...f_139, risk_raw, sl_mult, tp_mult, asset
-        
-        data = {}
-        
-        # Add Features
-        for i, val in enumerate(market_features):
-            data[f'f_{i}'] = [val]
+        try:
+            # Construct input DataFrame (must match training schema)
+            # Schema: f_0...f_139, risk_raw, sl_mult, tp_mult, direction, asset_encoded
             
-        # Add Risk Params
-        data['risk_raw'] = [risk_raw]
-        data['sl_mult'] = [sl_mult]
-        data['tp_mult'] = [tp_mult]
-        
-        # Add Asset (Categorical)
-        # Note: We pass it as string/category. LightGBM handles the mapping if trained correctly.
-        data['asset'] = [asset_name]
-        
-        df = pd.DataFrame(data)
-        
-        # Convert asset to category type to match training
-        df['asset'] = df['asset'].astype('category')
-        
-        # Predict
-        prob = self.model.predict(df)[0]
-        return prob
+            data = {}
+            
+            # Add Features
+            for i, val in enumerate(market_features):
+                data[f'f_{i}'] = [val]
+                
+            # Add Risk Params & Direction
+            data['risk_raw'] = [risk_raw]
+            data['sl_mult'] = [sl_mult]
+            data['tp_mult'] = [tp_mult]
+            data['direction'] = [direction]
+            
+            # Add Asset (Encoded)
+            if self.encoder:
+                try:
+                    # Check if known
+                    if asset_name in self.encoder.classes_:
+                        encoded_asset = self.encoder.transform([asset_name])[0]
+                    else:
+                        encoded_asset = self.encoder.transform(['UNKNOWN'])[0]
+                except Exception as e:
+                    logger.warning(f"Encoding failed for {asset_name}: {e}. Using 0.")
+                    encoded_asset = 0
+                data['asset_encoded'] = [encoded_asset]
+            else:
+                # Fallback if no encoder (legacy mode or error)
+                data['asset'] = [asset_name]
+                data['asset'] = data['asset'].astype('category')
+            
+            df = pd.DataFrame(data)
+            
+            # Predict
+            prob = self.model.predict(df)[0]
+            
+            # Validate output
+            if not (0 <= prob <= 1):
+                logger.warning(f"Invalid probability {prob} from Guard. Clipping.")
+                prob = np.clip(prob, 0.0, 1.0)
+                
+            return prob
+            
+        except Exception as e:
+            logger.error(f"Guard prediction failed: {e}")
+            return 0.5 # Fail open (neutral) or closed depending on policy
 
-    def check_trade(self, market_features, sl_mult, tp_mult, risk_raw, asset_name, threshold=0.5):
+    def check_trade(self, market_features, sl_mult, tp_mult, risk_raw, asset_name, direction, threshold=0.5):
         """
         Binary check: Should we take this trade?
         """
-        prob = self.predict_proba(market_features, sl_mult, tp_mult, risk_raw, asset_name)
+        prob = self.predict_proba(market_features, sl_mult, tp_mult, risk_raw, asset_name, direction)
         return prob > threshold, prob

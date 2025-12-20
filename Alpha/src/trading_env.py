@@ -482,6 +482,88 @@ class TradingEnv(gym.Env):
         
         return pnl
 
+    def _simulate_trade_outcome_with_timing(self, asset):
+        """
+        PEEK & LABEL: Look ahead to see if trade hits SL or TP.
+        Returns detailed dictionary with timing info.
+        """
+        if self.positions[asset] is None:
+            return {'closed': False, 'pnl': 0.0, 'bars_held': 0, 'exit_reason': 'NO_POSITION'}
+        
+        pos = self.positions[asset]
+        direction = pos['direction']
+        sl = pos['sl']
+        tp = pos['tp']
+        
+        # Look forward up to 1000 steps
+        start_idx = self.current_step + 1
+        end_idx = min(start_idx + 1000, len(self.raw_data))
+        
+        if start_idx >= end_idx:
+            return {'closed': False, 'pnl': 0.0, 'bars_held': 0, 'exit_reason': 'END_OF_DATA'}
+            
+        # OPTIMIZATION: Use pre-cached numpy arrays
+        lows = self.low_arrays[asset][start_idx:end_idx]
+        highs = self.high_arrays[asset][start_idx:end_idx]
+        
+        if direction == 1:  # Long
+            sl_hit_mask = lows <= sl
+            tp_hit_mask = highs >= tp
+        else:  # Short
+            sl_hit_mask = highs >= sl
+            tp_hit_mask = lows <= tp
+        
+        sl_hit = sl_hit_mask.any()
+        tp_hit = tp_hit_mask.any()
+        
+        exit_reason = 'TIME'
+        exit_idx = end_idx - 1
+        closed = False
+        
+        # Determine outcome
+        if sl_hit and tp_hit:
+            first_sl_idx = np.argmax(sl_hit_mask)
+            first_tp_idx = np.argmax(tp_hit_mask)
+            if first_sl_idx <= first_tp_idx:
+                exit_price = sl
+                exit_reason = 'SL'
+                exit_idx = start_idx + first_sl_idx
+            else:
+                exit_price = tp
+                exit_reason = 'TP'
+                exit_idx = start_idx + first_tp_idx
+            closed = True
+        elif sl_hit:
+            exit_price = sl
+            exit_reason = 'SL'
+            exit_idx = start_idx + np.argmax(sl_hit_mask)
+            closed = True
+        elif tp_hit:
+            exit_price = tp
+            exit_reason = 'TP'
+            exit_idx = start_idx + np.argmax(tp_hit_mask)
+            closed = True
+        else:
+            # Neither hit: use last available price
+            exit_price = self.close_arrays[asset][end_idx - 1]
+            exit_reason = 'OPEN'
+            closed = False
+        
+        # Calculate P&L
+        price_change = (exit_price - pos['entry_price']) * direction
+        price_change_pct = price_change / pos['entry_price'] if pos['entry_price'] != 0 else 0
+        position_value = pos['size'] * self.leverage
+        pnl = price_change_pct * position_value
+        
+        bars_held = exit_idx - self.current_step
+        
+        return {
+            'closed': closed,
+            'pnl': pnl,
+            'bars_held': bars_held,
+            'exit_reason': exit_reason
+        }
+
     def _calculate_reward(self) -> float:
         """
         Reward function with separate modes for training and backtesting.

@@ -119,12 +119,24 @@ class GuardDataGenerator:
 
     def _build_risk_obs(self, market_obs, asset):
         """Construct observation vector for Risk Model."""
-        # Note: In generation mode, we approximate account state as 'Neutral'/Reset
-        # because the Risk Model needs stable inputs, and we are evaluating the trade *in isolation*.
+        # Use REALISTIC account state from the environment
+        equity = self.env.equity
+        peak_equity = self.env.peak_equity
+        initial_equity = 10000.0 # Base assumption or self.env.start_equity if available
         
-        # Market State (140)
-        # Account State (5) - Default values
-        account_obs = np.array([1.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32) 
+        equity_norm = equity / initial_equity
+        drawdown = 1.0 - (equity / peak_equity) if peak_equity > 0 else 0.0
+        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+        
+        # Account State (5)
+        account_obs = np.array([
+            equity_norm, 
+            drawdown, 
+            0.0, # Leverage (placeholder)
+            risk_cap_mult, 
+            0.0 # Padding
+        ], dtype=np.float32)
+        
         # History (20) - Zeros (Assume no immediate history bias for Guard evaluation)
         hist_pnl = np.zeros(5, dtype=np.float32)
         hist_acts = np.zeros(15, dtype=np.float32)
@@ -142,6 +154,11 @@ class GuardDataGenerator:
         logger.info("Starting Data Generation...")
         
         obs, _ = self.env.reset()
+        
+        # VALIDATION: Check Observation Space
+        assert len(obs) >= 140, f"Expected >=140 features, got {len(obs)}"
+        assert not np.any(np.isnan(obs[:140])), "NaN values in features"
+        
         done = False
         total_generated = 0
         
@@ -159,6 +176,12 @@ class GuardDataGenerator:
             
             # 2. Iterate Assets
             for i, asset in enumerate(self.env.assets):
+                # Cleanup expired positions
+                if self.portfolio[asset] is not None:
+                    if 'close_step' in self.portfolio[asset]:
+                         if current_idx >= self.portfolio[asset]['close_step']:
+                             self.portfolio[asset] = None
+
                 # Parse Alpha Direction
                 raw_dir = alpha_action[i]
                 direction = 1 if raw_dir > 0.33 else (-1 if raw_dir < -0.33 else 0)
@@ -216,7 +239,9 @@ class GuardDataGenerator:
                 self.env.positions[asset] = virtual_pos
                 
                 # Simulate (Lookahead)
-                pnl = self.env._simulate_trade_outcome(asset)
+                # FIX: Use with_timing to get closure step
+                sim_result = self.env._simulate_trade_outcome_with_timing(asset)
+                pnl = sim_result['pnl']
                 
                 # Restore
                 self.env.positions[asset] = original_pos
@@ -224,7 +249,12 @@ class GuardDataGenerator:
                 # --- UPDATE PORTFOLIO STATE ---
                 # If we decided to 'take' this trade (conceptually), we mark it in portfolio
                 # so subsequent steps know we have a position.
-                self.portfolio[asset] = {'direction': direction}
+                close_step = current_idx + sim_result['bars_held'] if sim_result['closed'] else float('inf')
+                
+                self.portfolio[asset] = {
+                    'direction': direction,
+                    'close_step': close_step
+                }
                 
                 # --- RECORD DATA ---
                 # Label: 1 if PnL > 0 (Winning), 0 if Loss
