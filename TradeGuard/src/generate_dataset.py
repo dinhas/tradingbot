@@ -18,14 +18,100 @@ except ImportError:
     # Fallback or mock for testing if needed, though usually deps are present
     TradingEnv = object
 
+def label_trade(entry_price: float, direction: int, sl: float, tp: float, 
+                future_highs: list, future_lows: list, future_closes: list) -> int:
+    """
+    Simulates trade outcome using lookahead data.
+    Returns: 1 (Win) or 0 (Loss)
+    """
+    for i in range(len(future_highs)):
+        if direction == 1:  # Long
+            if future_lows[i] <= sl:
+                return 0  # Loss
+            if future_highs[i] >= tp:
+                return 1  # Win
+        else:  # Short
+            if future_highs[i] >= sl:
+                return 0  # Loss
+            if future_lows[i] <= tp:
+                return 1  # Win
+    
+    # Timed out - check final P&L
+    if not future_closes:
+        return 0
+    final_price = future_closes[-1]
+    pnl = (final_price - entry_price) * direction
+    return 1 if pnl > 0 else 0
+
 class DatasetGenerationEnv(TradingEnv):
     """
     Extended TradingEnv that captures trade signals and their outcomes.
     """
-    def __init__(self, data_dir='data', stage=3):
+    def __init__(self, df_dict, feature_engine, data_dir='data', stage=3):
         # Force is_training=False for deterministic behavior
         super().__init__(data_dir=data_dir, stage=stage, is_training=False)
         self.signals = []
+        self.df_dict = df_dict
+        self.guard_feature_engine = feature_engine
+        self.last_action = None
+
+    def _get_current_timestamp(self):
+        """
+        Returns the current timestamp from the data.
+        """
+        # Assuming all assets have same index or at least the first one is representative
+        asset = self.assets[0]
+        return self.df_list[asset].index[self.current_step]
+
+    def _simulate_trade_outcome_with_timing(self, asset: str) -> dict:
+        """
+        Looks ahead in data to determine trade outcome.
+        """
+        pos = self.positions[asset]
+        if pos is None:
+            return {'pnl': 0, 'bars_held': 0, 'exit_reason': 'none'}
+            
+        entry_price = pos['entry_price']
+        direction = pos['direction']
+        sl = pos['sl']
+        tp = pos['tp']
+        
+        # Max hold time e.g., 4 hours = 48 bars of 5m
+        max_bars = 48
+        
+        # Get future data
+        start_idx = self.current_step + 1
+        end_idx = min(start_idx + max_bars, len(self.df_list[asset]))
+        
+        future_df = self.df_list[asset].iloc[start_idx:end_idx]
+        
+        if future_df.empty:
+            return {'pnl': 0, 'bars_held': 0, 'exit_reason': 'end_of_data'}
+            
+        highs = future_df['high'].values
+        lows = future_df['low'].values
+        closes = future_df['close'].values
+        
+        for i in range(len(highs)):
+            if direction == 1: # Long
+                if lows[i] <= sl:
+                    return {'pnl': (sl - entry_price), 'bars_held': i+1, 'exit_reason': 'sl'}
+                if highs[i] >= tp:
+                    return {'pnl': (tp - entry_price), 'bars_held': i+1, 'exit_reason': 'tp'}
+            else: # Short
+                if highs[i] >= sl:
+                    return {'pnl': (entry_price - sl), 'bars_held': i+1, 'exit_reason': 'sl'}
+                if lows[i] <= tp:
+                    return {'pnl': (entry_price - tp), 'bars_held': i+1, 'exit_reason': 'tp'}
+                    
+        # Timeout
+        final_price = closes[-1]
+        pnl = (final_price - entry_price) * direction
+        return {'pnl': pnl, 'bars_held': len(closes), 'exit_reason': 'timeout'}
+
+    def set_last_action(self, action):
+        """Stores the raw action from the model for feature calculation."""
+        self.last_action = action
 
     def _open_position(self, asset, direction, act, price, atr):
         """
@@ -38,9 +124,60 @@ class DatasetGenerationEnv(TradingEnv):
             # Calculate Future Outcome (Label)
             outcome = self._simulate_trade_outcome_with_timing(asset)
             
+            # --- Feature Calculation ---
+            # 1. Prepare inputs
+            # Group A & E need portfolio state
+            total_exposure = sum(pos['size'] for pos in self.positions.values() if pos is not None)
+            
+            # Find the index of the asset in the original list
+            asset_idx = self.assets.index(asset)
+            
+            # Get recent actions for this asset (simplified: we'll just use the current one or maintain a history)
+            # For MVP, we'll use a simplified version of the logic
+            
+            # Extract recent trades for win rate calculation
+            recent_trades = [{'pnl': t['net_pnl']} for t in self.all_trades[-10:]]
+            
+            portfolio_state = {
+                'equity': self.equity,
+                'peak_equity': self.peak_equity,
+                'total_exposure': total_exposure,
+                'open_positions_count': sum(1 for p in self.positions.values() if p is not None),
+                'recent_trades': recent_trades,
+                'asset_action_raw': self.last_action[asset_idx * (4 if self.stage==3 else 1)] if self.last_action is not None else 0,
+                'asset_recent_actions': [self.last_action[asset_idx]] * 5 if self.last_action is not None else [0]*5,
+                'asset_signal_persistence': 1.0, # Simplified
+                'asset_signal_reversal': 0.0,    # Simplified
+                'position_value': self.positions[asset]['size']
+            }
+            
+            trade_info = {
+                'entry_price': price,
+                'sl': self.positions[asset]['sl'],
+                'tp': self.positions[asset]['tp'],
+                'direction': direction
+            }
+            
+            # Historical DF for Group B, C, F
+            # Use 300 bars context
+            hist_df = self.df_dict[asset].iloc[max(0, self.current_step-300):self.current_step+1]
+            
+            timestamp = self._get_current_timestamp()
+            
+            # Calculate groups
+            f_a = self.guard_feature_engine.calculate_alpha_confidence(None, portfolio_state)
+            f_b = self.guard_feature_engine.calculate_news_proxies(hist_df)
+            f_c = self.guard_feature_engine.calculate_market_regime(hist_df)
+            f_d = self.guard_feature_edge = self.guard_feature_engine.calculate_session_edge(timestamp)
+            f_e = self.guard_feature_engine.calculate_execution_stats(hist_df, trade_info, portfolio_state)
+            f_f = self.guard_feature_engine.calculate_price_action_context(hist_df)
+            
+            # Combine all features (Total 60)
+            all_features = f_a + f_b + f_c + f_d + f_e + f_f
+            
             # Capture Signal Info
             signal_data = {
-                'timestamp': self._get_current_timestamp(),
+                'timestamp': timestamp,
                 'asset': asset,
                 'direction': direction,
                 'entry_price': price,
@@ -50,6 +187,7 @@ class DatasetGenerationEnv(TradingEnv):
                 'bars_held': outcome['bars_held'],
                 'exit_reason': outcome['exit_reason'],
                 'label': 1 if outcome['pnl'] > 0 else 0,
+                'features': all_features,
                 'step': self.current_step
             }
             self.signals.append(signal_data)
@@ -152,9 +290,16 @@ class DatasetGenerator:
             
         self.logger.info("Starting inference loop...")
         
+        # Load full DataFrames for feature calculation context
+        df_dict = self.load_data()
+        
         # Initialize custom environment
-        # We pass str(self.data_dir) because TradingEnv expects a path string or object
-        env = DatasetGenerationEnv(data_dir=str(self.data_dir), stage=stage)
+        env = DatasetGenerationEnv(
+            df_dict=df_dict, 
+            feature_engine=FeatureEngine(),
+            data_dir=str(self.data_dir), 
+            stage=stage
+        )
         
         obs, _ = env.reset()
         done = False
@@ -162,10 +307,54 @@ class DatasetGenerator:
         # Iterate until done
         while not done:
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, truncated, info = env.step(action)
+            env.set_last_action(action)
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
             
         self.logger.info(f"Inference complete. Generated {len(env.signals)} signals.")
         return env.signals
+
+    def save_dataset(self, signals, output_path):
+        """
+        Saves the generated signals and features to a Parquet file.
+        """
+        if not signals:
+            self.logger.warning("No signals to save.")
+            return
+            
+        self.logger.info(f"Saving {len(signals)} signals to {output_path}...")
+        
+        # Convert list of dicts to DataFrame
+        data = []
+        for s in signals:
+            row = {
+                'timestamp': s['timestamp'],
+                'asset': s['asset'],
+                'direction': s['direction'],
+                'label': s['label']
+            }
+            # Add features
+            if 'features' in s:
+                for i, val in enumerate(s['features']):
+                    row[f'feature_{i}'] = val
+            data.append(row)
+            
+        df = pd.DataFrame(data)
+        
+        # Ensure output directory exists
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Save to Parquet
+        df.to_parquet(output_path)
+        self.logger.info("Dataset saved successfully.")
+
+    def run(self, model_path, output_path, stage=3):
+        """
+        Full pipeline: generate signals and save dataset.
+        """
+        signals = self.generate_signals(model_path, stage)
+        self.save_dataset(signals, output_path)
+        self.logger.info("Pipeline complete.")
 
 class FeatureEngine:
     """
@@ -564,4 +753,13 @@ class FeatureEngine:
         return features
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="TradeGuard Dataset Generator")
+    parser.add_argument("--model", type=str, default="Alpha/models/checkpoints/8.03.zip", help="Path to Alpha PPO model")
+    parser.add_argument("--output", type=str, default="TradeGuard/data/guard_dataset.parquet", help="Output Parquet file")
+    parser.add_argument("--stage", type=int, default=3, help="Curriculum stage")
+    
+    args = parser.parse_args()
+    
     generator = DatasetGenerator()
+    generator.run(args.model, args.output, args.stage)
