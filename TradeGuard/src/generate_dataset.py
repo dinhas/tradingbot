@@ -87,6 +87,8 @@ class DatasetGenerator:
         
         for asset in self.assets:
             file_path = self.data_dir / f"{asset}_5m.parquet"
+            file_path_2025 = self.data_dir / f"{asset}_5m_2025.parquet"
+            
             if file_path.exists():
                 self.logger.info(f"Loading {asset} from {file_path}")
                 try:
@@ -94,8 +96,15 @@ class DatasetGenerator:
                     data[asset] = df
                 except Exception as e:
                     self.logger.error(f"Failed to load {asset}: {e}")
+            elif file_path_2025.exists():
+                self.logger.info(f"Loading {asset} from {file_path_2025}")
+                try:
+                    df = pd.read_parquet(file_path_2025)
+                    data[asset] = df
+                except Exception as e:
+                    self.logger.error(f"Failed to load {asset}: {e}")
             else:
-                self.logger.warning(f"File not found: {file_path}")
+                self.logger.warning(f"File not found: {file_path} or {file_path_2025}")
         
         return data
 
