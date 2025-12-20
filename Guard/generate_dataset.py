@@ -249,7 +249,8 @@ class GuardDataGenerator:
                 # --- UPDATE PORTFOLIO STATE ---
                 # If we decided to 'take' this trade (conceptually), we mark it in portfolio
                 # so subsequent steps know we have a position.
-                close_step = current_idx + sim_result['bars_held'] if sim_result['closed'] else float('inf')
+                # FIX: If not closed (timeout), force close at the end of lookahead to free up the slot
+                close_step = current_idx + sim_result['bars_held']
                 
                 self.portfolio[asset] = {
                     'direction': direction,

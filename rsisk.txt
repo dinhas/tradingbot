@@ -1,0 +1,414 @@
+# TradeGuard Code Analysis: Remaining Issues (After Fixes)
+
+## 🚨 Critical Bugs (Will Cause Crashes)
+
+### 1. **Method `_simulate_trade_outcome_with_timing` Doesn't Exist**
+**Location**: `generate_dataset.py`, line 235
+
+**Problem**: You're calling a method that doesn't exist:
+```python
+sim_result = self.env._simulate_trade_outcome_with_timing(asset)
+```
+
+The original method was `_simulate_trade_outcome(asset)` which only returns PnL, not a dict with timing information.
+
+**Impact**: **IMMEDIATE CRASH** when generate_dataset.py runs.
+
+**Fix Options**:
+1. If the method exists in your TradingEnv but wasn't shown, ignore this
+2. Otherwise, you need to implement it or modify the simulation logic:
+
+```python
+# Option A: Implement in TradingEnv
+def _simulate_trade_outcome_with_timing(self, asset):
+    """Returns dict with pnl, closed status, and bars_held"""
+    position = self.positions[asset]
+    entry_idx = position['entry_step']
+    direction = position['direction']
+    entry_price = position['entry_price']
+    sl = position['sl']
+    tp = position['tp']
+    
+    # Get price arrays for simulation
+    prices_high = self.high_arrays[asset]
+    prices_low = self.low_arrays[asset]
+    
+    # Simulate forward from entry
+    max_lookahead = min(1000, len(prices_high) - entry_idx - 1)
+    
+    for i in range(1, max_lookahead + 1):
+        step = entry_idx + i
+        high = prices_high[step]
+        low = prices_low[step]
+        
+        # Check SL/TP hits
+        if direction == 1:  # Long
+            if low <= sl:
+                pnl = sl - entry_price
+                return {'pnl': pnl * position['size'], 'closed': True, 'bars_held': i}
+            elif high >= tp:
+                pnl = tp - entry_price
+                return {'pnl': pnl * position['size'], 'closed': True, 'bars_held': i}
+        else:  # Short
+            if high >= sl:
+                pnl = entry_price - sl
+                return {'pnl': pnl * position['size'], 'closed': True, 'bars_held': i}
+            elif low <= tp:
+                pnl = entry_price - tp
+                return {'pnl': pnl * position['size'], 'closed': True, 'bars_held': i}
+    
+    # Position never closed in lookahead window
+    final_price = prices_low[entry_idx + max_lookahead]
+    pnl = (final_price - entry_price) * direction * position['size']
+    return {'pnl': pnl, 'closed': False, 'bars_held': max_lookahead}
+```
+
+---
+
+### 2. **Portfolio Cleanup Logic Error**
+**Location**: `generate_dataset.py`, lines 182-185
+
+**Problem**: Trying to check dictionary key on potentially `None` value:
+```python
+if self.portfolio[asset] is not None:
+    if 'close_step' in self.portfolio[asset]:  # ✓ OK
+         if current_idx >= self.portfolio[asset]['close_step']:
+             self.portfolio[asset] = None
+```
+
+Actually, this is **correctly checking for None first**, so this is fine. But there's a related issue:
+
+**Real Issue**: When `sim_result['closed']` is `False`, you set:
+```python
+close_step = current_idx + sim_result['bars_held'] if sim_result['closed'] else float('inf')
+```
+
+This means positions that don't close within the lookahead window remain "open" forever in your portfolio tracker. This could be intentional, but it prevents future trades in that asset until the end of the simulation.
+
+**Impact**: Potentially reduces dataset size significantly if many positions don't close.
+
+**Fix**: Decide on a policy:
+```python
+# Option A: Force close after max window
+close_step = current_idx + sim_result['bars_held']
+
+# Option B: Mark as "uncertain" and allow new trades after a cooldown
+close_step = current_idx + max(sim_result['bars_held'], 100) # cooldown
+```
+
+---
+
+### 3. **Model Path Mismatch**
+**Location**: `guard_model.py` line 12 vs `train_guard.py` line 142
+
+**Problem**: 
+- Training saves to: `"tradeguard_lgbm_latest.txt"`
+- Inference loads from: `"Guard/models/tradeguard_lgbm.txt"` (default)
+
+**Impact**: Inference will fail with "model not found" unless you manually rename the file.
+
+**Fix**: Align the paths:
+```python
+# In guard_model.py
+def __init__(self, model_path="Guard/models/tradeguard_lgbm_latest.txt"):
+```
+
+---
+
+## ⚠️ Serious Issues
+
+### 4. **Equity Tracking May Not Exist in TradingEnv**
+**Location**: `generate_dataset.py`, lines 122-125
+
+**Problem**: You're accessing `self.env.equity` and `self.env.peak_equity`:
+```python
+equity = self.env.equity
+peak_equity = self.env.peak_equity
+```
+
+But TradingEnv might not track these attributes. Many RL trading environments only track positions, not account equity.
+
+**Impact**: `AttributeError` crash if these don't exist.
+
+**Fix**: Add fallback or verify the attributes exist:
+```python
+equity = getattr(self.env, 'equity', 10000.0)
+peak_equity = getattr(self.env, 'peak_equity', 10000.0)
+```
+
+Or better, track it yourself:
+```python
+# In __init__
+self.simulated_equity = 10000.0
+self.simulated_peak_equity = 10000.0
+
+# In generate loop, update based on closed trades
+# This requires more work to track closed PnLs
+```
+
+---
+
+### 5. **Initial Equity Hardcoded**
+**Location**: `generate_dataset.py`, line 123
+
+**Problem**: 
+```python
+initial_equity = 10000.0 # Base assumption
+```
+
+If your TradingEnv actually starts with a different amount (e.g., 100,000), the normalization will be wrong.
+
+**Fix**:
+```python
+initial_equity = getattr(self.env, 'initial_balance', 10000.0)
+# Or set it in __init__ based on env config
+```
+
+---
+
+### 6. **LightGBM Predict Output May Not Be Probability**
+**Location**: `guard_model.py`, line 82
+
+**Problem**: For binary classification, `model.predict()` might return raw scores, not probabilities:
+```python
+prob = self.model.predict(df)[0]
+```
+
+**Impact**: Values outside [0, 1] range, though you clip them.
+
+**Fix**: Explicitly request probabilities or use sigmoid:
+```python
+# LightGBM binary classification predict returns probabilities by default
+# But verify your model was trained with 'objective': 'binary'
+# If you get raw scores, apply sigmoid:
+from scipy.special import expit
+raw_score = self.model.predict(df)[0]
+prob = expit(raw_score)  # Sigmoid transformation
+```
+
+Actually, LightGBM's `predict` for binary objective returns probabilities by default, so this might be fine. But worth verifying.
+
+---
+
+### 7. **No Validation of market_features Length**
+**Location**: `guard_model.py`, line 49-51
+
+**Problem**: Assuming market_features has exactly 140 elements:
+```python
+for i, val in enumerate(market_features):
+    data[f'f_{i}'] = [val]
+```
+
+If market_features has 150 elements, you'll create f_0 through f_149, which won't match training schema.
+
+**Fix**:
+```python
+assert len(market_features) == 140, f"Expected 140 features, got {len(market_features)}"
+for i in range(140):  # Force exactly 140
+    data[f'f_{i}'] = [market_features[i]]
+```
+
+---
+
+### 8. **Direction Not Validated**
+**Location**: Multiple places
+
+**Problem**: No validation that direction is 1 or -1:
+```python
+data['direction'] = [direction]  # What if direction is 0, 2, etc.?
+```
+
+**Fix**: Add validation in both generation and inference:
+```python
+assert direction in [1, -1], f"Direction must be 1 or -1, got {direction}"
+```
+
+---
+
+### 9. **Asset Encoder Fallback Broken**
+**Location**: `guard_model.py`, lines 73-76
+
+**Problem**: The fallback code has a bug:
+```python
+else:
+    # Fallback if no encoder (legacy mode or error)
+    data['asset'] = [asset_name]
+    data['asset'] = data['asset'].astype('category')  # ← BUG: data is dict, not DataFrame
+```
+
+You're trying to call `.astype()` on a dict value (list), not a Series.
+
+**Fix**: Either skip the fallback or fix it:
+```python
+else:
+    # If no encoder, use raw asset name (requires model trained with categorical feature)
+    data['asset'] = [asset_name]
+    # Don't try to convert here; do it after DataFrame creation
+    
+df = pd.DataFrame(data)
+if not self.encoder:
+    df['asset'] = df['asset'].astype('category')
+```
+
+---
+
+### 10. **Missing Backward Compatibility Check**
+**Location**: `train_guard.py`, line 51
+
+**Problem**: If you train on data generated before adding 'direction' column:
+```python
+feature_cols += ['risk_raw', 'sl_mult', 'tp_mult', 'direction']  # direction might not exist
+```
+
+**Impact**: KeyError crash.
+
+**Fix**:
+```python
+# Check if direction column exists
+if 'direction' in df.columns:
+    feature_cols.append('direction')
+else:
+    logger.warning("Direction column not found in data. Using old schema.")
+```
+
+---
+
+## 🔧 Minor Issues
+
+### 11. **Infinite Loop Risk**
+If `_simulate_trade_outcome_with_timing` has a bug and always returns `closed=False`, your portfolio will fill up and no new trades will be generated, but the loop will continue running through all data generating no samples.
+
+**Fix**: Add a counter and warning:
+```python
+# In generate()
+trades_blocked = 0
+# ...
+if current_pos is not None:
+    if current_pos['direction'] == direction:
+        trades_blocked += 1
+        if trades_blocked % 100 == 0:
+            logger.warning(f"Blocked {trades_blocked} trades due to open positions")
+        continue
+```
+
+---
+
+### 12. **No Check for Empty Test Set**
+If split_idx happens to be at the very end (unlikely but possible with small datasets), test set would be tiny or empty.
+
+**Fix**:
+```python
+split_idx = int(len(df) * 0.80)
+if len(df) - split_idx < 100:
+    logger.error("Test set too small. Need more data.")
+    return
+```
+
+---
+
+### 13. **KS Test on Encoded Categorical**
+**Location**: `train_guard.py`, line 88
+
+**Problem**: You're running KS test on `asset_encoded`, which is categorical (encoded as integers). KS test is for continuous distributions.
+
+**Fix**:
+```python
+for col in feature_cols:
+    if col == 'asset_encoded':  # Skip categorical features
+        continue
+    stat, pval = ks_2samp(X_train[col], X_test[col])
+    # ...
+```
+
+---
+
+### 14. **Division by Zero Edge Case**
+**Location**: `generate_dataset.py`, line 128
+
+```python
+drawdown = 1.0 - (equity / peak_equity) if peak_equity > 0 else 0.0
+```
+
+What if both equity and peak_equity are 0? (Account blew up)
+
+**Fix**:
+```python
+if peak_equity > 0 and equity > 0:
+    drawdown = 1.0 - (equity / peak_equity)
+elif equity <= 0:
+    drawdown = 1.0  # Total loss
+else:
+    drawdown = 0.0  # No drawdown
+```
+
+---
+
+### 15. **Categorical Feature Specification Inconsistency**
+**Location**: `train_guard.py`, line 110
+
+**Problem**: You specify `categorical_feature=['asset_encoded']`, but asset_encoded is an integer column (from LabelEncoder), not a categorical string column.
+
+LightGBM can handle this, but it's cleaner to be explicit about whether you want it treated as categorical or numeric.
+
+**Fix**: Either:
+```python
+# Option A: Keep as is (LightGBM will treat integers as categorical if specified)
+categorical_feature=['asset_encoded']
+
+# Option B: Convert to string for clarity
+X_train['asset_encoded'] = X_train['asset_encoded'].astype(str)
+X_test['asset_encoded'] = X_test['asset_encoded'].astype(str)
+categorical_feature=['asset_encoded']
+```
+
+---
+
+## 📋 Best Practices Issues
+
+### 16. **No Model Metadata Saved**
+You save the model and encoder separately, but not metadata like:
+- Training date
+- Dataset size
+- Feature names
+- Performance metrics
+- Hyperparameters used
+
+**Fix**: Save a metadata JSON:
+```python
+metadata = {
+    'train_date': timestamp,
+    'train_size': len(X_train),
+    'test_size': len(X_test),
+    'train_win_rate': float(y_train.mean()),
+    'test_win_rate': float(y_test.mean()),
+    'test_accuracy': float(accuracy_score(y_test, y_pred)),
+    'test_precision': float(precision_score(y_test, y_pred)),
+    'features': feature_cols,
+    'params': params
+}
+import json
+with open(os.path.join(MODEL_DIR, f"metadata_v{timestamp}.json"), 'w') as f:
+    json.dump(metadata, f, indent=2)
+```
+
+---
+
+### 17. **No Progress Bar for Long Operations**
+Data loading and model training can take a long time. Consider using `tqdm`:
+```python
+from tqdm import tqdm
+for f in tqdm(files, desc="Loading data"):
+    dfs.append(pd.read_parquet(f))
+```
+
+---
+
+## 🎯 Summary of Critical Fixes Needed
+
+1. **Implement or verify `_simulate_trade_outcome_with_timing` exists**
+2. **Fix model path mismatch** (tradeguard_lgbm.txt vs tradeguard_lgbm_latest.txt)
+3. **Verify equity tracking** in TradingEnv or implement fallback
+4. **Fix asset encoder fallback** in guard_model.py (line 75)
+5. **Add direction and market_features validation**
+
+These are the must-fix items before running the system. 

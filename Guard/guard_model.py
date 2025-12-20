@@ -15,7 +15,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 class TradeGuard:
-    def __init__(self, model_path="Guard/models/tradeguard_lgbm.txt"):
+    def __init__(self, model_path="Guard/models/tradeguard_lgbm_latest.txt"):
         self.model_path = model_path
         self.encoder_path = os.path.join(os.path.dirname(model_path), "asset_encoder.joblib")
         self.model = None
@@ -48,6 +48,14 @@ class TradeGuard:
             float: Probability of Win (0.0 to 1.0)
         """
         try:
+            # Validate Inputs
+            if len(market_features) != 140:
+                logger.error(f"Invalid feature count: {len(market_features)}. Expected 140.")
+                return 0.5
+            
+            if direction not in [1, -1]:
+                logger.warning(f"Invalid direction: {direction}. Expected 1 or -1.")
+
             # Construct input DataFrame (must match training schema)
             # Schema: f_0...f_139, risk_raw, sl_mult, tp_mult, direction, asset_encoded
             
@@ -78,9 +86,12 @@ class TradeGuard:
             else:
                 # Fallback if no encoder (legacy mode or error)
                 data['asset'] = [asset_name]
-                data['asset'] = data['asset'].astype('category')
             
             df = pd.DataFrame(data)
+
+            # Fallback categorical conversion if needed
+            if not self.encoder and 'asset' in df.columns:
+                df['asset'] = df['asset'].astype('category')
             
             # Predict
             prob = self.model.predict(df)[0]

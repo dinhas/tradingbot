@@ -47,7 +47,11 @@ def train_guard():
     # 2. Preprocessing
     # Features: f_0 to f_139, risk_raw, sl_mult, tp_mult, direction
     feature_cols = [c for c in df.columns if c.startswith('f_')]
-    feature_cols += ['risk_raw', 'sl_mult', 'tp_mult', 'direction']
+    feature_cols += ['risk_raw', 'sl_mult', 'tp_mult']
+    
+    # Check for direction column (Backward Compatibility)
+    if 'direction' in df.columns:
+        feature_cols.append('direction')
     
     # Handle Asset ID (Label Encoding with generic handling)
     # We add 'UNKNOWN' to the encoder to handle unseen assets in production
@@ -78,6 +82,8 @@ def train_guard():
     logger.info("Checking Feature Distributions...")
     dist_warns = 0
     for col in feature_cols:
+        if col == 'asset_encoded':
+            continue
         stat, pval = ks_2samp(X_train[col], X_test[col])
         if pval < 0.01:
             # Only warn if statistic is significant (large drift)
