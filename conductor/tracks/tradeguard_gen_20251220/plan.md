@@ -10,12 +10,14 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [x] Task: Implement Alpha model inference loop to identify trade signals [9adb5a0]
 - [ ] Task: Conductor - User Manual Verification 'Infrastructure & Data Loading' (Protocol in workflow.md)
 
-## Phase 2: Feature Engineering - Alpha & News (Features 1-20)
-- [ ] Task: Create tests for Alpha Model Confidence features (1-10)
+## Phase 2: Feature Engineering - Alpha, Risk & News (Features 1-20+)
+- [x] Task: Create tests for Alpha Model Confidence features (1-10) [8f96bde]
+- [ ] Task: Create tests for Risk Model Output features (New: sl_mult, tp_mult, risk_factor)
 - [ ] Task: Implement Alpha Model Confidence features
+- [ ] Task: Implement Risk Model Output features
 - [ ] Task: Create tests for Synthetic News Proxies features (11-20)
 - [ ] Task: Implement Synthetic News Proxies features
-- [ ] Task: Conductor - User Manual Verification 'Feature Engineering - Alpha & News' (Protocol in workflow.md)
+- [ ] Task: Conductor - User Manual Verification 'Feature Engineering - Alpha, Risk & News' (Protocol in workflow.md)
 
 ## Phase 3: Feature Engineering - Regime & Session (Features 21-40)
 - [ ] Task: Create tests for Market Regime features (21-30)
@@ -25,7 +27,7 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [ ] Task: Conductor - User Manual Verification 'Feature Engineering - Regime & Session' (Protocol in workflow.md)
 
 ## Phase 4: Feature Engineering - Stats & Price Action (Features 41-60)
-- [ ] Task: Create tests for Execution Statistics features (41-50)
+- [ ] Task: Create tests for Execution Statistics features (41-50, including SL/TP distances)
 - [ ] Task: Implement Execution Statistics features
 - [ ] Task: Create tests for Price Action Context features (51-60)
 - [ ] Task: Implement Price Action Context features
