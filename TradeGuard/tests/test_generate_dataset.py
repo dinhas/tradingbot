@@ -33,17 +33,17 @@ class TestDatasetGeneratorInit(unittest.TestCase):
         self.assertTrue(isinstance(generator.logger, logging.Logger))
         self.assertEqual(generator.logger.name, "TradeGuard.DatasetGenerator")
 
+    @patch('pathlib.Path.exists')
     @patch('pandas.read_parquet')
-    def test_load_data(self, mock_read_parquet):
+    def test_load_data(self, mock_read_parquet, mock_exists):
         """Test loading data for all assets."""
-        self.skipTest("Implementation pending")
-        
         if self.DatasetGenerator is None:
             self.skipTest("DatasetGenerator not available")
             
         # Mock return value
         mock_df = pd.DataFrame({'close': [1.1, 1.2], 'time': [0, 1]})
         mock_read_parquet.return_value = mock_df
+        mock_exists.return_value = True # Pretend files exist
         
         generator = self.DatasetGenerator()
         # Override data_dir for test to avoid looking in real path
