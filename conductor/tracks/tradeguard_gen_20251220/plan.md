@@ -4,7 +4,7 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 
 ## Phase 1: Infrastructure & Data Loading
 - [x] Task: Initialize `TradeGuard/src/generate_dataset.py` structure and logging [b457951]
-- [ ] Task: Create tests for historical data loading and alignment
+- [x] Task: Create tests for historical data loading and alignment [4c81d0e]
 - [ ] Task: Implement OHLCV data loader for 5 assets (2016-2024)
 - [ ] Task: Create tests for Alpha model loading and inference consistency
 - [ ] Task: Implement Alpha model inference loop to identify trade signals
