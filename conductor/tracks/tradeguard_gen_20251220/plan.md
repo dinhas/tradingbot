@@ -34,8 +34,8 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [x] Task: Conductor - User Manual Verification 'Feature Engineering - Stats & Price Action' (Protocol in workflow.md) [b05affe]
 
 ## Phase 5: Labeling & Export
-- [ ] Task: Create tests for Lookahead Labeling logic (Win/Loss)
-- [ ] Task: Implement Ground Truth Labeling logic
-- [ ] Task: Create tests for Dataset export integrity
-- [ ] Task: Implement final Parquet export pipeline
+- [x] Task: Create tests for Lookahead Labeling logic (Win/Loss) [d4e105c]
+- [x] Task: Implement Ground Truth Labeling logic [d4e105c]
+- [x] Task: Create tests for Dataset export integrity [d4e105c]
+- [x] Task: Implement final Parquet export pipeline [d4e105c]
 - [ ] Task: Conductor - User Manual Verification 'Labeling & Export' (Protocol in workflow.md)
