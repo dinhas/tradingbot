@@ -15,7 +15,7 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [x] Task: Create tests for Risk Model Output features (New: sl_mult, tp_mult, risk_factor) [487ac25]
 - [x] Task: Implement Alpha Model Confidence features [62f3186]
 - [x] Task: Implement Risk Model Output features [8cd895c]
-- [ ] Task: Create tests for Synthetic News Proxies features (11-20)
+- [x] Task: Create tests for Synthetic News Proxies features (11-20) [9b34521]
 - [ ] Task: Implement Synthetic News Proxies features
 - [ ] Task: Conductor - User Manual Verification 'Feature Engineering - Alpha, Risk & News' (Protocol in workflow.md)
 
