@@ -14,7 +14,8 @@ class TestFeatureEngine(unittest.TestCase):
         try:
             from generate_dataset import FeatureEngine
             self.FeatureEngine = FeatureEngine
-        except ImportError:
+        except ImportError as e:
+            print(f"ImportError: {e}")
             self.FeatureEngine = None
 
     def test_alpha_confidence_features(self):
@@ -70,6 +71,28 @@ class TestFeatureEngine(unittest.TestCase):
         self.assertEqual(features[8], 0.7) # 7 wins out of 10
         # Feature 10: alpha_recent_pnl
         self.assertEqual(features[9], 830) # Sum of recent_trades pnl
+
+    def test_risk_output_features(self):
+        """Test calculation of Risk Model Output features."""
+        if self.FeatureEngine is None:
+            self.skipTest("FeatureEngine not implemented yet")
+            
+        fe = self.FeatureEngine()
+        
+        # Mock inputs
+        risk_params = {
+            'sl_mult': 1.5,
+            'tp_mult': 2.5,
+            'risk_factor': 0.8
+        }
+        
+        features = fe.calculate_risk_output(risk_params)
+        
+        # We expect 3 features
+        self.assertEqual(len(features), 3)
+        self.assertEqual(features[0], 1.5)
+        self.assertEqual(features[1], 2.5)
+        self.assertEqual(features[2], 0.8)
 
 if __name__ == '__main__':
     unittest.main()

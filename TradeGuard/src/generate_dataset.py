@@ -164,5 +164,18 @@ class DatasetGenerator:
         self.logger.info(f"Inference complete. Generated {len(env.signals)} signals.")
         return env.signals
 
+class FeatureEngine:
+    """
+    Calculates features for the TradeGuard model.
+    """
+    def __init__(self):
+        pass
+
+    def calculate_alpha_confidence(self, market_row, portfolio_state):
+        raise NotImplementedError("calculate_alpha_confidence not implemented")
+
+    def calculate_risk_output(self, risk_params):
+        raise NotImplementedError("calculate_risk_output not implemented")
+
 if __name__ == "__main__":
     generator = DatasetGenerator()
