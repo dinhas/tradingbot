@@ -49,11 +49,18 @@ class GuardDataGenerator:
         self.risk_path = risk_path
         self.data_dir = data_dir
         self.output_dir = output_dir
-        self.chunk_size = 5000
+        self.chunk_size = 30000
         self.buffer = []
         self.chunk_counter = 0
         
-        # Ensure output dir exists
+        # Cleanup & Initialize output dir
+        if os.path.exists(self.output_dir):
+            import shutil
+            logger.info(f"Cleaning up old data in {self.output_dir}...")
+            # We only delete files starting with 'guard_data_' to be safe
+            for f in os.listdir(self.output_dir):
+                if f.startswith("guard_data_"):
+                    os.remove(os.path.join(self.output_dir, f))
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Portfolio State Tracker (Simulated for Rule Enforcement)
@@ -265,9 +272,7 @@ class GuardDataGenerator:
                 # We can also store the raw PnL for regression if needed later
                 label = 1 if pnl > 0 else 0
                 
-                # Flatten features to list
-                feat_list = market_features.tolist()
-                
+                # flattened features as dictionary
                 row = {
                     'asset': asset,
                     'direction': direction,
@@ -275,9 +280,11 @@ class GuardDataGenerator:
                     'tp_mult': tp_mult,
                     'risk_raw': risk_raw,
                     'pnl': pnl,
-                    'label': label,
-                    **{f'f_{k}': v for k, v in enumerate(feat_list)}
+                    'label': label
                 }
+                # Add features efficiently
+                for k in range(140):
+                    row[f'f_{k}'] = market_features[k]
                 
                 self.buffer.append(row)
                 total_generated += 1

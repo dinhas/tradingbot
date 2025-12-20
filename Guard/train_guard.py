@@ -108,7 +108,10 @@ def train_guard():
         'bagging_freq': 5,
         'verbose': -1,
         'n_jobs': -1,
-        'is_unbalance': True # Handle class imbalance
+        'is_unbalance': True, # Handle class imbalance
+        'device': 'gpu',      # Enable GPU training
+        'gpu_platform_id': 0,
+        'gpu_device_id': 0
     }
     
     # categorical_feature must be list of indices or names
