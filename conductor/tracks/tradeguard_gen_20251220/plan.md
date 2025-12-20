@@ -17,7 +17,7 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [x] Task: Implement Risk Model Output features [8cd895c]
 - [x] Task: Create tests for Synthetic News Proxies features (11-20) [9b34521]
 - [x] Task: Implement Synthetic News Proxies features [30679e3]
-- [ ] Task: Conductor - User Manual Verification 'Feature Engineering - Alpha, Risk & News' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Feature Engineering - Alpha, Risk & News' (Protocol in workflow.md)
 
 ## Phase 3: Feature Engineering - Regime & Session (Features 21-40)
 - [ ] Task: Create tests for Market Regime features (21-30)
