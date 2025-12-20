@@ -223,5 +223,71 @@ class TestFeatureEngine(unittest.TestCase):
         # At 8:00, NY is closed -> 0.0
         self.assertEqual(features[5], 0.0)
 
+    def test_execution_stats_features(self):
+        """Test calculation of Execution Statistics features (41-50)."""
+        if self.FeatureEngine is None:
+            self.skipTest("FeatureEngine not implemented yet")
+            
+        fe = self.FeatureEngine()
+        
+        # Mock inputs
+        # 20 bars of data
+        closes = [1.1000] * 19 + [1.1050]
+        highs = [c + 0.0010 for c in closes]
+        lows = [c - 0.0010 for c in closes]
+        opens = [c - 0.0005 for c in closes]
+        df = pd.DataFrame({'open': opens, 'high': highs, 'low': lows, 'close': closes})
+        
+        trade_info = {
+            'entry_price': 1.1050,
+            'sl': 1.1000,
+            'tp': 1.1150,
+            'direction': 1 # Long
+        }
+        
+        portfolio_state = {
+            'equity': 10000,
+            'peak_equity': 10500,
+            'position_value': 1000
+        }
+        
+        features = fe.calculate_execution_stats(df, trade_info, portfolio_state)
+        
+        self.assertEqual(len(features), 10)
+        
+        # Feature 41: entry_atr_distance
+        self.assertGreater(features[0], 0)
+        
+        # Feature 44: risk_reward_ratio (100 pips / 50 pips = 2.0)
+        self.assertAlmostEqual(features[3], 2.0, places=1)
+        
+        # Feature 45: position_size_pct (1000 / 10000 = 0.1)
+        self.assertEqual(features[4], 0.1)
+
+    def test_price_action_context_features(self):
+        """Test calculation of Price Action Context features (51-60)."""
+        if self.FeatureEngine is None:
+            self.skipTest("FeatureEngine not implemented yet")
+            
+        fe = self.FeatureEngine()
+        
+        # 30 bars of data
+        closes = [1.1000 + i*0.0001 for i in range(30)] # Uptrend
+        highs = [c + 0.0005 for c in closes]
+        lows = [c - 0.0005 for c in closes]
+        opens = [c - 0.0002 for c in closes]
+        volumes = [1000.0] * 30
+        df = pd.DataFrame({'open': opens, 'high': highs, 'low': lows, 'close': closes, 'volume': volumes})
+        
+        features = fe.calculate_price_action_context(df)
+        
+        self.assertEqual(len(features), 10)
+        
+        # Feature 51: candle_direction (close > open)
+        self.assertEqual(features[0], 1.0)
+        
+        # Feature 55: consecutive_direction
+        self.assertGreaterEqual(features[4], 5)
+
 if __name__ == '__main__':
     unittest.main()

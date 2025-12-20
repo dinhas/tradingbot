@@ -428,5 +428,140 @@ class FeatureEngine:
         
         return features
 
+    def calculate_execution_stats(self, df, trade_info, portfolio_state):
+        """
+        Calculates Execution Statistics features (41-50).
+        """
+        features = []
+        idx = -1
+        
+        # Calculate ATR
+        atr_series = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=14).average_true_range()
+        current_atr = atr_series.iloc[idx]
+        if current_atr == 0: current_atr = 0.0001
+        
+        # Feature 41: entry_atr_distance
+        # How far has price moved in the last 12 bars?
+        if len(df) >= 12:
+            dist = abs(df['close'].iloc[idx] - df['open'].iloc[idx-11])
+            features.append(dist / current_atr)
+        else:
+            features.append(0.0)
+            
+        # Feature 42: sl_distance_atr
+        sl_dist = abs(trade_info['entry_price'] - trade_info['sl'])
+        features.append(sl_dist / current_atr)
+        
+        # Feature 43: tp_distance_atr
+        tp_dist = abs(trade_info['entry_price'] - trade_info['tp'])
+        features.append(tp_dist / current_atr)
+        
+        # Feature 44: risk_reward_ratio
+        features.append(tp_dist / sl_dist if sl_dist > 0 else 2.0)
+        
+        # Feature 45: position_size_pct
+        equity = portfolio_state['equity']
+        pos_value = portfolio_state.get('position_value', 0)
+        features.append(pos_value / equity if equity > 0 else 0.0)
+        
+        # Feature 46: current_drawdown
+        peak_equity = portfolio_state['peak_equity']
+        drawdown = 1 - (equity / peak_equity) if peak_equity > 0 else 0
+        features.append(drawdown)
+        
+        # Feature 47: spread_estimate (High-Low relative to price)
+        price = df['close'].iloc[idx]
+        range_val = df['high'].iloc[idx] - df['low'].iloc[idx]
+        features.append(range_val / price if price > 0 else 0.0)
+        
+        # Feature 48: momentum_at_entry (RSI-14)
+        rsi = ta.momentum.RSIIndicator(df['close'], window=14).rsi().iloc[idx]
+        features.append(rsi / 100.0 if not pd.isna(rsi) else 0.5)
+        
+        # Feature 49: bb_position
+        bb = ta.volatility.BollingerBands(df['close'], window=20, window_dev=2)
+        bb_h = bb.bollinger_hband().iloc[idx]
+        bb_l = bb.bollinger_lband().iloc[idx]
+        if bb_h != bb_l:
+            bb_pos = (price - bb_l) / (bb_h - bb_l)
+            features.append(max(0.0, min(1.0, bb_pos)))
+        else:
+            features.append(0.5)
+            
+        # Feature 50: macd_histogram
+        macd = ta.trend.MACD(df['close']).macd_diff().iloc[idx]
+        features.append(macd / current_atr if not pd.isna(macd) else 0.0)
+        
+        return features
+
+    def calculate_price_action_context(self, df):
+        """
+        Calculates Price Action Context features (51-60).
+        """
+        features = []
+        idx = -1
+        
+        atr_series = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=14).average_true_range()
+        current_atr = atr_series.iloc[idx]
+        if current_atr == 0: current_atr = 0.0001
+        
+        o, h, l, c = df['open'].iloc[idx], df['high'].iloc[idx], df['low'].iloc[idx], df['close'].iloc[idx]
+        body = abs(c - o)
+        
+        # Feature 51: candle_direction
+        features.append(1.0 if c > o else 0.0)
+        
+        # Feature 52: candle_body_size
+        features.append(body / current_atr)
+        
+        # Feature 53: upper_wick_size
+        upper_wick = h - max(o, c)
+        features.append(upper_wick / (body + 0.0001))
+        
+        # Feature 54: lower_wick_size
+        lower_wick = min(o, c) - l
+        features.append(lower_wick / (body + 0.0001))
+        
+        # Feature 55: consecutive_direction
+        directions = (df['close'] > df['open']).astype(int)
+        last_dir = directions.iloc[idx]
+        count = 0
+        for i in range(len(directions)-1, -1, -1):
+            if directions.iloc[i] == last_dir:
+                count += 1
+            else:
+                break
+        features.append(float(count))
+        
+        # Feature 56: distance_from_high_20
+        h20 = df['high'].iloc[-20:].max()
+        features.append((h20 - c) / current_atr)
+        
+        # Feature 57: distance_from_low_20
+        l20 = df['low'].iloc[-20:].min()
+        features.append((c - l20) / current_atr)
+        
+        # Feature 58: ema_alignment (EMA9 vs EMA21)
+        ema9 = ta.trend.EMAIndicator(df['close'], window=9).ema_indicator().iloc[idx]
+        ema21 = ta.trend.EMAIndicator(df['close'], window=21).ema_indicator().iloc[idx]
+        if not pd.isna(ema9) and not pd.isna(ema21):
+            features.append((ema9 - ema21) / ema21)
+        else:
+            features.append(0.0)
+            
+        # Feature 59: price_velocity (last 5 bars)
+        if len(df) >= 6:
+            features.append((c - df['close'].iloc[idx-5]) / current_atr)
+        else:
+            features.append(0.0)
+            
+        # Feature 60: volume_price_trend
+        vpt = ta.volume.VolumePriceTrendIndicator(df['close'], df['volume']).volume_price_trend().iloc[idx]
+        # Normalize VPT if possible, otherwise raw (it's hard to normalize as it's cumulative)
+        # We'll just use raw for now, LightGBM can handle it.
+        features.append(vpt if not pd.isna(vpt) else 0.0)
+        
+        return features
+
 if __name__ == "__main__":
     generator = DatasetGenerator()
