@@ -13,7 +13,7 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 ## Phase 2: Feature Engineering - Alpha, Risk & News (Features 1-20+)
 - [x] Task: Create tests for Alpha Model Confidence features (1-10) [8f96bde]
 - [x] Task: Create tests for Risk Model Output features (New: sl_mult, tp_mult, risk_factor) [487ac25]
-- [ ] Task: Implement Alpha Model Confidence features
+- [x] Task: Implement Alpha Model Confidence features [62f3186]
 - [ ] Task: Implement Risk Model Output features
 - [ ] Task: Create tests for Synthetic News Proxies features (11-20)
 - [ ] Task: Implement Synthetic News Proxies features
