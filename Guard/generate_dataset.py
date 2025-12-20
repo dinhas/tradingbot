@@ -241,6 +241,9 @@ class GuardDataGenerator:
                 # Simulate (Lookahead)
                 # FIX: Use with_timing to get closure step
                 sim_result = self.env._simulate_trade_outcome_with_timing(asset)
+                if 'pnl' not in sim_result or 'bars_held' not in sim_result:
+                    logger.warning(f"Invalid simulation result for {asset}")
+                    continue
                 pnl = sim_result['pnl']
                 
                 # Restore
@@ -283,8 +286,8 @@ class GuardDataGenerator:
                     self._flush_buffer()
             
             # Advance Environment
-            obs, _, _, truncated, _ = self.env.step(alpha_action)
-            done = truncated
+            obs, _, terminated, truncated, _ = self.env.step(alpha_action)
+            done = terminated or truncated
             
             if total_generated % 1000 == 0:
                 print(f"Generated {total_generated} samples... (Step {self.env.current_step})", end='\r')
@@ -297,7 +300,7 @@ if __name__ == "__main__":
     # Hardcoded paths based on user environment
     ALPHA_PATH = "Alpha/models/checkpoints/8.03.zip"
     RISK_PATH = "RiskLayer/models/2.15.zip"
-    DATA_DIR = "Alpha/backtest/data"
+    DATA_DIR = "Guard/data"
     OUTPUT_DIR = "Guard/data"
     
     gen = GuardDataGenerator(ALPHA_PATH, RISK_PATH, DATA_DIR, OUTPUT_DIR)
