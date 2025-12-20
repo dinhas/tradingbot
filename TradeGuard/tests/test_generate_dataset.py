@@ -67,8 +67,6 @@ class TestDatasetGeneratorInit(unittest.TestCase):
     @patch('stable_baselines3.PPO.load')
     def test_load_model(self, mock_ppo_load):
         """Test loading the Alpha model."""
-        self.skipTest("Implementation pending")
-        
         if self.DatasetGenerator is None:
             self.skipTest("DatasetGenerator not available")
             
@@ -84,9 +82,41 @@ class TestDatasetGeneratorInit(unittest.TestCase):
         self.assertEqual(model, mock_model)
         mock_ppo_load.assert_called_once()
 
-    def test_get_trade_signals(self):
+    @patch('generate_dataset.DatasetGenerationEnv')
+    @patch('stable_baselines3.PPO.load')
+    def test_get_trade_signals(self, mock_ppo_load, mock_env_cls):
         """Test generating trade signals from data."""
-        self.skipTest("Implementation pending")
+        if self.DatasetGenerator is None:
+            self.skipTest("DatasetGenerator not available")
+            
+        # Mock Model
+        mock_model = MagicMock()
+        mock_ppo_load.return_value = mock_model
+        # Mock predict to return an action
+        mock_model.predict.return_value = ([0]*20, None)
+        
+        # Mock Env
+        mock_env = MagicMock()
+        mock_env_cls.return_value = mock_env
+        # Setup step return values: (obs, reward, done, truncated, info)
+        # We simulate 2 steps: 1st continues, 2nd finishes
+        mock_env.reset.return_value = ([0]*140, {})
+        mock_env.step.side_effect = [
+            ([0]*140, 0, False, False, {}),
+            ([0]*140, 0, True, False, {})
+        ]
+        # Mock signals list
+        mock_env.signals = [{'id': 1}, {'id': 2}]
+        
+        generator = self.DatasetGenerator()
+        
+        with patch('pathlib.Path.exists', return_value=True):
+            signals = generator.generate_signals("dummy_model.zip")
+            
+        self.assertEqual(len(signals), 2)
+        self.assertEqual(signals[0]['id'], 1)
+        mock_env.reset.assert_called_once()
+        self.assertEqual(mock_env.step.call_count, 2)
 
 
 if __name__ == '__main__':
