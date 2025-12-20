@@ -38,13 +38,46 @@ class DatasetGenerationEnv(TradingEnv):
     def set_last_action(self, action):
         self.last_action = action
 
-    def _open_position(self, asset, direction, act, price, atr):
-        super()._open_position(asset, direction, act, price, atr)
+    def _execute_trades(self, actions):
+        """Capture signals for every direction != 0, regardless of current position state."""
+        current_prices = self._get_current_prices()
+        atrs = self._get_current_atrs()
         
-        if self.positions[asset] is not None:
+        for asset, act in actions.items():
+            direction = act['direction']
+            if direction != 0:
+                self._record_signal(asset, direction, act, current_prices[asset], atrs[asset])
+        
+        # Execute actual trades in the base environment (manages real positions/equity)
+        super()._execute_trades(actions)
+
+    def _record_signal(self, asset, direction, act, price, atr):
+        """Records a signal for TradeGuard dataset by simulating a virtual trade outcome."""
+        # Save current position to restore it after simulation
+        real_pos = self.positions[asset]
+        
+        # Calculate SL/TP for virtual labeling
+        atr_val = max(atr, price * self.MIN_ATR_MULTIPLIER)
+        sl_dist = act['sl_mult'] * atr_val
+        tp_dist = act['tp_mult'] * atr_val
+        
+        # Create virtual position for simulation
+        self.positions[asset] = {
+            'direction': direction,
+            'entry_price': price,
+            'size': 1.0, # Unit size for labeling
+            'sl': price - (direction * sl_dist),
+            'tp': price + (direction * tp_dist),
+            'entry_step': self.current_step,
+            'sl_dist': sl_dist,
+            'tp_dist': tp_dist
+        }
+        
+        try:
+            # Simulate outcome using peek-ahead
             outcome = super()._simulate_trade_outcome_with_timing(asset)
             
-            # --- Faster Feature Calculation ---
+            # --- Feature Calculation ---
             asset_idx = self.assets.index(asset)
             if self.stage == 1:
                 base_idx = asset_idx
@@ -66,7 +99,7 @@ class DatasetGenerationEnv(TradingEnv):
                 'asset_recent_actions': [self.last_action[base_idx]] * 5 if self.last_action is not None else [0]*5,
                 'asset_signal_persistence': 1.0,
                 'asset_signal_reversal': 0.0,
-                'position_value': self.positions[asset]['size']
+                'position_value': position_size if (position_size := (self.equity * act['size'] * 0.5)) > 0 else 0
             }
             
             trade_info = {
@@ -85,18 +118,11 @@ class DatasetGenerationEnv(TradingEnv):
             if self.precomputed_features and asset in self.precomputed_features:
                 f_market = self.precomputed_features[asset][self.current_step].tolist()
             else:
-                # Fallback if not precomputed (slow)
-                hist_df = self.df_dict[asset].iloc[max(0, self.current_step-300):self.current_step+1]
-                f_market = (self.guard_feature_engine.calculate_news_proxies(hist_df) + 
-                            self.guard_feature_engine.calculate_market_regime(hist_df) + 
-                            self.guard_feature_engine.calculate_session_edge(timestamp) + 
-                            self.guard_feature_engine.calculate_price_action_context(hist_df))
+                f_market = [0.0] * 40 # Should not happen with current runner
 
             f_e = self.guard_feature_engine.calculate_execution_stats(None, trade_info, portfolio_state, current_atr=atr)
             
             # Combine all features (Order: A, B, C, D, E, F)
-            # Re-ordering slightly to match original if needed, but consistency is key
-            # f_market contains B, C, D, F
             all_features = f_a + f_market[:30] + f_e + f_market[30:]
             
             self.signals.append({
@@ -107,6 +133,14 @@ class DatasetGenerationEnv(TradingEnv):
                 'features': all_features,
                 'outcome_pnl': outcome['pnl']
             })
+        finally:
+            # Restore the actual environment position
+            self.positions[asset] = real_pos
+
+    def _open_position(self, asset, direction, act, price, atr):
+        # Base class handles real position opening logic
+        super()._open_position(asset, direction, act, price, atr)
+
 
 class DatasetGenerator:
     def __init__(self, n_jobs=-1):
