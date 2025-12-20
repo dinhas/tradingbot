@@ -64,5 +64,30 @@ class TestDatasetGeneratorInit(unittest.TestCase):
             
         self.assertEqual(mock_read_parquet.call_count, 5)
 
+    @patch('stable_baselines3.PPO.load')
+    def test_load_model(self, mock_ppo_load):
+        """Test loading the Alpha model."""
+        self.skipTest("Implementation pending")
+        
+        if self.DatasetGenerator is None:
+            self.skipTest("DatasetGenerator not available")
+            
+        mock_model = MagicMock()
+        mock_ppo_load.return_value = mock_model
+        
+        generator = self.DatasetGenerator()
+        
+        with patch('pathlib.Path.exists', return_value=True):
+            model = generator.load_model("dummy_path.zip")
+            
+        self.assertIsNotNone(model)
+        self.assertEqual(model, mock_model)
+        mock_ppo_load.assert_called_once()
+
+    def test_get_trade_signals(self):
+        """Test generating trade signals from data."""
+        self.skipTest("Implementation pending")
+
+
 if __name__ == '__main__':
     unittest.main()
