@@ -10,7 +10,7 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [x] Task: Implement Alpha model inference loop to identify trade signals [9adb5a0]
 - [x] Task: Conductor - User Manual Verification 'Infrastructure & Data Loading' (Protocol in workflow.md) [193e7b4]
 
-## Phase 2: Feature Engineering - Alpha, Risk & News (Features 1-20+)
+## Phase 2: Feature Engineering - Alpha, Risk & News (Features 1-20+) [checkpoint: 40bfef3]
 - [x] Task: Create tests for Alpha Model Confidence features (1-10) [8f96bde]
 - [x] Task: Create tests for Risk Model Output features (New: sl_mult, tp_mult, risk_factor) [487ac25]
 - [x] Task: Implement Alpha Model Confidence features [62f3186]
