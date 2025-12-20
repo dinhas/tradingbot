@@ -5,6 +5,8 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from stable_baselines3 import PPO
+import ta
+from ta.volatility import AverageTrueRange
 
 # Add project root to sys.path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -234,8 +236,69 @@ class FeatureEngine:
     def calculate_news_proxies(self, df):
         """
         Calculates Synthetic News Proxies features (11-20).
+        Expects a DataFrame with at least 50 bars of history.
         """
-        raise NotImplementedError("calculate_news_proxies not implemented")
+        features = []
+        # We assume the calculation is for the LAST bar in df
+        idx = -1
+        
+        # Calculate ATR for range-based features
+        atr_series = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=14).average_true_range()
+        current_atr = atr_series.iloc[idx]
+        
+        # Feature 11: volume_ratio
+        vol_50_avg = df['volume'].iloc[-50:].mean()
+        features.append(df['volume'].iloc[idx] / vol_50_avg if vol_50_avg > 0 else 1.0)
+        
+        # Feature 12: volume_zscore
+        vol_50 = df['volume'].iloc[-50:]
+        vol_std = vol_50.std()
+        features.append((df['volume'].iloc[idx] - vol_50_avg) / vol_std if vol_std > 0 else 0.0)
+        
+        # Feature 13: range_ratio
+        candle_range = df['high'].iloc[idx] - df['low'].iloc[idx]
+        features.append(candle_range / current_atr if current_atr > 0 else 1.0)
+        
+        # Feature 14: range_compression
+        ranges = df['high'] - df['low']
+        p10 = ranges.iloc[-100:].quantile(0.1)
+        features.append(1.0 if candle_range < p10 else 0.0)
+        
+        # Feature 15: body_to_range
+        body = abs(df['close'].iloc[idx] - df['open'].iloc[idx])
+        features.append(body / candle_range if candle_range > 0 else 0.0)
+        
+        # Feature 16: wick_ratio
+        upper_wick = df['high'].iloc[idx] - max(df['open'].iloc[idx], df['close'].iloc[idx])
+        lower_wick = min(df['open'].iloc[idx], df['close'].iloc[idx]) - df['low'].iloc[idx]
+        # Use a small epsilon to avoid division by zero if body is 0
+        features.append((upper_wick + lower_wick) / (body + 0.0001))
+        
+        # Feature 17: gap_size
+        if len(df) > 1:
+            gap = abs(df['open'].iloc[idx] - df['close'].iloc[idx-1])
+            features.append(gap / current_atr if current_atr > 0 else 0.0)
+        else:
+            features.append(0.0)
+            
+        # Feature 18: tick_surge
+        vol_diff = df['volume'].diff().iloc[idx]
+        vol_10_avg = df['volume'].iloc[-10:].mean()
+        features.append(vol_diff / vol_10_avg if vol_10_avg > 0 else 0.0)
+        
+        # Feature 19: volatility_regime
+        # ATR percentile rank (rolling 200)
+        if len(atr_series) >= 200:
+            rank = atr_series.iloc[-200:].rank(pct=True).iloc[idx]
+            features.append(rank)
+        else:
+            features.append(0.5)
+            
+        # Feature 20: quiet_market
+        q05 = atr_series.iloc[-100:].quantile(0.05)
+        features.append(1.0 if current_atr < q05 else 0.0)
+        
+        return features
 
 if __name__ == "__main__":
     generator = DatasetGenerator()

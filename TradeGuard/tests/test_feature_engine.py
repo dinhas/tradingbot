@@ -129,8 +129,8 @@ class TestFeatureEngine(unittest.TestCase):
         
         # Feature 12: volume_zscore
         # Mean = 1080, Std of [1000]*49 + [5000]
-        vol_slice = [1000.0]*49 + [5000.0]
-        expected_z = (5000.0 - np.mean(vol_slice)) / np.std(vol_slice)
+        vol_slice = pd.Series([1000.0]*49 + [5000.0])
+        expected_z = (5000.0 - vol_slice.mean()) / vol_slice.std()
         self.assertAlmostEqual(features[1], expected_z, places=4)
         
         # Feature 13: range_ratio (Range / ATR)
