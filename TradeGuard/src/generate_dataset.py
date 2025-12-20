@@ -13,6 +13,12 @@ from ta.volatility import AverageTrueRange
 # Add project root to sys.path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
+# Import Downloader for automatic data fetching
+try:
+    from TradeGuard.src.download_data import DataFetcherTraining
+except ImportError:
+    DataFetcherTraining = None
+
 # Import TradingEnv safely
 try:
     from Alpha.src.trading_env import TradingEnv
@@ -143,9 +149,9 @@ class DatasetGenerationEnv(TradingEnv):
 
 
 class DatasetGenerator:
-    def __init__(self, n_jobs=-1):
+    def __init__(self, data_dir="TradeGuard/data", n_jobs=-1):
         self.logger = self.setup_logging()
-        self.data_dir = Path("data") 
+        self.data_dir = Path(data_dir) 
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         self.n_jobs = multiprocessing.cpu_count() if n_jobs == -1 else n_jobs
         self.logger.info(f"DatasetGenerator initialized with {self.n_jobs} cores")
@@ -300,6 +306,18 @@ class DatasetGenerator:
 
     def run(self, model_path, output_path):
         df_dict = self.load_data()
+        if not df_dict:
+            if DataFetcherTraining:
+                self.logger.info(f"No data found in {self.data_dir}. Attempting automatic download...")
+                fetcher = DataFetcherTraining(output_dir=str(self.data_dir))
+                fetcher.start()
+                # Reload data after download
+                df_dict = self.load_data()
+            
+            if not df_dict:
+                self.logger.error(f"No data files found in {self.data_dir} after download attempt. Ensure assets match: {self.assets}")
+                return
+
         precomputed = self.precompute_market_features(df_dict)
         
         # Detect stage
@@ -446,10 +464,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="TradeGuard Dataset Generator")
     parser.add_argument("--model", type=str, default="Alpha/models/checkpoints/8.03.zip", help="Path to Alpha PPO model")
+    parser.add_argument("--data", type=str, default="TradeGuard/data", help="Directory containing asset parquet files")
     parser.add_argument("--output", type=str, default="TradeGuard/data/guard_dataset.parquet", help="Output Parquet file")
     parser.add_argument("--jobs", type=int, default=-1, help="Number of parallel jobs")
     
     args = parser.parse_args()
     
-    generator = DatasetGenerator(n_jobs=args.jobs)
+    generator = DatasetGenerator(data_dir=args.data, n_jobs=args.jobs)
     generator.run(args.model, args.output)
