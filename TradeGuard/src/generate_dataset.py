@@ -294,6 +294,11 @@ class DatasetGenerator:
 
     def save_dataset(self, signals, output_path):
         if not signals: return
+        
+        # Ensure output directory exists
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        
         data = []
         for s in signals:
             row = {'timestamp': s['timestamp'], 'asset': s['asset'], 'label': s['label']}
