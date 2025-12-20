@@ -231,5 +231,11 @@ class FeatureEngine:
         features.append(risk_params.get('risk_factor', 1.0))
         return features
 
+    def calculate_news_proxies(self, df):
+        """
+        Calculates Synthetic News Proxies features (11-20).
+        """
+        raise NotImplementedError("calculate_news_proxies not implemented")
+
 if __name__ == "__main__":
     generator = DatasetGenerator()

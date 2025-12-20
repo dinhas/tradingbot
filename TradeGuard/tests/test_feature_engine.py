@@ -94,5 +94,63 @@ class TestFeatureEngine(unittest.TestCase):
         self.assertEqual(features[1], 2.5)
         self.assertEqual(features[2], 0.8)
 
+    def test_news_proxies_features(self):
+        """Test calculation of Synthetic News Proxies features (11-20)."""
+        if self.FeatureEngine is None:
+            self.skipTest("FeatureEngine not implemented yet")
+            
+        fe = self.FeatureEngine()
+        
+        # Create a mock historical DataFrame (200 bars)
+        # Constant data for 199 bars, then an anomaly
+        opens = [1.1000] * 200
+        highs = [1.1010] * 199 + [1.1050]
+        lows = [1.0990] * 199 + [1.0950]
+        closes = [1.1005] * 199 + [1.1000]
+        volumes = [1000.0] * 199 + [5000.0]
+        
+        df = pd.DataFrame({
+            'open': opens,
+            'high': highs,
+            'low': lows,
+            'close': closes,
+            'volume': volumes
+        })
+        
+        features = fe.calculate_news_proxies(df)
+        
+        # We expect 10 features
+        self.assertEqual(len(features), 10)
+        
+        # Feature 11: volume_ratio (Current volume / 50-period average)
+        # Avg of last 50: (49*1000 + 5000) / 50 = 1080
+        # Ratio: 5000 / 1080 = 4.6296
+        self.assertAlmostEqual(features[0], 4.6296, places=4)
+        
+        # Feature 12: volume_zscore
+        # Mean = 1080, Std of [1000]*49 + [5000]
+        vol_slice = [1000.0]*49 + [5000.0]
+        expected_z = (5000.0 - np.mean(vol_slice)) / np.std(vol_slice)
+        self.assertAlmostEqual(features[1], expected_z, places=4)
+        
+        # Feature 13: range_ratio (Range / ATR)
+        # Current Range = 1.1050 - 1.0950 = 0.0100
+        # This one is tricky because ATR depends on previous bars.
+        # But we can assert it's greater than 1.0 significantly.
+        self.assertGreater(features[2], 1.0)
+        
+        # Feature 15: body_to_range
+        # Body = abs(1.1000 - 1.1000) = 0
+        # Range = 0.0100
+        # Ratio = 0
+        self.assertEqual(features[4], 0.0)
+        
+        # Feature 16: wick_ratio
+        # Upper wick = 1.1050 - 1.1000 = 0.0050
+        # Lower wick = 1.1000 - 1.0950 = 0.0050
+        # Body = 0.0001 (min for division)
+        # Ratio = (0.0050 + 0.0050) / 0.0001 = 100
+        self.assertGreater(features[5], 10.0)
+
 if __name__ == '__main__':
     unittest.main()
