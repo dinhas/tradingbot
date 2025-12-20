@@ -132,39 +132,108 @@ class DatasetGenerator:
         return data
 
     def precompute_market_features(self, df_dict):
-        """Precomputes Groups B, C, D, F for all assets to save time in loop."""
+        """Precomputes Groups B, C, D, F for all assets using vectorized operations."""
         self.logger.info("Precomputing market features (B, C, D, F) for all assets...")
-        fe = FeatureEngine()
         precomputed = {}
         
         for asset, df in df_dict.items():
-            self.logger.info(f"Processing {asset}...")
-            # This is much faster as we do it in one vectorized pass per indicator
-            # instead of thousands of small slices
+            self.logger.info(f"Vectorizing {asset} features...")
             
-            # Group D: Session Edge (Vectorized)
-            f_d = []
-            timestamps = df.index
-            for ts in timestamps:
-                f_d.append(fe.calculate_session_edge(ts))
-            f_d = np.array(f_d)
+            # Common components
+            high, low, close, vol = df['high'], df['low'], df['close'], df['volume']
+            open_p = df['open']
+            range_val = high - low
+            body = (close - open_p).abs()
             
-            # Groups B, C, F: Use rolling/vectorized logic where possible
-            # For simplicity in this refactor, we'll use a slightly optimized loop
-            # but ideally these would be fully vectorized in FeatureEngine
-            f_b_c_f = []
-            for i in range(len(df)):
-                if i % 20000 == 0: self.logger.info(f"  {asset} progress: {i/len(df)*100:.1f}%")
-                # Optimization: Only pass enough history
-                hist = df.iloc[max(0, i-300):i+1]
-                fb = fe.calculate_news_proxies(hist)
-                fc = fe.calculate_market_regime(hist)
-                ff = fe.calculate_price_action_context(hist)
-                f_b_c_f.append(fb + fc + ff)
+            # Indicators (vectorized)
+            atr_14 = AverageTrueRange(high, low, close, window=14).average_true_range()
+            adx_ind = ta.trend.ADXIndicator(high, low, close, window=14)
+            aroon_ind = ta.trend.AroonIndicator(high, low, window=25)
+            bb = ta.volatility.BollingerBands(close)
+            sma_200 = close.rolling(200).mean()
             
-            f_b_c_f = np.array(f_b_c_f)
-            # Combine: B (10), C (10), D (10), F (10)
-            combined = np.hstack([f_b_c_f[:, :20], f_d, f_b_c_f[:, 20:]])
+            # Group B: News Proxies
+            vol_avg_50 = vol.rolling(50).mean()
+            vol_std_50 = vol.rolling(50).std()
+            range_q10_100 = range_val.rolling(100).quantile(0.1)
+            atr_q05_100 = atr_14.rolling(100).quantile(0.05)
+            
+            f11 = vol / (vol_avg_50 + 1e-6)
+            f12 = (vol - vol_avg_50) / (vol_std_50 + 1e-6)
+            f13 = range_val / (atr_14 + 1e-6)
+            f14 = (range_val < range_q10_100).astype(float)
+            f15 = body / (range_val + 1e-6)
+            
+            upper_wick = high - df[['open', 'close']].max(axis=1)
+            lower_wick = df[['open', 'close']].min(axis=1) - low
+            f16 = (upper_wick + lower_wick) / (body + 1e-6)
+            
+            f17 = (open_p - close.shift(1)).abs() / (atr_14 + 1e-6)
+            f18 = vol.diff() / (vol.rolling(10).mean() + 1e-6)
+            f19 = atr_14 / (close + 1e-6)
+            f20 = (atr_14 < atr_q05_100).astype(float)
+            
+            # Group C: Market Regime
+            f21 = adx_ind.adx()
+            f22 = adx_ind.adx_pos()
+            f23 = adx_ind.adx_neg()
+            f24 = aroon_ind.aroon_up()
+            f25 = aroon_ind.aroon_down()
+            f26 = pd.Series(0.5, index=df.index) # Hurst Placeholder
+            
+            net_change_10 = (close - close.shift(10)).abs()
+            abs_change_sum_10 = close.diff().abs().rolling(10).sum()
+            f27 = net_change_10 / (abs_change_sum_10 + 1e-6)
+            
+            # Optimized Slope calculation (Rolling 20)
+            def get_slope(y):
+                if len(y) < 20: return 0.0
+                return np.polyfit(np.arange(20), y, 1)[0]
+            f28 = (close.rolling(20).apply(get_slope, raw=True) / (close + 1e-6)) * 10000
+            
+            f29 = close / (sma_200 + 1e-6)
+            f30 = bb.bollinger_wband()
+            
+            # Group D: Session Edge (Vectorized Time Features)
+            hours = df.index.hour
+            minutes = df.index.minute
+            dows = df.index.dayofweek
+            
+            f31 = np.sin(2 * np.pi * hours / 24)
+            f32 = np.cos(2 * np.pi * hours / 24)
+            f33 = np.sin(2 * np.pi * dows / 7)
+            f34 = np.cos(2 * np.pi * dows / 7)
+            f35 = ((hours >= 7) & (hours < 16)).astype(float)
+            f36 = ((hours >= 12) & (hours < 21)).astype(float)
+            f37 = ((hours >= 0) & (hours < 9)).astype(float)
+            f38 = minutes / 60.0
+            f39 = (f35 * f36).astype(float)
+            f40 = (hours * 60 + minutes) / 1440.0
+            
+            # Group F: Price Action
+            f51 = (close > open_p).astype(float)
+            f52 = body / (atr_14 + 1e-6)
+            f53 = upper_wick / (body + 1e-6)
+            f54 = lower_wick / (body + 1e-6)
+            f55 = pd.Series(5.0, index=df.index) # Placeholder
+            f56 = (high.rolling(20).max() - close) / (atr_14 + 1e-6)
+            f57 = (close - low.rolling(20).min()) / (atr_14 + 1e-6)
+            f58 = pd.Series(0.0, index=df.index)
+            f59 = pd.Series(0.0, index=df.index)
+            f60 = pd.Series(0.0, index=df.index)
+            
+            # Combine all 40 precomputed features (B=10, C=10, D=10, F=10)
+            combined = pd.concat([
+                f11, f12, f13, f14, f15, f16, f17, f18, f19, f20, # B
+                f21, f22, f23, f24, f25, f26, f27, f28, f29, f30, # C
+                pd.Series(f31, index=df.index), pd.Series(f32, index=df.index), 
+                pd.Series(f33, index=df.index), pd.Series(f34, index=df.index),
+                pd.Series(f35, index=df.index), pd.Series(f36, index=df.index),
+                pd.Series(f37, index=df.index), pd.Series(f38, index=df.index),
+                pd.Series(f39, index=df.index), pd.Series(f40, index=df.index), # D
+                f51, f52, f53, f54, f55, f56, f57, f58, f59, f60  # F
+            ], axis=1).fillna(0).values
+            
             precomputed[asset] = combined
             
         return precomputed
