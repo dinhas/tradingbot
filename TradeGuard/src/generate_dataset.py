@@ -3,6 +3,7 @@ import os
 import sys
 from pathlib import Path
 import pandas as pd
+import numpy as np
 from stable_baselines3 import PPO
 
 # Add project root to sys.path
@@ -172,7 +173,53 @@ class FeatureEngine:
         pass
 
     def calculate_alpha_confidence(self, market_row, portfolio_state):
-        raise NotImplementedError("calculate_alpha_confidence not implemented")
+        """
+        Calculates Alpha Model Confidence features (1-10).
+        """
+        features = []
+        
+        # Feature 1: alpha_action_raw
+        features.append(portfolio_state['asset_action_raw'])
+        
+        # Feature 2: alpha_action_abs
+        features.append(abs(portfolio_state['asset_action_raw']))
+        
+        # Feature 3: alpha_action_std
+        features.append(np.std(portfolio_state['asset_recent_actions']))
+        
+        # Feature 4: alpha_signal_persistence
+        features.append(portfolio_state['asset_signal_persistence'])
+        
+        # Feature 5: alpha_signal_reversal
+        features.append(portfolio_state['asset_signal_reversal'])
+        
+        # Feature 6: alpha_portfolio_drawdown
+        equity = portfolio_state['equity']
+        peak_equity = portfolio_state['peak_equity']
+        drawdown = 1 - (equity / peak_equity) if peak_equity > 0 else 0
+        features.append(drawdown)
+        
+        # Feature 7: alpha_open_positions
+        features.append(portfolio_state['open_positions_count'])
+        
+        # Feature 8: alpha_margin_usage
+        margin_usage = portfolio_state['total_exposure'] / equity if equity > 0 else 0
+        features.append(margin_usage)
+        
+        # Feature 9: alpha_recent_win_rate
+        recent_trades = portfolio_state['recent_trades'][-10:]
+        if not recent_trades:
+            win_rate = 0.5 # Default if no trades
+        else:
+            wins = sum(1 for t in recent_trades if t['pnl'] > 0)
+            win_rate = wins / len(recent_trades)
+        features.append(win_rate)
+        
+        # Feature 10: alpha_recent_pnl
+        pnl_sum = sum(t['pnl'] for t in recent_trades)
+        features.append(pnl_sum)
+        
+        return features
 
     def calculate_risk_output(self, risk_params):
         raise NotImplementedError("calculate_risk_output not implemented")
