@@ -56,6 +56,10 @@ class GuardDataGenerator:
         # Ensure output dir exists
         os.makedirs(self.output_dir, exist_ok=True)
         
+        # Portfolio State Tracker (Simulated for Rule Enforcement)
+        # { 'ASSET_NAME': { 'direction': 1/-1 } or None }
+        self.portfolio = {}
+
         # Load Models
         self._load_models()
         
@@ -64,10 +68,6 @@ class GuardDataGenerator:
         self.MAX_MARGIN_PER_TRADE_PCT = 0.80
         self.MAX_LEVERAGE = 400.0
         self.MIN_LOTS = 0.01
-        
-        # Portfolio State Tracker (Simulated for Rule Enforcement)
-        # { 'ASSET_NAME': { 'direction': 1/-1 } or None }
-        self.portfolio = {}
 
     def _load_models(self):
         """Load Alpha and Risk models."""
