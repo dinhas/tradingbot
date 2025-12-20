@@ -20,11 +20,12 @@ class TradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, data_dir='data', is_training=True):
+    def __init__(self, data_dir='data', is_training=True, stage=3):
         super(TradingEnv, self).__init__()
         
         self.data_dir = data_dir
         self.is_training = is_training
+        self.stage = stage
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         
         # Configuration Constants (Moved up to prevent AttributeError in _load_data fallback)
@@ -40,8 +41,14 @@ class TradingEnv(gym.Env):
         # OPTIMIZATION: Cache data as numpy arrays for fast access
         self._cache_data_arrays()
         
-        # Define Action Space (Stage 3 Logic: Direction + Size + SL/TP)
-        self.action_dim = 20
+        # Define Action Space based on Stage
+        if self.stage == 1:
+            self.action_dim = 5  # Direction only
+        elif self.stage == 2:
+            self.action_dim = 10  # Direction + Size
+        else:
+            self.action_dim = 20  # Direction + Size + SL/TP
+            
         self.action_space = spaces.Box(low=-1, high=1, shape=(self.action_dim,), dtype=np.float32)
         
         # Define Observation Space (140 features)
@@ -213,12 +220,27 @@ class TradingEnv(gym.Env):
             
         parsed = {}
         for i, asset in enumerate(self.assets):
-            # Stage 3 Logic: Direction + Size + SL/TP
-            base_idx = i * 4
-            direction_raw = action[base_idx]
-            size_raw = np.clip((action[base_idx + 1] + 1) / 2, 0, 1)  # FIX: Bounds validation
-            sl_raw = np.clip((action[base_idx + 2] + 1) / 2 * 2.5 + 0.5, 0.5, 3.0)  # 0.5 to 3.0
-            tp_raw = np.clip((action[base_idx + 3] + 1) / 2 * 3.5 + 1.5, 1.5, 5.0)  # 1.5 to 5.0
+            if self.stage == 1:
+                # Stage 1: Direction only
+                direction_raw = action[i]
+                size_raw = 0.5  # Default size
+                sl_raw = 1.5    # Default SL mult
+                tp_raw = 3.0    # Default TP mult
+            elif self.stage == 2:
+                # Stage 2: Direction + Position Size
+                base_idx = i * 2
+                direction_raw = action[base_idx]
+                size_raw = np.clip((action[base_idx + 1] + 1) / 2, 0, 1)
+                sl_raw = 1.5
+                tp_raw = 3.0
+            else:
+                # Stage 3 Logic: Direction + Size + SL/TP
+                base_idx = i * 4
+                direction_raw = action[base_idx]
+                size_raw = np.clip((action[base_idx + 1] + 1) / 2, 0, 1)  # FIX: Bounds validation
+                sl_raw = np.clip((action[base_idx + 2] + 1) / 2 * 2.5 + 0.5, 0.5, 3.0)  # 0.5 to 3.0
+                tp_raw = np.clip((action[base_idx + 3] + 1) / 2 * 3.5 + 1.5, 1.5, 5.0)  # 1.5 to 5.0
+                
             parsed[asset] = {
                 'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
                 'size': size_raw,

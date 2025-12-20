@@ -47,9 +47,9 @@ class DatasetGenerationEnv(TradingEnv):
     """
     Extended TradingEnv that captures trade signals and their outcomes.
     """
-    def __init__(self, df_dict, feature_engine, data_dir='data'):
+    def __init__(self, df_dict, feature_engine, data_dir='data', stage=3):
         # Force is_training=False for deterministic behavior
-        super().__init__(data_dir=data_dir, is_training=False)
+        super().__init__(data_dir=data_dir, is_training=False, stage=stage)
         self.signals = []
         self.df_dict = df_dict
         self.guard_feature_engine = feature_engine
@@ -132,8 +132,13 @@ class DatasetGenerationEnv(TradingEnv):
             # Find the index of the asset in the original list
             asset_idx = self.assets.index(asset)
             
-            # Stage 3 logic: 4 elements per asset
-            base_idx = asset_idx * 4
+            # Stage-dependent logic for raw action extraction
+            if self.stage == 1:
+                base_idx = asset_idx
+            elif self.stage == 2:
+                base_idx = asset_idx * 2
+            else:
+                base_idx = asset_idx * 4
             
             # Extract recent trades for win rate calculation
             recent_trades = [{'pnl': t['net_pnl']} for t in self.all_trades[-10:]]
@@ -287,6 +292,16 @@ class DatasetGenerator:
         if not model:
             return []
             
+        # Detect stage from model action space
+        action_dim = model.action_space.shape[0]
+        if action_dim == 5:
+            stage = 1
+        elif action_dim == 10:
+            stage = 2
+        else:
+            stage = 3
+            
+        self.logger.info(f"Detected Stage {stage} from model action space (dim={action_dim})")
         self.logger.info("Starting inference loop...")
         
         # Load full DataFrames for feature calculation context
@@ -296,7 +311,8 @@ class DatasetGenerator:
         env = DatasetGenerationEnv(
             df_dict=df_dict, 
             feature_engine=FeatureEngine(),
-            data_dir=str(self.data_dir)
+            data_dir=str(self.data_dir),
+            stage=stage
         )
         
         obs, _ = env.reset()
