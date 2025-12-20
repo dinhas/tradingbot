@@ -26,12 +26,12 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [x] Task: Implement Session Edge features [84a8ad4]
 - [x] Task: Conductor - User Manual Verification 'Feature Engineering - Regime & Session' (Protocol in workflow.md) [b7b45e5]
 
-## Phase 4: Feature Engineering - Stats & Price Action (Features 41-60)
+## Phase 4: Feature Engineering - Stats & Price Action (Features 41-60) [checkpoint: b05affe]
 - [x] Task: Create tests for Execution Statistics features (41-50, including SL/TP distances) [2d82b68]
 - [x] Task: Implement Execution Statistics features [2d82b68]
 - [x] Task: Create tests for Price Action Context features (51-60) [2d82b68]
 - [x] Task: Implement Price Action Context features [2d82b68]
-- [ ] Task: Conductor - User Manual Verification 'Feature Engineering - Stats & Price Action' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Feature Engineering - Stats & Price Action' (Protocol in workflow.md) [b05affe]
 
 ## Phase 5: Labeling & Export
 - [ ] Task: Create tests for Lookahead Labeling logic (Win/Loss)
