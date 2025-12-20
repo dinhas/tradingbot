@@ -47,9 +47,9 @@ class DatasetGenerationEnv(TradingEnv):
     """
     Extended TradingEnv that captures trade signals and their outcomes.
     """
-    def __init__(self, df_dict, feature_engine, data_dir='data', stage=3):
+    def __init__(self, df_dict, feature_engine, data_dir='data'):
         # Force is_training=False for deterministic behavior
-        super().__init__(data_dir=data_dir, stage=stage, is_training=False)
+        super().__init__(data_dir=data_dir, is_training=False)
         self.signals = []
         self.df_dict = df_dict
         self.guard_feature_engine = feature_engine
@@ -61,7 +61,7 @@ class DatasetGenerationEnv(TradingEnv):
         """
         # Assuming all assets have same index or at least the first one is representative
         asset = self.assets[0]
-        return self.df_list[asset].index[self.current_step]
+        return self.df_dict[asset].index[self.current_step]
 
     def _simulate_trade_outcome_with_timing(self, asset: str) -> dict:
         """
@@ -81,9 +81,9 @@ class DatasetGenerationEnv(TradingEnv):
         
         # Get future data
         start_idx = self.current_step + 1
-        end_idx = min(start_idx + max_bars, len(self.df_list[asset]))
+        end_idx = min(start_idx + max_bars, len(self.df_dict[asset]))
         
-        future_df = self.df_list[asset].iloc[start_idx:end_idx]
+        future_df = self.df_dict[asset].iloc[start_idx:end_idx]
         
         if future_df.empty:
             return {'pnl': 0, 'bars_held': 0, 'exit_reason': 'end_of_data'}
@@ -132,8 +132,8 @@ class DatasetGenerationEnv(TradingEnv):
             # Find the index of the asset in the original list
             asset_idx = self.assets.index(asset)
             
-            # Get recent actions for this asset (simplified: we'll just use the current one or maintain a history)
-            # For MVP, we'll use a simplified version of the logic
+            # Stage 3 logic: 4 elements per asset
+            base_idx = asset_idx * 4
             
             # Extract recent trades for win rate calculation
             recent_trades = [{'pnl': t['net_pnl']} for t in self.all_trades[-10:]]
@@ -144,8 +144,8 @@ class DatasetGenerationEnv(TradingEnv):
                 'total_exposure': total_exposure,
                 'open_positions_count': sum(1 for p in self.positions.values() if p is not None),
                 'recent_trades': recent_trades,
-                'asset_action_raw': self.last_action[asset_idx * (4 if self.stage==3 else 1)] if self.last_action is not None else 0,
-                'asset_recent_actions': [self.last_action[asset_idx]] * 5 if self.last_action is not None else [0]*5,
+                'asset_action_raw': self.last_action[base_idx] if self.last_action is not None else 0,
+                'asset_recent_actions': [self.last_action[base_idx]] * 5 if self.last_action is not None else [0]*5,
                 'asset_signal_persistence': 1.0, # Simplified
                 'asset_signal_reversal': 0.0,    # Simplified
                 'position_value': self.positions[asset]['size']
@@ -273,13 +273,12 @@ class DatasetGenerator:
             self.logger.error(f"Failed to load model: {e}")
             return None
 
-    def generate_signals(self, model_path, stage=3):
+    def generate_signals(self, model_path):
         """
         Runs the Alpha model inference loop to generate trade signals.
         
         Args:
             model_path (str): Path to the model.
-            stage (int): Curriculum stage.
             
         Returns:
             list: List of signal dictionaries.
@@ -297,8 +296,7 @@ class DatasetGenerator:
         env = DatasetGenerationEnv(
             df_dict=df_dict, 
             feature_engine=FeatureEngine(),
-            data_dir=str(self.data_dir), 
-            stage=stage
+            data_dir=str(self.data_dir)
         )
         
         obs, _ = env.reset()
@@ -348,11 +346,11 @@ class DatasetGenerator:
         df.to_parquet(output_path)
         self.logger.info("Dataset saved successfully.")
 
-    def run(self, model_path, output_path, stage=3):
+    def run(self, model_path, output_path):
         """
         Full pipeline: generate signals and save dataset.
         """
-        signals = self.generate_signals(model_path, stage)
+        signals = self.generate_signals(model_path)
         self.save_dataset(signals, output_path)
         self.logger.info("Pipeline complete.")
 
@@ -757,9 +755,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TradeGuard Dataset Generator")
     parser.add_argument("--model", type=str, default="Alpha/models/checkpoints/8.03.zip", help="Path to Alpha PPO model")
     parser.add_argument("--output", type=str, default="TradeGuard/data/guard_dataset.parquet", help="Output Parquet file")
-    parser.add_argument("--stage", type=int, default=3, help="Curriculum stage")
     
     args = parser.parse_args()
     
     generator = DatasetGenerator()
-    generator.run(args.model, args.output, args.stage)
+    generator.run(args.model, args.output)

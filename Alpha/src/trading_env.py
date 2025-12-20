@@ -11,8 +11,7 @@ class TradingEnv(gym.Env):
     Trading environment for RL agent.
     
     Curriculum Stages:
-        Stage 1: Direction only (5 outputs)
-        Stage 2: Direction + Position sizing (10 outputs)
+        - REMOVED: Now effectively 'Stage 3' (Full Control)
         Stage 3: Direction + Position sizing + SL/TP (20 outputs)
     
     Reward System:
@@ -21,13 +20,17 @@ class TradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, data_dir='data', stage=3, is_training=True):
+    def __init__(self, data_dir='data', is_training=True):
         super(TradingEnv, self).__init__()
         
         self.data_dir = data_dir
-        self.stage = stage
         self.is_training = is_training
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+        
+        # Configuration Constants (Moved up to prevent AttributeError in _load_data fallback)
+        self.MIN_POSITION_SIZE = 0.1
+        self.MIN_ATR_MULTIPLIER = 0.0001
+        self.REWARD_LOG_INTERVAL = 5000
         
         # Load Data
         self.data = self._load_data()
@@ -37,14 +40,8 @@ class TradingEnv(gym.Env):
         # OPTIMIZATION: Cache data as numpy arrays for fast access
         self._cache_data_arrays()
         
-        # Define Action Space based on Stage
-        if self.stage == 1:
-            self.action_dim = 5   # Direction only
-        elif self.stage == 2:
-            self.action_dim = 10  # Direction + Size
-        else:
-            self.action_dim = 20  # Direction + Size + SL/TP
-            
+        # Define Action Space (Stage 3 Logic: Direction + Size + SL/TP)
+        self.action_dim = 20
         self.action_space = spaces.Box(low=-1, high=1, shape=(self.action_dim,), dtype=np.float32)
         
         # Define Observation Space (140 features)
@@ -53,33 +50,11 @@ class TradingEnv(gym.Env):
         # State Variables
         self.current_step = 0
         self.max_steps = len(self.processed_data) - 1
-        self.equity = 10000.0
-        self.leverage = 100
-        self.positions = {asset: None for asset in self.assets}
-        self.portfolio_history = []
-        
-        # Reward Tracking (simplified)
-        self.peeked_pnl_step = 0.0  # PEEK & LABEL: P&L assigned at trade open
-        
-        # Trade Tracking for Backtesting
-        self.completed_trades = []
-        self.all_trades = []
-        
-        # Initialization Safety
-        self.start_equity = self.equity
-        self.peak_equity = self.equity
-        self.max_step_reward = -float('inf')
-        
         
         # PRD Risk Constants
         self.MAX_POS_SIZE_PCT = 0.50
         self.MAX_TOTAL_EXPOSURE = 0.60
         self.DRAWDOWN_LIMIT = 0.25
-        
-        # Configuration Constants
-        self.MIN_POSITION_SIZE = 0.1  # Minimum position size in equity units
-        self.MIN_ATR_MULTIPLIER = 0.0001  # Fallback if ATR is zero (0.01%)
-        self.REWARD_LOG_INTERVAL = 5000  # Steps between reward logging
         
     def _cache_data_arrays(self):
         """Cache DataFrame columns as numpy arrays for performance."""
@@ -238,39 +213,18 @@ class TradingEnv(gym.Env):
             
         parsed = {}
         for i, asset in enumerate(self.assets):
-            if self.stage == 1:
-                # Stage 1: Direction only
-                direction_raw = action[i]
-                parsed[asset] = {
-                    'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
-                    'size': 0.25,      # Fixed size
-                    'sl_mult': 1.5,    # Fixed SL
-                    'tp_mult': 2.5     # Fixed TP
-                }
-            elif self.stage == 2:
-                # Stage 2: Direction + Position Size
-                base_idx = i * 2
-                direction_raw = action[base_idx]
-                size_raw = np.clip((action[base_idx + 1] + 1) / 2, 0, 1)  # FIX: Bounds validation
-                parsed[asset] = {
-                    'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
-                    'size': size_raw,
-                    'sl_mult': 1.5,    # Fixed SL
-                    'tp_mult': 2.5     # Fixed TP
-                }
-            else:
-                # Stage 3: Direction + Size + SL/TP
-                base_idx = i * 4
-                direction_raw = action[base_idx]
-                size_raw = np.clip((action[base_idx + 1] + 1) / 2, 0, 1)  # FIX: Bounds validation
-                sl_raw = np.clip((action[base_idx + 2] + 1) / 2 * 2.5 + 0.5, 0.5, 3.0)  # 0.5 to 3.0
-                tp_raw = np.clip((action[base_idx + 3] + 1) / 2 * 3.5 + 1.5, 1.5, 5.0)  # 1.5 to 5.0
-                parsed[asset] = {
-                    'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
-                    'size': size_raw,
-                    'sl_mult': sl_raw,
-                    'tp_mult': tp_raw
-                }
+            # Stage 3 Logic: Direction + Size + SL/TP
+            base_idx = i * 4
+            direction_raw = action[base_idx]
+            size_raw = np.clip((action[base_idx + 1] + 1) / 2, 0, 1)  # FIX: Bounds validation
+            sl_raw = np.clip((action[base_idx + 2] + 1) / 2 * 2.5 + 0.5, 0.5, 3.0)  # 0.5 to 3.0
+            tp_raw = np.clip((action[base_idx + 3] + 1) / 2 * 3.5 + 1.5, 1.5, 5.0)  # 1.5 to 5.0
+            parsed[asset] = {
+                'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
+                'size': size_raw,
+                'sl_mult': sl_raw,
+                'tp_mult': tp_raw
+            }
         return parsed
 
     def _execute_trades(self, actions):

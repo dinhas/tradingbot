@@ -1,5 +1,4 @@
 import os
-import os
 from pathlib import Path
 import argparse
 import logging
@@ -15,17 +14,17 @@ from .trading_env import TradingEnv
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def make_env(rank, seed=0, data_dir='data', stage=1):
+def make_env(rank, seed=0, data_dir='data'):
     """
     Utility function for multiprocessed env.
     
     :param rank: (int) index of the subprocess
     :param seed: (int) the initial seed for RNG
     :param data_dir: (str) path to data directory
-    :param stage: (int) curriculum stage
     """
     def _init():
-        env = TradingEnv(data_dir=data_dir, stage=stage, is_training=True)
+        # Environment is now fixed to 'Stage 3' logic internally
+        env = TradingEnv(data_dir=data_dir, is_training=True)
         env.reset(seed=seed + rank)
         return env
     return _init
@@ -111,9 +110,10 @@ class MetricsCallback(BaseCallback):
             logger.warning(f"Could not create plots: {e}")
 
 
-def load_ppo_config(config_path, stage):
+def load_ppo_config(config_path):
     """
-    Loads PPO configuration from a YAML file and applies stage-specific overrides.
+    Loads PPO configuration from a YAML file.
+    Always uses the 'stage 3' overrides if they exist as the new default.
     """
     import yaml
     
@@ -122,9 +122,9 @@ def load_ppo_config(config_path, stage):
         
     config = full_config['default'].copy()
     
-    # Apply stage overrides
-    if 'stages' in full_config and stage in full_config['stages']:
-        config.update(full_config['stages'][stage])
+    # Apply Stage 3 overrides as the final production state
+    if 'stages' in full_config and 3 in full_config['stages']:
+        config.update(full_config['stages'][3])
         
     # Handle policy_kwargs
     if 'policy_kwargs' in config:
@@ -151,7 +151,7 @@ def train(args):
     data_dir_path = project_root / args.data_dir
     config_path = project_root / args.config
 
-    logger.info(f"Starting training for Stage {args.stage}")
+    logger.info("Starting training (Final Curriculum State)")
     
     # Create directories
     log_dir_path.mkdir(parents=True, exist_ok=True)
@@ -167,22 +167,20 @@ def train(args):
     logger.info(f"Creating {n_envs} environment(s) using SubprocVecEnv (maximizing CPU usage)...")
     
     # Use SubprocVecEnv for true parallelism
-    # Note: If this crashes due to RAM, reduce n_envs manually or switch to DummyVecEnv
     if n_envs > 1:
-        env = SubprocVecEnv([make_env(i, data_dir=data_dir_path, stage=args.stage) for i in range(n_envs)])
+        env = SubprocVecEnv([make_env(i, data_dir=data_dir_path) for i in range(n_envs)])
     else:
-        env = DummyVecEnv([make_env(0, data_dir=data_dir_path, stage=args.stage)])
+        env = DummyVecEnv([make_env(0, data_dir=data_dir_path)])
     
     # Apply Normalization
     env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
     
     # 2. Initialize Model
-    ppo_config = load_ppo_config(config_path, args.stage)
+    ppo_config = load_ppo_config(config_path)
     
-    # Extract total_timesteps from config before removing it (it's not a PPO init argument)
-    config_timesteps = ppo_config.pop('total_timesteps', 1500000)  # Default fallback
+    # Extract total_timesteps from config before removing it
+    config_timesteps = ppo_config.pop('total_timesteps', 1500000)
     
-    # Use command line arg if provided, otherwise use config file value
     if args.total_timesteps is None:
         args.total_timesteps = config_timesteps
         logger.info(f"Using total_timesteps from config: {args.total_timesteps}")
@@ -190,8 +188,6 @@ def train(args):
     if args.load_model:
         load_model_path = project_root / args.load_model
         logger.info(f"Loading model from {load_model_path}")
-        # For Stage 1: Safe to load since action space is constant (5 outputs)
-        # For Stage 2/3: Only load if resuming same stage, otherwise start fresh
         try:
             model = PPO.load(load_model_path, env=env, **ppo_config)
             logger.info("✅ Model loaded successfully - continuing training")
@@ -205,14 +201,14 @@ def train(args):
         
     # 3. Callbacks
     checkpoint_callback = CheckpointCallback(
-        save_freq=max(100000 // n_envs, 1), # Adjust freq for parallel envs
+        save_freq=max(100000 // n_envs, 1),
         save_path=str(checkpoint_dir_path),
-        name_prefix=f"ppo_stage{args.stage}"
+        name_prefix="ppo_final"
     )
     
     metrics_callback = MetricsCallback(
-        eval_freq=10000,     # Log metrics every 10k steps (REDUCED FROM 1000)
-        plot_freq=10000,     # Create plots every 10k steps
+        eval_freq=10000,
+        plot_freq=10000,
         verbose=1
     )
     
@@ -221,9 +217,8 @@ def train(args):
     
     # Configure file logging
     from datetime import datetime
-    log_file = log_dir_path / f"train_stage{args.stage}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_file = log_dir_path / f"train_final_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     
-    # Add FileHandler to existing logger
     file_handler = logging.FileHandler(log_file)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logging.getLogger().addHandler(file_handler)
@@ -238,24 +233,22 @@ def train(args):
     )
     
     # 5. Save Final Model
-    final_path = checkpoint_dir_path / f"stage_{args.stage}_final.zip"
+    final_path = checkpoint_dir_path / "ppo_final_model.zip"
     model.save(final_path)
-    env.save(checkpoint_dir_path / f"stage_{args.stage}_vecnormalize.pkl")
+    env.save(checkpoint_dir_path / "ppo_final_vecnormalize.pkl")
     
     logger.info(f"Training complete. Model saved to {final_path}")
     env.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train RL Trading Bot")
-    parser.add_argument("--stage", type=int, default=1, choices=[1, 2, 3], help="Curriculum stage (1, 2, or 3)")
-    parser.add_argument("--total_timesteps", type=int, default=None, help="Total timesteps to train (default: from config file)")
+    parser.add_argument("--total_timesteps", type=int, default=None, help="Total timesteps to train")
     parser.add_argument("--data_dir", type=str, default="data", help="Path to data directory relative to project root")
     parser.add_argument("--log_dir", type=str, default="logs", help="Path to log directory relative to project root")
     parser.add_argument("--checkpoint_dir", type=str, default="models/checkpoints", help="Path to save checkpoints relative to project root")
-    parser.add_argument("--load_model", type=str, default=None, help="Path to load existing model relative to project root")
-    parser.add_argument("--config", type=str, default="Alpha/config/ppo_config.yaml", help="Path to PPO configuration file relative to project root")
+    parser.add_argument("--load_model", type=str, default=None, help="Path to load existing model")
+    parser.add_argument("--config", type=str, default="Alpha/config/ppo_config.yaml", help="Path to PPO configuration file")
     parser.add_argument("--dry-run", action="store_true", help="Run a short test training loop")
     
     args = parser.parse_args()
     train(args)
-
