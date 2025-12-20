@@ -300,5 +300,133 @@ class FeatureEngine:
         
         return features
 
+    def calculate_market_regime(self, df):
+        """
+        Calculates Market Regime features (21-30).
+        Includes ADX, Aroon, Hurst, Efficiency Ratio, and Trend stats.
+        """
+        features = []
+        idx = -1
+        
+        # Pre-calculate indicators
+        
+        # ADX (14)
+        adx_ind = ta.trend.ADXIndicator(df['high'], df['low'], df['close'], window=14)
+        
+        # Feature 21: ADX
+        features.append(adx_ind.adx().iloc[idx])
+        
+        # Feature 22: DI+
+        features.append(adx_ind.adx_pos().iloc[idx])
+        
+        # Feature 23: DI-
+        features.append(adx_ind.adx_neg().iloc[idx])
+        
+        # Aroon (25)
+        aroon_ind = ta.trend.AroonIndicator(high=df['high'], low=df['low'], window=25)
+        
+        # Feature 24: Aroon Up
+        features.append(aroon_ind.aroon_up().iloc[idx])
+        
+        # Feature 25: Aroon Down
+        features.append(aroon_ind.aroon_down().iloc[idx])
+        
+        # Feature 26: Hurst Exponent (Approximate over last 100 bars)
+        # Simplified R/S analysis to avoid heavy computation
+        try:
+            ts = df['close'].iloc[-100:].values
+            if len(ts) >= 100:
+                lags = range(2, 20)
+                # Calculate standard deviation of differences for each lag
+                tau = [np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags]
+                # Log-log plot
+                poly = np.polyfit(np.log(lags), np.log(tau), 1)
+                hurst = poly[0]
+                # Clamp to 0-1 range
+                features.append(max(0.0, min(1.0, hurst)))
+            else:
+                features.append(0.5)
+        except:
+            features.append(0.5)
+            
+        # Feature 27: Efficiency Ratio (Kaufman) - 10 period
+        changes = df['close'].diff().abs().iloc[-10:]
+        total_change = changes.sum()
+        net_change = abs(df['close'].iloc[idx] - df['close'].iloc[idx-10])
+        features.append(net_change / total_change if total_change > 0 else 0.0)
+        
+        # Feature 28: Linear Regression Slope (normalized) - 20 period
+        y = df['close'].iloc[-20:].values
+        x = np.arange(len(y))
+        slope, intercept = np.polyfit(x, y, 1)
+        # Normalize slope by price to make it comparable
+        features.append((slope / df['close'].iloc[idx]) * 10000)
+        
+        # Feature 29: Trend Bias (Price vs SMA 200)
+        sma_200 = ta.trend.SMAIndicator(df['close'], window=200).sma_indicator()
+        if not pd.isna(sma_200.iloc[idx]):
+            features.append(df['close'].iloc[idx] / sma_200.iloc[idx])
+        else:
+            features.append(1.0)
+            
+        # Feature 30: Bollinger Band Width
+        bb = ta.volatility.BollingerBands(df['close'], window=20, window_dev=2)
+        features.append(bb.bollinger_wband().iloc[idx])
+        
+        return features
+
+    def calculate_session_edge(self, timestamp):
+        """
+        Calculates Session Edge features (31-40).
+        Time-based cyclical features and session flags (UTC).
+        """
+        features = []
+        
+        # Ensure timestamp is pandas Timestamp
+        ts = pd.Timestamp(timestamp)
+        
+        # Feature 31: hour_sin
+        features.append(np.sin(2 * np.pi * ts.hour / 24))
+        
+        # Feature 32: hour_cos
+        features.append(np.cos(2 * np.pi * ts.hour / 24))
+        
+        # Feature 33: dow_sin
+        features.append(np.sin(2 * np.pi * ts.dayofweek / 7))
+        
+        # Feature 34: dow_cos
+        features.append(np.cos(2 * np.pi * ts.dayofweek / 7))
+        
+        # Define Sessions (UTC) - Approximate
+        # London: 07:00 - 16:00
+        # NY: 12:00 - 21:00
+        # Asian (Tokyo): 00:00 - 09:00
+        
+        h = ts.hour
+        
+        is_london = 1.0 if 7 <= h < 16 else 0.0
+        is_ny = 1.0 if 12 <= h < 21 else 0.0
+        is_asian = 1.0 if 0 <= h < 9 else 0.0
+        
+        # Feature 35: is_london_open
+        features.append(is_london)
+        
+        # Feature 36: is_ny_open
+        features.append(is_ny)
+        
+        # Feature 37: is_asian_open
+        features.append(is_asian)
+        
+        # Feature 38: minute_progress
+        features.append(ts.minute / 60.0)
+        
+        # Feature 39: market_overlap (London & NY)
+        features.append(1.0 if is_london and is_ny else 0.0)
+        
+        # Feature 40: time_since_day_start (fractional day)
+        features.append((h * 60 + ts.minute) / 1440.0)
+        
+        return features
+
 if __name__ == "__main__":
     generator = DatasetGenerator()

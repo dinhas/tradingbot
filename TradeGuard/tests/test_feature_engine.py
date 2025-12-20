@@ -152,5 +152,76 @@ class TestFeatureEngine(unittest.TestCase):
         # Ratio = (0.0050 + 0.0050) / 0.0001 = 100
         self.assertGreater(features[5], 10.0)
 
+    def test_market_regime_features(self):
+        """Test calculation of Market Regime features (21-30)."""
+        if self.FeatureEngine is None:
+            self.skipTest("FeatureEngine not implemented yet")
+            
+        fe = self.FeatureEngine()
+        
+        # Create a mock historical DataFrame (300 bars for long-term indicators)
+        # Generate a trending market then a chop
+        np.random.seed(42)
+        n = 300
+        
+        # Trending part
+        closes = np.linspace(1.1000, 1.2000, 200).tolist()
+        # Choppy part
+        closes += (np.random.rand(100) * 0.01 + 1.2000).tolist()
+        
+        opens = [c - 0.0005 for c in closes]
+        highs = [c + 0.0010 for c in closes]
+        lows = [c - 0.0010 for c in closes]
+        volumes = [1000.0] * 300
+        
+        df = pd.DataFrame({
+            'open': opens,
+            'high': highs,
+            'low': lows,
+            'close': closes,
+            'volume': volumes
+        })
+        
+        features = fe.calculate_market_regime(df)
+        
+        # We expect 10 features
+        self.assertEqual(len(features), 10)
+        
+        # Basic range checks for indicators
+        
+        # Feature 21: ADX (0-100)
+        self.assertTrue(0 <= features[0] <= 100)
+        
+        # Feature 26: Hurst (0-1) - roughly
+        # Since we added random chop at the end, hurst should be closer to 0.5 or <0.5
+        self.assertTrue(0 <= features[5] <= 1.0)
+
+    def test_session_edge_features(self):
+        """Test calculation of Session Edge features (31-40)."""
+        if self.FeatureEngine is None:
+            self.skipTest("FeatureEngine not implemented yet")
+            
+        fe = self.FeatureEngine()
+        
+        # Create a mock timestamp (e.g., London Open - 8:00 UTC)
+        timestamp = pd.Timestamp("2024-06-19 08:00:00")
+        
+        features = fe.calculate_session_edge(timestamp)
+        
+        # We expect 10 features
+        self.assertEqual(len(features), 10)
+        
+        # Feature 31: hour_sin (8 am -> sin(2*pi*8/24))
+        expected_sin = np.sin(2 * np.pi * 8 / 24)
+        self.assertAlmostEqual(features[0], expected_sin, places=4)
+        
+        # Feature 35: is_london_open (Assume London is 7-16 UTC)
+        # At 8:00, London is open -> 1.0
+        self.assertEqual(features[4], 1.0)
+        
+        # Feature 36: is_ny_open (Assume NY is 12-21 UTC)
+        # At 8:00, NY is closed -> 0.0
+        self.assertEqual(features[5], 0.0)
+
 if __name__ == '__main__':
     unittest.main()
