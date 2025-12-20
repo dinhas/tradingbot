@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import logging
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator, MACD
 from ta.volatility import AverageTrueRange, BollingerBands
@@ -54,20 +55,27 @@ class FeatureEngine:
         Returns:
             pd.DataFrame: Aligned DataFrame with all features calculated.
         """
+        logger = logging.getLogger(__name__)
+        
         # 1. Align DataFrames
+        logger.info("Aligning data for all assets...")
         aligned_df = self._align_data(data_dict)
         
         # 2. Calculate Technical Indicators per Asset
         for asset in self.assets:
+            logger.info(f"Calculating technical indicators for {asset}...")
             aligned_df = self._add_technical_indicators(aligned_df, asset)
             
         # 3. Calculate Cross-Asset Features
+        logger.info("Calculating cross-asset features...")
         aligned_df = self._add_cross_asset_features(aligned_df)
         
         # 4. Add Global/Session Features
+        logger.info("Adding session and global features...")
         aligned_df = self._add_session_features(aligned_df)
         
         # 5. Normalize Features (Robust Scaling)
+        logger.info("Normalizing features (this may take a minute)...")
         # Create a copy for normalization to preserve raw values
         normalized_df = aligned_df.copy()
         normalized_df = self._normalize_features(normalized_df)
@@ -76,6 +84,7 @@ class FeatureEngine:
         normalized_df = normalized_df.ffill().fillna(0)
         aligned_df = aligned_df.ffill().fillna(0)
         
+        logger.info(f"Preprocessing complete. Total features: {len(normalized_df.columns)}")
         return aligned_df, normalized_df
 
     def _align_data(self, data_dict):

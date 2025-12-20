@@ -47,9 +47,9 @@ class DatasetGenerationEnv(TradingEnv):
     """
     Extended TradingEnv that captures trade signals and their outcomes.
     """
-    def __init__(self, df_dict, feature_engine, data_dir='data', stage=3):
+    def __init__(self, df_dict, feature_engine, data_dir='data', stage=3, data=None):
         # Force is_training=False for deterministic behavior
-        super().__init__(data_dir=data_dir, is_training=False, stage=stage)
+        super().__init__(data_dir=data_dir, is_training=False, stage=stage, data=data)
         self.signals = []
         self.df_dict = df_dict
         self.guard_feature_engine = feature_engine
@@ -63,52 +63,6 @@ class DatasetGenerationEnv(TradingEnv):
         asset = self.assets[0]
         return self.df_dict[asset].index[self.current_step]
 
-    def _simulate_trade_outcome_with_timing(self, asset: str) -> dict:
-        """
-        Looks ahead in data to determine trade outcome.
-        """
-        pos = self.positions[asset]
-        if pos is None:
-            return {'pnl': 0, 'bars_held': 0, 'exit_reason': 'none'}
-            
-        entry_price = pos['entry_price']
-        direction = pos['direction']
-        sl = pos['sl']
-        tp = pos['tp']
-        
-        # Max hold time e.g., 4 hours = 48 bars of 5m
-        max_bars = 48
-        
-        # Get future data
-        start_idx = self.current_step + 1
-        end_idx = min(start_idx + max_bars, len(self.df_dict[asset]))
-        
-        future_df = self.df_dict[asset].iloc[start_idx:end_idx]
-        
-        if future_df.empty:
-            return {'pnl': 0, 'bars_held': 0, 'exit_reason': 'end_of_data'}
-            
-        highs = future_df['high'].values
-        lows = future_df['low'].values
-        closes = future_df['close'].values
-        
-        for i in range(len(highs)):
-            if direction == 1: # Long
-                if lows[i] <= sl:
-                    return {'pnl': (sl - entry_price), 'bars_held': i+1, 'exit_reason': 'sl'}
-                if highs[i] >= tp:
-                    return {'pnl': (tp - entry_price), 'bars_held': i+1, 'exit_reason': 'tp'}
-            else: # Short
-                if highs[i] >= sl:
-                    return {'pnl': (entry_price - sl), 'bars_held': i+1, 'exit_reason': 'sl'}
-                if lows[i] <= tp:
-                    return {'pnl': (entry_price - tp), 'bars_held': i+1, 'exit_reason': 'tp'}
-                    
-        # Timeout
-        final_price = closes[-1]
-        pnl = (final_price - entry_price) * direction
-        return {'pnl': pnl, 'bars_held': len(closes), 'exit_reason': 'timeout'}
-
     def set_last_action(self, action):
         """Stores the raw action from the model for feature calculation."""
         self.last_action = action
@@ -121,8 +75,8 @@ class DatasetGenerationEnv(TradingEnv):
         
         # Check if position was successfully opened
         if self.positions[asset] is not None:
-            # Calculate Future Outcome (Label)
-            outcome = self._simulate_trade_outcome_with_timing(asset)
+            # Calculate Future Outcome (Label) using optimized base class method
+            outcome = super()._simulate_trade_outcome_with_timing(asset)
             
             # --- Feature Calculation ---
             # 1. Prepare inputs
@@ -288,6 +242,9 @@ class DatasetGenerator:
         Returns:
             list: List of signal dictionaries.
         """
+        # Ensure base logging is configured to see Alphas logs
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        
         model = self.load_model(model_path)
         if not model:
             return []
@@ -302,21 +259,25 @@ class DatasetGenerator:
             stage = 3
             
         self.logger.info(f"Detected Stage {stage} from model action space (dim={action_dim})")
-        self.logger.info("Starting inference loop...")
         
         # Load full DataFrames for feature calculation context
         df_dict = self.load_data()
         
+        self.logger.info("Initializing DatasetGenerationEnv...")
         # Initialize custom environment
         env = DatasetGenerationEnv(
             df_dict=df_dict, 
             feature_engine=FeatureEngine(),
             data_dir=str(self.data_dir),
-            stage=stage
+            stage=stage,
+            data=df_dict # Pass loaded data to avoid double loading
         )
         
         obs, _ = env.reset()
         done = False
+        
+        self.logger.info(f"Starting inference loop (Total steps: {env.max_steps})...")
+        step_count = 0
         
         # Iterate until done
         while not done:
@@ -324,6 +285,11 @@ class DatasetGenerator:
             env.set_last_action(action)
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
+            
+            step_count += 1
+            if step_count % 5000 == 0:
+                progress = (step_count / env.max_steps) * 100
+                self.logger.info(f"Progress: {progress:.1f}% ({step_count}/{env.max_steps} steps) | Signals: {len(env.signals)}")
             
         self.logger.info(f"Inference complete. Generated {len(env.signals)} signals.")
         return env.signals

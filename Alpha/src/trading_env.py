@@ -20,7 +20,7 @@ class TradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, data_dir='data', is_training=True, stage=3):
+    def __init__(self, data_dir='data', is_training=True, stage=3, data=None):
         super(TradingEnv, self).__init__()
         
         self.data_dir = data_dir
@@ -34,7 +34,11 @@ class TradingEnv(gym.Env):
         self.REWARD_LOG_INTERVAL = 5000
         
         # Load Data
-        self.data = self._load_data()
+        if data is not None:
+            self.data = data
+        else:
+            self.data = self._load_data()
+            
         self.feature_engine = FeatureEngine()
         self.raw_data, self.processed_data = self.feature_engine.preprocess_data(self.data)
         
