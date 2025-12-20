@@ -244,7 +244,7 @@ class DatasetGenerator:
         chunk_df_dict = {asset: df.iloc[start_idx:end_idx] for asset, df in df_dict.items()}
         chunk_precomputed = {asset: arr[start_idx:end_idx] for asset, arr in precomputed.items()}
         
-        model = PPO.load(model_path)
+        model = PPO.load(model_path, device='cpu')
         env = DatasetGenerationEnv(
             df_dict=chunk_df_dict,
             feature_engine=FeatureEngine(),
@@ -269,7 +269,7 @@ class DatasetGenerator:
         precomputed = self.precompute_market_features(df_dict)
         
         # Detect stage
-        model = PPO.load(model_path)
+        model = PPO.load(model_path, device='cpu')
         action_dim = model.action_space.shape[0]
         stage = 1 if action_dim == 5 else (2 if action_dim == 10 else 3)
         del model # Free memory
@@ -399,22 +399,18 @@ class FeatureEngine:
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="Alpha/models/checkpoints/8.03.zip")
-    parser.add_argument("--output", type=str, default="TradeGuard/data/guard_dataset.parquet")
-    parser.add_argument("--jobs", type=int, default=-1)
-    args = parser.parse_args()
-    
-    generator = DatasetGenerator(n_jobs=args.jobs)
-    generator.run(args.model, args.output)
+    # Use spawn for CUDA compatibility and cross-platform consistency
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
 
-if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser(description="TradeGuard Dataset Generator")
     parser.add_argument("--model", type=str, default="Alpha/models/checkpoints/8.03.zip", help="Path to Alpha PPO model")
     parser.add_argument("--output", type=str, default="TradeGuard/data/guard_dataset.parquet", help="Output Parquet file")
+    parser.add_argument("--jobs", type=int, default=-1, help="Number of parallel jobs")
     
     args = parser.parse_args()
     
-    generator = DatasetGenerator()
+    generator = DatasetGenerator(n_jobs=args.jobs)
     generator.run(args.model, args.output)
