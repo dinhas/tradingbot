@@ -1,7 +1,8 @@
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, roc_curve, auc
+from sklearn.calibration import calibration_curve
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -77,8 +78,21 @@ class ModelVisualizer:
             y_prob: Predicted probabilities
             filename: Output filename
         """
-        # Stub for next task
-        pass
+        prob_true, prob_pred = calibration_curve(y_true, y_prob, n_bins=10)
+        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.plot(prob_pred, prob_true, marker='o', linewidth=1, label='Model')
+        ax.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Perfectly Calibrated')
+        
+        ax.set_ylabel("Fraction of positives")
+        ax.set_xlabel("Mean predicted value")
+        ax.set_title("Calibration Curve")
+        ax.legend()
+        
+        save_path = self.output_dir / filename
+        plt.savefig(save_path)
+        plt.close(fig)
+        logging.info(f"Saved calibration curve to {save_path}")
 
     def plot_roc_curve(self, y_true, y_prob, filename="roc_curve.png"):
         """
@@ -89,8 +103,24 @@ class ModelVisualizer:
             y_prob: Predicted probabilities
             filename: Output filename
         """
-        # Stub for next task
-        pass
+        fpr, tpr, _ = roc_curve(y_true, y_prob)
+        roc_auc = auc(fpr, tpr)
+        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+        ax.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        
+        ax.set_xlim([0.0, 1.0])
+        ax.set_ylim([0.0, 1.05])
+        ax.set_xlabel('False Positive Rate')
+        ax.set_ylabel('True Positive Rate')
+        ax.set_title('Receiver Operating Characteristic')
+        ax.legend(loc="lower right")
+        
+        save_path = self.output_dir / filename
+        plt.savefig(save_path)
+        plt.close(fig)
+        logging.info(f"Saved ROC curve to {save_path}")
 
     def save_metadata(self, metrics, threshold, filename="model_metadata.json"):
         """
