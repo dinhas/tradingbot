@@ -4,6 +4,10 @@ import lightgbm as lgb
 from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_score
 import logging
 import numpy as np
+try:
+    from visualization import ModelVisualizer
+except ImportError:
+    from TradeGuard.src.visualization import ModelVisualizer
 
 class DataLoader:
     def __init__(self, file_path: str):
@@ -255,6 +259,7 @@ if __name__ == "__main__":
         
     loader = DataLoader(data_path)
     trainer = ModelTrainer()
+    viz = ModelVisualizer("TradeGuard/models")
     
     logging.info("Loading and splitting data...")
     dev_df, holdout_df = loader.get_train_val_split()
@@ -276,6 +281,23 @@ if __name__ == "__main__":
     logging.info("Evaluating on 2024 hold-out set...")
     holdout_metrics = trainer.evaluate_model(final_model, holdout_df, threshold=best_threshold)
     logging.info(f"Hold-out metrics (at threshold {best_threshold:.4f}): {holdout_metrics}")
+    
+    # Artifact Generation
+    logging.info("Generating artifacts...")
+    viz.save_model(final_model)
+    viz.save_metadata(holdout_metrics, best_threshold)
+    
+    # Prepare data for plots (Hold-out set)
+    drop_cols = ['label', 'asset', 'timestamp']
+    X_holdout = holdout_df.drop(columns=[c for c in drop_cols if c in holdout_df.columns])
+    y_holdout = holdout_df['label']
+    y_prob_holdout = final_model.predict(X_holdout)
+    y_pred_holdout = (y_prob_holdout >= best_threshold).astype(int)
+    
+    viz.plot_confusion_matrix(y_holdout, y_pred_holdout)
+    viz.plot_feature_importance(final_model)
+    viz.plot_calibration_curve(y_holdout, y_prob_holdout)
+    viz.plot_roc_curve(y_holdout, y_prob_holdout)
     
     # Check Acceptance Criteria
     if holdout_metrics['auc'] > 0.65:
