@@ -397,5 +397,96 @@ class FullSystemBacktest(CombinedBacktest):
             # Restore the actual environment position
             self.env.positions[asset] = real_pos
 
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
+
+def run_full_system_backtest(args):
+    """Main function to run the full three-layer system backtest"""
+    project_root = Path(__file__).resolve().parent.parent.parent
+    
+    # Setup paths
+    alpha_path = project_root / args.alpha_model
+    risk_path = project_root / args.risk_model
+    guard_path = project_root / args.guard_model
+    meta_path = project_root / args.guard_meta
+    data_dir = project_root / args.data_dir
+    output_dir = project_root / args.output_dir
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    
+    logger.info("Initializing Full System Backtest...")
+    bt = FullSystemBacktest(
+        alpha_model_path=str(alpha_path),
+        risk_model_path=str(risk_path),
+        guard_model_path=str(guard_path),
+        guard_metadata_path=str(meta_path),
+        data_dir=str(data_dir),
+        initial_equity=args.initial_equity
+    )
+    
+    # Run backtest
+    metrics_tracker = bt.run_backtest(episodes=args.episodes)
+    
+    # Calculate and save metrics
+    logger.info("Calculating metrics...")
+    metrics = metrics_tracker.calculate_metrics()
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    metrics_file = output_dir / f"metrics_full_system_{timestamp}.json"
+    with open(metrics_file, 'w') as f:
+        json.dump(metrics, f, indent=2, cls=NumpyEncoder)
+    
+    # Save trades
+    if metrics_tracker.trades:
+        trades_file = output_dir / f"trades_full_system_{timestamp}.csv"
+        pd.DataFrame(metrics_tracker.trades).to_csv(trades_file, index=False)
+        
+    # Save blocked trades
+    if metrics_tracker.blocked_trades:
+        blocked_file = output_dir / f"blocked_trades_full_system_{timestamp}.csv"
+        pd.DataFrame(metrics_tracker.blocked_trades).to_csv(blocked_file, index=False)
+        
+    # Generate charts
+    logger.info("Generating visualization suite...")
+    per_asset = metrics_tracker.get_per_asset_metrics()
+    generate_full_system_charts(metrics_tracker, per_asset, 3, output_dir, timestamp)
+    
+    logger.info(f"Backtest complete. Results saved to {output_dir}")
+    
+    # Print summary
+    logger.info("\n" + "="*60)
+    logger.info(f"{'FULL SYSTEM BACKTEST RESULTS':^60}")
+    logger.info("="*60)
+    logger.info(f"{'Total Return:':<40} {metrics.get('total_return', 0):.2%}")
+    logger.info(f"{'Baseline Return:':<40} {metrics.get('baseline_return', 0):.2%}")
+    logger.info(f"{'Net Value-Add:':<40} {metrics.get('net_value_add_vs_baseline', 0):.2%}")
+    logger.info(f"{'Max Drawdown:':<40} {metrics.get('max_drawdown', 0):.2%}")
+    if 'tradeguard' in metrics:
+        tg = metrics['tradeguard']
+        logger.info(f"{'TradeGuard Approval Rate:':<40} {tg.get('approval_rate', 0):.2%}")
+        logger.info(f"{'TradeGuard Block Accuracy:':<40} {tg.get('block_accuracy', 0):.2%}")
+    logger.info("="*60)
+
 if __name__ == "__main__":
-    pass
+    import argparse
+    parser = argparse.ArgumentParser(description="Three-Layer Full System Backtest")
+    parser.add_argument("--alpha-model", type=str, default="Alpha/models/checkpoints/8.03.zip")
+    parser.add_argument("--risk-model", type=str, default="RiskLayer/models/2.15.zip")
+    parser.add_argument("--guard-model", type=str, default="TradeGuard/tradeguard_results/guard_model.txt")
+    parser.add_argument("--guard-meta", type=str, default="TradeGuard/tradeguard_results/model_metadata.json")
+    parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data")
+    parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results/full_system")
+    parser.add_argument("--episodes", type=int, default=1)
+    parser.add_argument("--initial-equity", type=float, default=10.0)
+    
+    args = parser.parse_args()
+    run_full_system_backtest(args)

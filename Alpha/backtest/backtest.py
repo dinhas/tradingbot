@@ -80,11 +80,37 @@ class BacktestMetrics:
                 'max_drawdown': max_drawdown,
                 'final_equity': final_equity,
                 'initial_equity': initial_equity,
-                'total_trades': 0
+                'total_trades': 0,
+                'win_rate': 0,
+                'profit_factor': 0,
+                'sharpe_ratio': 0,
+                'avg_rr_ratio': 0,
+                'trade_frequency': 0,
+                'avg_hold_time_minutes': 0,
+                'winning_trades': 0,
+                'losing_trades': 0,
+                'gross_profit': 0,
+                'gross_loss': 0
             }
             
         df_trades = pd.DataFrame(self.trades)
         
+        # Use net_pnl if available, otherwise calculate it
+        if 'net_pnl' in df_trades.columns:
+            df_trades['final_pnl'] = df_trades['net_pnl']
+        else:
+            df_trades['final_pnl'] = df_trades['pnl'] - df_trades['fees']
+        
+        # Separate winning and losing trades based on net P&L
+        winning_trades = df_trades[df_trades['final_pnl'] > 0]
+        losing_trades = df_trades[df_trades['final_pnl'] < 0]
+        
+        gross_profit = winning_trades['final_pnl'].sum() if len(winning_trades) > 0 else 0
+        gross_loss = abs(losing_trades['final_pnl'].sum()) if len(losing_trades) > 0 else 0
+        
+        # PRIMARY METRIC: Profit Factor
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+
         # Sharpe Ratio (assuming 252 trading days, 5min candles)
         if len(self.equity_curve) > 1:
             returns = np.diff(equity_array) / equity_array[:-1]
