@@ -4,8 +4,8 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 
 ## Phase 1: Data Preparation & Validation [checkpoint: ]
 - [x] Task: Create tests for data loading and time-based splitting logic 635461b
-- [~] Task: Implement `TradeGuard/src/train_guard.py` skeleton and data loading (2016-2024)
-- [ ] Task: Implement time-based splitting logic (Train: 2016-2023, Val: 2024)
+- [x] Task: Implement `TradeGuard/src/train_guard.py` skeleton and data loading (2016-2024) 33fb529
+- [x] Task: Implement time-based splitting logic (Train: 2016-2023, Val: 2024) 33fb529
 - [ ] Task: Conductor - User Manual Verification 'Data Preparation & Validation' (Protocol in workflow.md)
 
 ## Phase 2: Hyperparameter Tuning (Internal Split) [checkpoint: ]
