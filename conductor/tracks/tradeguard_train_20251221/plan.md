@@ -20,9 +20,9 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [x] Task: Implement 2024 hold-out set evaluation and threshold optimization db87057
 - [x] Task: Conductor - User Manual Verification 'Final Training & Evaluation' (Protocol in workflow.md) 0f18294
 
-## Phase 4: Artifact Generation & Visualization [checkpoint: ]
+## Phase 4: Artifact Generation & Visualization [checkpoint: 05716aa]
 - [x] Task: Create tests for visualization generation (CM, FI, Calibration, ROC) aef4eba
 - [x] Task: Implement plotting functions for Confusion Matrix and Feature Importance fa2877c
 - [x] Task: Implement plotting functions for Calibration Curve and ROC Curve de1453c
 - [x] Task: Implement metadata export (model_metadata.json and guard_model.txt) 03e8a86
-- [~] Task: Conductor - User Manual Verification 'Artifact Generation & Visualization' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Artifact Generation & Visualization' (Protocol in workflow.md) 05716aa
