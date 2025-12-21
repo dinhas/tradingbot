@@ -14,7 +14,7 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [x] Task: Verify that best parameters are correctly identified and logged fdb416c
 - [x] Task: Conductor - User Manual Verification 'Hyperparameter Tuning' (Protocol in workflow.md) c63915c
 
-## Phase 3: Final Training & Evaluation [checkpoint: ]
+## Phase 3: Final Training & Evaluation [checkpoint: 44cc7ce]
 - [x] Task: Create tests for final model retraining on full 2016-2023 set 13a0e21
 - [x] Task: Implement final training with best parameters f77f486
 - [x] Task: Implement 2024 hold-out set evaluation and threshold optimization db87057
