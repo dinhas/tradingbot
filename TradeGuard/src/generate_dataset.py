@@ -213,15 +213,16 @@ class DatasetGenerator:
             self.logger.info(f"Step 1: Data loading complete in {time.time() - start_time:.2f}s")
         return data
 
-    def precompute_market_features(self, df_dict):
+    @staticmethod
+    def precompute_market_features(df_dict, logger=None):
         """Precomputes Groups B, C, D, F for all assets using vectorized operations."""
         start_time = time.time()
-        self.logger.info("Step 2: Precomputing 40 market features (vectorized)...")
+        if logger: logger.info("Step 2: Precomputing 40 market features (vectorized)...")
         precomputed = {}
         
         for asset, df in df_dict.items():
             asset_start = time.time()
-            self.logger.info(f"Vectorizing {asset} features...")
+            if logger: logger.info(f"Vectorizing {asset} features...")
             
             # Common components
             high, low, close, vol = df['high'], df['low'], df['close'], df['volume']
@@ -319,14 +320,33 @@ class DatasetGenerator:
             ], axis=1).fillna(0).values
             
             precomputed[asset] = combined
-            self.logger.info(f"Finished {asset} vectorization in {time.time() - asset_start:.2f}s")
+            if logger: logger.info(f"Finished {asset} vectorization in {time.time() - asset_start:.2f}s")
             
-        self.logger.info(f"Step 2 Complete: Market features precomputed in {time.time() - start_time:.2f}s")
+        if logger: logger.info(f"Step 2 Complete: Market features precomputed in {time.time() - start_time:.2f}s")
         return precomputed
 
-    def run_inference_chunk(self, model_path, df_dict, precomputed, start_idx, end_idx, stage):
-        """Worker function for multiprocessing."""
+    @staticmethod
+    def run_inference_chunk(data_dir, assets, model_path, start_idx, end_idx, stage):
+        """Worker function for multiprocessing. Loads data locally to avoid IPC overhead."""
         chunk_start = time.time()
+        
+        # Load data locally in the worker
+        data_path = Path(data_dir)
+        df_dict = {}
+        for asset in assets:
+            for suffix in ["_5m.parquet", "_5m_2025.parquet"]:
+                p = data_path / f"{asset}{suffix}"
+                if p.exists():
+                    df_dict[asset] = pd.read_parquet(p)
+                    break
+        
+        if not df_dict:
+            print("Worker found no data.")
+            return []
+
+        # Precompute features locally
+        precomputed = DatasetGenerator.precompute_market_features(df_dict, logger=None)
+
         # Subset the data
         chunk_df_dict = {asset: df.iloc[start_idx:end_idx] for asset, df in df_dict.items()}
         chunk_precomputed = {asset: arr[start_idx:end_idx] for asset, arr in precomputed.items()}
@@ -336,7 +356,7 @@ class DatasetGenerator:
             df_dict=chunk_df_dict,
             feature_engine=FeatureEngine(),
             precomputed_features=chunk_precomputed,
-            data_dir=str(self.data_dir),
+            data_dir=str(data_dir),
             stage=stage,
             data=chunk_df_dict
         )
@@ -360,6 +380,7 @@ class DatasetGenerator:
 
     def run(self, model_path, output_path):
         run_start = time.time()
+        # Initial load to get metadata
         df_dict = self.load_data()
         if not df_dict:
             if DataFetcherTraining:
@@ -373,8 +394,6 @@ class DatasetGenerator:
                 self.logger.error(f"No data files found in {self.data_dir} after download attempt. Ensure assets match: {self.assets}")
                 return
 
-        precomputed = self.precompute_market_features(df_dict)
-        
         # Detect stage
         self.logger.info("Step 3: Loading model and detecting stage...")
         model = PPO.load(model_path, device='cpu')
@@ -385,15 +404,16 @@ class DatasetGenerator:
         # Split into chunks for multiprocessing
         total_len = len(next(iter(df_dict.values())))
         chunk_size = total_len // self.n_jobs
-        chunks = [(i * chunk_size, (i + 1) * chunk_size if i < self.n_jobs - 1 else total_len) 
+        chunks = [(str(self.data_dir), self.assets, model_path, i * chunk_size, (i + 1) * chunk_size if i < self.n_jobs - 1 else total_len, stage) 
                   for i in range(self.n_jobs)]
         
         self.logger.info(f"Step 4: Spawning {self.n_jobs} workers to process {total_len} bars...")
         inference_start = time.time()
         
+        # Use starmap to pass arguments
         with multiprocessing.Pool(self.n_jobs) as pool:
-            worker_func = partial(self.run_inference_chunk, model_path, df_dict, precomputed, stage=stage)
-            results = pool.starmap(worker_func, chunks)
+            # We don't use partial anymore, we packed everything into chunks
+            results = pool.starmap(DatasetGenerator.run_inference_chunk, chunks)
             
         self.logger.info(f"Step 5: Inference and Labeling complete in {time.time() - inference_start:.2f}s")
         
