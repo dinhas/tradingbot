@@ -78,14 +78,18 @@ def run_pipeline():
     logger.info("="*60)
     
     try:
-        # Check if Alpha model exists
-        if not ALPHA_MODEL.exists():
-            logger.error(f"Alpha model not found at {ALPHA_MODEL}. Cannot generate dataset.")
-            return
+        # Check if dataset already exists
+        if DATASET_PATH.exists():
+            logger.info(f"Dataset found at {DATASET_PATH}. Skipping generation.")
+        else:
+            # Check if Alpha model exists
+            if not ALPHA_MODEL.exists():
+                logger.error(f"Alpha model not found at {ALPHA_MODEL}. Cannot generate dataset.")
+                return
 
-        generator = DatasetGenerator(data_dir=str(DATA_DIR))
-        generator.run(model_path=str(ALPHA_MODEL), output_path=str(DATASET_PATH))
-        logger.info("Step 2 Complete.")
+            generator = DatasetGenerator(data_dir=str(DATA_DIR))
+            generator.run(model_path=str(ALPHA_MODEL), output_path=str(DATASET_PATH))
+            logger.info("Step 2 Complete.")
     except Exception as e:
         logger.error(f"Error in Step 2 (Dataset Gen): {e}")
         import traceback
