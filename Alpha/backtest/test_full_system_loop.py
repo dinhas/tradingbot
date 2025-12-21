@@ -92,5 +92,40 @@ class TestFullSystemLoop(unittest.TestCase):
             self.assertTrue(is_approved)
             self.assertEqual(prob, 0.6)
 
+    def test_run_backtest_integration(self):
+        """Test that run_backtest integration correctly captures blocked trades"""
+        with (unittest.mock.patch('Alpha.backtest.backtest_full_system.PPO.load') as mock_ppo_load,
+              unittest.mock.patch('Alpha.backtest.backtest_full_system.load_tradeguard_model') as mock_guard_load):
+            
+            # Mock Alpha model to always signal direction 1 for EURUSD
+            mock_alpha = unittest.mock.Mock()
+            # Alpha returns 5 outputs for Stage 1. Let's say [1.0, 0, 0, 0, 0]
+            mock_alpha.predict.return_value = (np.array([1.0, 0.0, 0.0, 0.0, 0.0]), None)
+            
+            # Mock Risk model to return valid action
+            mock_risk = unittest.mock.Mock()
+            mock_risk.predict.return_value = (np.array([1.0, 1.0, 1.0]), None) # sl, tp, risk (0.8+0.2=1.0)
+            
+            mock_ppo_load.side_effect = [mock_alpha, mock_risk]
+            
+            # Mock TradeGuard to always block (prob 0.1, threshold 0.5)
+            mock_guard_model = unittest.mock.Mock()
+            mock_guard_model.predict.return_value = np.array([0.1])
+            mock_guard_load.return_value = (mock_guard_model, {'threshold': 0.5})
+            
+            bt = FullSystemBacktest(
+                "dummy_alpha", "dummy_risk", "dummy_guard", "dummy_meta",
+                data_dir=self.data_dir
+            )
+            
+            # Run for a few steps
+            bt.env.max_steps = 205 # Env starts at 200 after warmup
+            bt.run_backtest(episodes=1)
+            
+            # Check if blocked_trades has entries
+            self.assertGreater(len(bt.blocked_trades), 0)
+            self.assertEqual(bt.blocked_trades[0]['asset'], 'EURUSD')
+            self.assertEqual(bt.blocked_trades[0]['prob'], 0.1)
+
 if __name__ == "__main__":
     unittest.main()
