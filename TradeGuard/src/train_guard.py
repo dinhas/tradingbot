@@ -1,5 +1,7 @@
 import pandas as pd
 from pathlib import Path
+import lightgbm as lgb
+from sklearn.metrics import roc_auc_score
 
 class DataLoader:
     def __init__(self, file_path: str):
@@ -62,3 +64,75 @@ class DataLoader:
         tune_sub_df = df[df.index >= split_date]
         
         return train_sub_df, tune_sub_df
+
+class ModelTrainer:
+    def __init__(self):
+        pass
+
+    def optimize_hyperparameters(self, train_df: pd.DataFrame, tune_df: pd.DataFrame) -> dict:
+        """
+        Performs hyperparameter tuning using the provided training and tuning sets.
+        
+        Args:
+            train_df (pd.DataFrame): Internal training set.
+            tune_df (pd.DataFrame): Internal tuning set.
+            
+        Returns:
+            dict: Best hyperparameters.
+        """
+        # Prepare datasets
+        # Assuming 'label' is the target column
+        X_train = train_df.drop(columns=['label'])
+        y_train = train_df['label']
+        X_tune = tune_df.drop(columns=['label'])
+        y_tune = tune_df['label']
+        
+        lgb_train = lgb.Dataset(X_train, label=y_train)
+        lgb_tune = lgb.Dataset(X_tune, label=y_tune, reference=lgb_train)
+        
+        # Define parameter grid
+        param_grid = [
+            {'num_leaves': 31, 'learning_rate': 0.05, 'feature_fraction': 0.9},
+            {'num_leaves': 63, 'learning_rate': 0.05, 'feature_fraction': 0.9},
+            {'num_leaves': 31, 'learning_rate': 0.01, 'feature_fraction': 0.8},
+        ]
+        
+        best_score = -float('inf')
+        best_params = {}
+        
+        for params in param_grid:
+            # Add static params
+            current_params = params.copy()
+            current_params.update({
+                'objective': 'binary',
+                'metric': 'auc',
+                'boosting_type': 'gbdt',
+                'verbose': -1,
+                'seed': 42
+            })
+            
+            # Train with early stopping
+            model = lgb.train(
+                current_params,
+                lgb_train,
+                num_boost_round=100,
+                valid_sets=[lgb_tune],
+                callbacks=[
+                    lgb.early_stopping(stopping_rounds=10),
+                    lgb.log_evaluation(0)
+                ]
+            )
+            
+            # Evaluate (using the best iteration)
+            preds = model.predict(X_tune, num_iteration=model.best_iteration)
+            try:
+                score = roc_auc_score(y_tune, preds)
+            except ValueError:
+                # Handle cases where only one class is present in y_tune
+                score = 0.5
+            
+            if score > best_score:
+                best_score = score
+                best_params = current_params
+        
+        return best_params
