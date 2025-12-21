@@ -41,3 +41,24 @@ class DataLoader:
         val_df = df[df.index >= split_date]
         
         return train_df, val_df
+
+    def get_internal_tuning_split(self, df: pd.DataFrame):
+        """
+        Splits the development set into internal training and tuning sets.
+        
+        Splitting Logic:
+        - Internal Training: 2016-01-01 to 2021-12-31
+        - Internal Tuning: 2022-01-01 to 2023-12-31
+        
+        Args:
+            df (pd.DataFrame): The development set (2016-2023).
+            
+        Returns:
+            tuple: (train_sub_df, tune_sub_df)
+        """
+        split_date = pd.Timestamp('2022-01-01')
+        
+        train_sub_df = df[df.index < split_date]
+        tune_sub_df = df[df.index >= split_date]
+        
+        return train_sub_df, tune_sub_df
