@@ -9,7 +9,7 @@
 - [x] Task: Conductor - User Manual Verification 'Feature Engineering & Parity' (Protocol in workflow.md) 5778811
 
 ## Phase 3: Integrated Backtest Loop
-- [ ] Task: Modify `run_backtest` to include TradeGuard filtering
+- [x] Task: Modify `run_backtest` to include TradeGuard filtering 37facd6
     - [ ] Write tests to verify that trades are blocked when probability is below threshold
     - [ ] Integrate `evaluate_tradeguard` into the main execution loop
 - [ ] Task: Conductor - User Manual Verification 'Integrated Backtest Loop' (Protocol in workflow.md)
