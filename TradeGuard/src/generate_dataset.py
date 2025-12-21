@@ -37,6 +37,8 @@ class DatasetGenerationEnv(TradingEnv):
         self.guard_feature_engine = feature_engine
         self.precomputed_features = precomputed_features
         self.last_action = None
+        # Track signal history for features 3 & 4
+        self.asset_signal_history = {asset: [] for asset in self.assets}
 
     def _get_current_timestamp(self):
         asset = self.assets[0]
@@ -52,11 +54,41 @@ class DatasetGenerationEnv(TradingEnv):
         
         for asset, act in actions.items():
             direction = act['direction']
+            # Update signal history for features 3 & 4
+            self.asset_signal_history[asset].append(direction)
+            if len(self.asset_signal_history[asset]) > 20:
+                self.asset_signal_history[asset].pop(0)
+
             if direction != 0:
                 self._record_signal(asset, direction, act, current_prices[asset], atrs[asset])
         
         # Execute actual trades in the base environment (manages real positions/equity)
         super()._execute_trades(actions)
+
+    def _calculate_persistence_reversal(self, asset, current_direction):
+        history = self.asset_signal_history[asset]
+        if len(history) < 2:
+            return 1.0, 0.0
+            
+        # Persistence: Count consecutive signals of same direction backwards
+        count = 0
+        for sig in reversed(history[:-1]): # Exclude current
+            if sig == current_direction:
+                count += 1
+            else:
+                break
+        persistence = count + 1.0
+        
+        # Reversal: Did we flip from -1 to 1 or 1 to -1?
+        # Check last non-zero signal
+        prev_signal = 0
+        for sig in reversed(history[:-1]):
+            if sig != 0:
+                prev_signal = sig
+                break
+        
+        reversal = 1.0 if prev_signal != 0 and prev_signal != current_direction else 0.0
+        return persistence, reversal
 
     def _record_signal(self, asset, direction, act, price, atr):
         """Records a signal for TradeGuard dataset by simulating a virtual trade outcome."""
@@ -93,8 +125,13 @@ class DatasetGenerationEnv(TradingEnv):
             else:
                 base_idx = asset_idx * 4
             
+            persistence, reversal = self._calculate_persistence_reversal(asset, direction)
+            
             recent_trades = [{'pnl': t['net_pnl']} for t in self.all_trades[-10:]]
             total_exposure = sum(pos['size'] for pos in self.positions.values() if pos is not None)
+            
+            # Calculate dynamic position value (Group E)
+            pos_size_val = self.equity * act['size'] * 0.5
             
             portfolio_state = {
                 'equity': self.equity,
@@ -104,9 +141,9 @@ class DatasetGenerationEnv(TradingEnv):
                 'recent_trades': recent_trades,
                 'asset_action_raw': self.last_action[base_idx] if self.last_action is not None else 0,
                 'asset_recent_actions': [self.last_action[base_idx]] * 5 if self.last_action is not None else [0]*5,
-                'asset_signal_persistence': 1.0,
-                'asset_signal_reversal': 0.0,
-                'position_value': position_size if (position_size := (self.equity * act['size'] * 0.5)) > 0 else 0
+                'asset_signal_persistence': persistence,
+                'asset_signal_reversal': reversal,
+                'position_value': pos_size_val if pos_size_val > 0 else 0
             }
             
             trade_info = {
