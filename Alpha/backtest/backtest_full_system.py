@@ -21,7 +21,7 @@ if not hasattr(np, "_core"):
 
 from stable_baselines3 import PPO
 from Alpha.backtest.backtest_combined import CombinedBacktest
-from Alpha.backtest.backtest import BacktestMetrics, FullSystemMetrics
+from Alpha.backtest.backtest import BacktestMetrics, FullSystemMetrics, generate_full_system_charts
 from Alpha.backtest.tradeguard_feature_builder import TradeGuardFeatureBuilder
 
 logger = logging.getLogger(__name__)

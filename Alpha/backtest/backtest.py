@@ -626,6 +626,133 @@ def create_detailed_trade_chart(df_trades, stage, output_dir, timestamp):
     logger.info(f"✅ Saved detailed trade analysis to {detail_file}")
 
 
+def generate_full_system_charts(metrics_tracker, per_asset, stage, output_dir, timestamp):
+    """
+    Generate comprehensive visualization suite for the Three-Layer System.
+    Includes Shadow Portfolio comparison and TradeGuard analysis.
+    """
+    # 1. Main Comparative Analysis Chart
+    fig = plt.figure(figsize=(20, 16))
+    gs = fig.add_gridspec(4, 3, hspace=0.3, wspace=0.3)
+    
+    times = metrics_tracker.timestamps
+    equity = np.array(metrics_tracker.equity_curve)
+    shadow_equity = np.array(metrics_tracker.shadow_equity_curve)
+    
+    # --- Plot 1: Equity Curve Comparison (Full System vs. Baseline) ---
+    ax1 = fig.add_subplot(gs[0, :2])
+    ax1.plot(times, equity, linewidth=2.5, color='#2E86AB', label='Full System (With TradeGuard)', zorder=3)
+    if len(shadow_equity) == len(times):
+        ax1.plot(times, shadow_equity, linewidth=2.0, color='#A23B72', alpha=0.7, label='Baseline (Shadow Portfolio)', linestyle='--')
+    
+    ax1.set_ylabel('Equity ($)', fontsize=11, fontweight='bold')
+    ax1.set_title(f'Equity Curve Comparison: Full System vs. Baseline', fontsize=13, fontweight='bold')
+    ax1.legend(loc='upper left', fontsize=10)
+    ax1.grid(True, alpha=0.3)
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
+
+    # --- Plot 2: TradeGuard Probability Distribution (Approved vs. Blocked) ---
+    ax2 = fig.add_subplot(gs[0, 2])
+    approved_probs = [t.get('prob', 0.5) for t in metrics_tracker.trades if 'prob' in t]
+    blocked_probs = [t.get('prob', 0.5) for t in metrics_tracker.blocked_trades]
+    
+    if approved_probs:
+        ax2.hist(approved_probs, bins=20, alpha=0.6, color='green', label='Approved', edgecolor='black')
+    if blocked_probs:
+        ax2.hist(blocked_probs, bins=20, alpha=0.6, color='red', label='Blocked', edgecolor='black')
+    
+    # Threshold line
+    threshold = 0.5
+    if metrics_tracker.blocked_trades:
+        threshold = metrics_tracker.blocked_trades[0].get('threshold', 0.5)
+    
+    ax2.axvline(x=threshold, color='black', linestyle='--', label='Threshold')
+    ax2.set_xlabel('TradeGuard Probability', fontsize=10, fontweight='bold')
+    ax2.set_title('TradeGuard Probability Distribution', fontsize=12, fontweight='bold')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    # --- Plot 3: Block Quality Timeline ---
+    ax3 = fig.add_subplot(gs[1, :])
+    if metrics_tracker.blocked_trades:
+        bt_df = pd.DataFrame(metrics_tracker.blocked_trades)
+        # Good blocks (avoided loss) = Green, Bad blocks (missed profit) = Red
+        colors = ['#27AE60' if p <= 0 else '#E74C3C' for p in bt_df['theoretical_pnl']]
+        sizes = [abs(p) * 5000 for p in bt_df['theoretical_pnl']]
+        ax3.scatter(bt_df['timestamp'], bt_df['theoretical_pnl'], s=sizes, c=colors, alpha=0.6, edgecolor='black')
+        ax3.axhline(y=0, color='black', linestyle='-', linewidth=1)
+        ax3.set_ylabel('Avoided PnL (Ratio)', fontsize=10, fontweight='bold')
+        ax3.set_title('TradeGuard Block Quality Timeline (Bubble size = magnitude)', fontsize=12, fontweight='bold')
+        ax3.grid(True, alpha=0.3)
+        ax3.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+        plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45)
+
+    # --- Plot 4: Per-Asset Approval Rates ---
+    ax4 = fig.add_subplot(gs[2, 0])
+    approved_asset_data = [{'asset': t['asset'], 'status': 'approved'} for t in metrics_tracker.trades]
+    blocked_asset_data = [{'asset': t['asset'], 'status': 'blocked'} for t in metrics_tracker.blocked_trades]
+    
+    if approved_asset_data or blocked_asset_data:
+        all_signals = pd.concat([pd.DataFrame(approved_asset_data), pd.DataFrame(blocked_asset_data)])
+        if not all_signals.empty:
+            counts = all_signals.groupby(['asset', 'status']).size().unstack(fill_value=0)
+            if 'approved' in counts:
+                total_sigs = counts.sum(axis=1)
+                rates = counts['approved'] / total_sigs
+                rates.plot(kind='bar', ax=ax4, color='#3498DB', edgecolor='black', alpha=0.7)
+                ax4.set_title('Approval Rate by Asset', fontsize=11, fontweight='bold')
+                ax4.set_ylim(0, 1.1)
+                ax4.grid(True, alpha=0.3, axis='y')
+
+    # --- Plot 5: Time-of-Day Decision Analysis ---
+    ax5 = fig.add_subplot(gs[2, 1:])
+    if approved_asset_data or blocked_asset_data:
+        all_signals['hour'] = pd.to_datetime([t['timestamp'] for t in metrics_tracker.trades] + 
+                                           [t['timestamp'] for t in metrics_tracker.blocked_trades]).hour
+        hourly_stats = all_signals.groupby(['hour', 'status']).size().unstack(fill_value=0)
+        hourly_stats.plot(kind='bar', stacked=True, ax=ax5, color=['#2ECC71', '#E74C3C'], alpha=0.7, edgecolor='black')
+        ax5.set_title('Decision Volume by Hour (Approved vs. Blocked)', fontsize=11, fontweight='bold')
+        ax5.grid(True, alpha=0.3, axis='y')
+
+    plt.suptitle(f'Three-Layer System Analysis - Stage {stage}', fontsize=16, fontweight='bold', y=0.99)
+    chart_file = output_dir / f"full_system_analysis_stage{stage}_{timestamp}.png"
+    plt.savefig(chart_file, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    # 2. Detail Chart for TradeGuard Metrics
+    create_tradeguard_performance_charts(metrics_tracker, stage, output_dir, timestamp)
+
+
+def create_tradeguard_performance_charts(metrics_tracker, stage, output_dir, timestamp):
+    """Detailed Performance metrics for TradeGuard layer"""
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # Net Value Add vs. Probability
+    ax1 = axes[0]
+    if metrics_tracker.blocked_trades:
+        bt_df = pd.DataFrame(metrics_tracker.blocked_trades)
+        ax1.scatter(bt_df['prob'], bt_df['theoretical_pnl'], alpha=0.5)
+        ax1.axhline(y=0, color='black', linestyle='--')
+        ax1.set_xlabel('TradeGuard Probability')
+        ax1.set_ylabel('Theoretical PnL')
+        ax1.set_title('Block Quality vs. Confidence Score')
+        ax1.grid(True, alpha=0.3)
+    
+    # Block Accuracy Pie
+    ax2 = axes[1]
+    tg_metrics = metrics_tracker.calculate_tradeguard_metrics()
+    if tg_metrics and tg_metrics.get('total_blocked', 0) > 0:
+        labels = [f"Good Blocks ({tg_metrics['good_blocks']})", f"Bad Blocks ({tg_metrics['bad_blocks']})"]
+        sizes = [tg_metrics['good_blocks'], tg_metrics['bad_blocks']]
+        ax2.pie(sizes, labels=labels, autopct='%1.1f%%', colors=['#2ECC71', '#E74C3C'], startangle=90, wedgeprops={'edgecolor': 'white'})
+        ax2.set_title(f"TradeGuard Filtering Accuracy (Total Blocked: {tg_metrics['total_blocked']})")
+    
+    plt.tight_layout()
+    chart_file = output_dir / f"tradeguard_performance_stage3_{timestamp}.png"
+    plt.savefig(chart_file, dpi=150, bbox_inches='tight')
+    plt.close()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Backtest RL Trading Bot")
