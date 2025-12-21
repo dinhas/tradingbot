@@ -291,6 +291,10 @@ class LightweightDatasetEnv:
         # Update peak equity
         self.peak_equity = max(self.peak_equity, self.equity)
         
+        # If truncated, return zeros observation (episode is over, obs won't be used)
+        if truncated:
+            return np.zeros(140, dtype=np.float32), 0.0, terminated, truncated, {}
+        
         return self._get_observation(), 0.0, terminated, truncated, {}
     
     def _get_observation(self):
@@ -785,24 +789,33 @@ class DatasetGenerator:
         stage = 1 if action_dim == 5 else (2 if action_dim == 10 else 3)
         del model # Free memory
         
-        # Split into chunks for multiprocessing
         total_len = len(next(iter(df_dict.values())))
-        chunk_size = total_len // self.n_jobs
-        chunks = [(str(self.data_dir), self.assets, model_path, i * chunk_size, (i + 1) * chunk_size if i < self.n_jobs - 1 else total_len, stage) 
-                  for i in range(self.n_jobs)]
-        
-        self.logger.info(f"Step 4: Spawning {self.n_jobs} workers to process {total_len} bars...")
         inference_start = time.time()
         
-        # Use starmap to pass arguments
-        with multiprocessing.Pool(self.n_jobs) as pool:
-            # We don't use partial anymore, we packed everything into chunks
-            results = pool.starmap(DatasetGenerator.run_inference_chunk, chunks)
+        # SINGLE-THREADED MODE (for Kaggle or when n_jobs=1)
+        if self.n_jobs == 1:
+            self.logger.info(f"Step 4: Processing {total_len} bars in SINGLE-THREADED mode...")
+            
+            # Run the worker function directly without multiprocessing
+            all_signals = DatasetGenerator.run_inference_chunk(
+                str(self.data_dir), self.assets, model_path, 0, total_len, stage
+            )
+        else:
+            # MULTI-THREADED MODE
+            chunk_size = total_len // self.n_jobs
+            chunks = [(str(self.data_dir), self.assets, model_path, i * chunk_size, (i + 1) * chunk_size if i < self.n_jobs - 1 else total_len, stage) 
+                      for i in range(self.n_jobs)]
+            
+            self.logger.info(f"Step 4: Spawning {self.n_jobs} workers to process {total_len} bars...")
+            
+            # Use starmap to pass arguments
+            with multiprocessing.Pool(self.n_jobs) as pool:
+                results = pool.starmap(DatasetGenerator.run_inference_chunk, chunks)
+                
+            # Combine results from all workers
+            all_signals = [sig for chunk_signals in results for sig in chunk_signals]
             
         self.logger.info(f"Step 5: Inference and Labeling complete in {time.time() - inference_start:.2f}s")
-        
-        # Combine results
-        all_signals = [sig for chunk_signals in results for sig in chunk_signals]
         self.logger.info(f"Step 6: Generated {len(all_signals)} total signals.")
         
         self.save_dataset(all_signals, output_path)
@@ -938,19 +951,33 @@ class FeatureEngine:
 
 if __name__ == "__main__":
     import argparse
-    # Use spawn for CUDA compatibility and cross-platform consistency
-    try:
-        multiprocessing.set_start_method('spawn', force=True)
-    except RuntimeError:
-        pass
+    import platform
+    
+    # Use 'fork' on Linux (Kaggle/Colab), 'spawn' on Windows
+    # 'fork' works better in containerized environments like Kaggle
+    if platform.system() != 'Windows':
+        try:
+            multiprocessing.set_start_method('fork', force=True)
+        except RuntimeError:
+            pass
+    else:
+        try:
+            multiprocessing.set_start_method('spawn', force=True)
+        except RuntimeError:
+            pass
 
     parser = argparse.ArgumentParser(description="TradeGuard Dataset Generator")
     parser.add_argument("--model", type=str, default="Alpha/models/checkpoints/8.03.zip", help="Path to Alpha PPO model")
     parser.add_argument("--data", type=str, default="TradeGuard/data", help="Directory containing asset parquet files")
     parser.add_argument("--output", type=str, default="TradeGuard/data/guard_dataset.parquet", help="Output Parquet file")
-    parser.add_argument("--jobs", type=int, default=-1, help="Number of parallel jobs")
+    parser.add_argument("--jobs", type=int, default=-1, help="Number of parallel jobs (-1 for all cores, 1 for single-threaded)")
+    parser.add_argument("--single", action="store_true", help="Force single-threaded mode (use this for Kaggle)")
     
     args = parser.parse_args()
     
-    generator = DatasetGenerator(data_dir=args.data, n_jobs=args.jobs)
+    # Force single-threaded if --single is specified
+    n_jobs = 1 if args.single else args.jobs
+    
+    generator = DatasetGenerator(data_dir=args.data, n_jobs=n_jobs)
     generator.run(args.model, args.output)
+    
