@@ -1,3 +1,8 @@
+import warnings
+# Suppress sklearn deprecation warnings (is_sparse)
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='sklearn')
+warnings.filterwarnings('ignore', message='is_sparse is deprecated')
+
 import pandas as pd
 from pathlib import Path
 import lightgbm as lgb
@@ -8,6 +13,7 @@ try:
     from visualization import ModelVisualizer
 except ImportError:
     from TradeGuard.src.visualization import ModelVisualizer
+
 
 class DataLoader:
     def __init__(self, file_path: str):

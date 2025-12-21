@@ -1,3 +1,8 @@
+import warnings
+# Suppress sklearn deprecation warnings (is_sparse)
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='sklearn')
+warnings.filterwarnings('ignore', message='is_sparse is deprecated')
+
 import os
 import sys
 import logging
