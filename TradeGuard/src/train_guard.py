@@ -2,10 +2,12 @@ import pandas as pd
 from pathlib import Path
 import lightgbm as lgb
 from sklearn.metrics import roc_auc_score
+import logging
 
 class DataLoader:
     def __init__(self, file_path: str):
         self.file_path = file_path
+
 
     def get_train_val_split(self):
         """
@@ -135,4 +137,5 @@ class ModelTrainer:
                 best_score = score
                 best_params = current_params
         
+        logging.info(f"Best parameters found: {best_params}")
         return best_params
