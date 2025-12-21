@@ -223,7 +223,7 @@ class LightweightDatasetEnv:
     def _cache_data_arrays(self):
         """Cache DataFrame columns as numpy arrays for performance."""
         first_asset = list(self.df_dict.keys())[0]
-        self.max_steps = len(self.df_dict[first_asset]) - 1
+        self.max_steps = len(self.df_dict[first_asset]) - 2  # -2 to ensure we never hit boundary
         
         self.close_arrays = {}
         self.low_arrays = {}
@@ -301,6 +301,11 @@ class LightweightDatasetEnv:
         """Build a simple observation vector for the model."""
         # Build a 140-feature observation (simplified version)
         obs = np.zeros(140, dtype=np.float32)
+        
+        # Bounds check
+        arr_len = len(self.close_arrays[self.assets[0]])
+        if self.current_step >= arr_len:
+            return obs  # Return zeros if out of bounds
         
         for i, asset in enumerate(self.assets):
             base_idx = i * 25
@@ -432,9 +437,13 @@ class LightweightDatasetEnv:
             0.0   # pnl sum placeholder
         ]
         
-        # Get precomputed market features (Groups B, C, D, F)
+        # Get precomputed market features (Groups B, C, D, F) with bounds check
         if self.precomputed_features and asset in self.precomputed_features:
-            f_market = self.precomputed_features[asset][self.current_step].tolist()
+            arr = self.precomputed_features[asset]
+            if self.current_step < len(arr):
+                f_market = arr[self.current_step].tolist()
+            else:
+                f_market = [0.0] * 40
         else:
             f_market = [0.0] * 40
             
@@ -452,8 +461,12 @@ class LightweightDatasetEnv:
         # Combine features
         all_features = f_a + f_market[:30] + f_e + f_market[30:]
         
-        # Get timestamp
-        timestamp = self.df_dict[asset].index[self.current_step]
+        # Get timestamp with bounds check
+        df = self.df_dict[asset]
+        if self.current_step < len(df):
+            timestamp = df.index[self.current_step]
+        else:
+            timestamp = df.index[-1]  # Use last available timestamp
         
         self.signals.append({
             'timestamp': timestamp,
