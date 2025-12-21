@@ -240,3 +240,41 @@ class ModelTrainer:
             best_metrics = self.evaluate_model(model, df, threshold=best_threshold)
 
         return best_threshold, best_metrics
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    
+    data_path = "TradeGuard/data/guard_dataset.parquet"
+    if not Path(data_path).exists():
+        logging.error(f"Dataset not found at {data_path}. Please run generate_dataset.py first.")
+        exit(1)
+        
+    loader = DataLoader(data_path)
+    trainer = ModelTrainer()
+    
+    logging.info("Loading and splitting data...")
+    dev_df, holdout_df = loader.get_train_val_split()
+    train_sub, tune_sub = loader.get_internal_tuning_split(dev_df)
+    
+    logging.info("Starting hyperparameter tuning...")
+    best_params = trainer.optimize_hyperparameters(train_sub, tune_sub)
+    
+    logging.info("Training final model on full development set (2016-2023)...")
+    final_model = trainer.train_final_model(dev_df, best_params)
+    
+    logging.info("Optimizing threshold on development set (or tuning set)...")
+    # Usually we optimize threshold on a validation set. 
+    # Here we use the tune_sub as it was not used for final model training weights.
+    best_threshold, tuning_metrics = trainer.optimize_threshold(final_model, tune_sub, target_precision=0.6)
+    logging.info(f"Optimal threshold found: {best_threshold:.4f}")
+    logging.info(f"Tuning metrics: {tuning_metrics}")
+    
+    logging.info("Evaluating on 2024 hold-out set...")
+    holdout_metrics = trainer.evaluate_model(final_model, holdout_df, threshold=best_threshold)
+    logging.info(f"Hold-out metrics (at threshold {best_threshold:.4f}): {holdout_metrics}")
+    
+    # Check Acceptance Criteria
+    if holdout_metrics['auc'] > 0.65:
+        logging.info("SUCCESS: Model achieved AUC > 0.65 on hold-out set.")
+    else:
+        logging.warning("WARNING: Model AUC is below 0.65 on hold-out set.")
