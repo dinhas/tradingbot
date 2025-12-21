@@ -20,11 +20,14 @@ class DataLoader:
         df = pd.read_parquet(self.file_path)
         
         # Ensure the index is a DatetimeIndex
-        # If it's not in the index, look for a 'date' column
+        # If it's not in the index, look for a 'date' or 'timestamp' column
         if not isinstance(df.index, pd.DatetimeIndex):
             if 'date' in df.columns:
                 df['date'] = pd.to_datetime(df['date'])
                 df.set_index('date', inplace=True)
+            elif 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df.set_index('timestamp', inplace=True)
             else:
                 # If no date column and no DatetimeIndex, this is an issue.
                 # However, for now we assume standard format.

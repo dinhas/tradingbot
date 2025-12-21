@@ -57,5 +57,27 @@ class TestTrainGuard(unittest.TestCase):
         # 2024 is a leap year (366 days)
         self.assertEqual(len(val_df), 366)
 
+    @patch('pandas.read_parquet')
+    def test_load_with_timestamp_column(self, mock_read_parquet):
+        """Test that data with 'timestamp' column is correctly handled."""
+        if self.DataLoader is None:
+            self.fail("DataLoader not implemented")
+            
+        dates = pd.date_range(start='2023-01-01', periods=10, freq='D')
+        mock_df = pd.DataFrame({
+            'timestamp': dates,
+            'val': range(10)
+        })
+        # Reset index so it's a RangeIndex, mimicking the parquet file
+        
+        mock_read_parquet.return_value = mock_df
+        
+        loader = self.DataLoader(file_path="dummy_ts.parquet")
+        train_df, val_df = loader.get_train_val_split()
+        
+        self.assertTrue(isinstance(train_df.index, pd.DatetimeIndex))
+        self.assertEqual(len(train_df), 10) # All are 2023
+
+
 if __name__ == '__main__':
     unittest.main()
