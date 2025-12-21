@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import multiprocessing
+import time
 from functools import partial
 from pathlib import Path
 import pandas as pd
@@ -161,22 +162,28 @@ class DatasetGenerator:
         return logging.getLogger("TradeGuard.DatasetGenerator")
 
     def load_data(self):
+        start_time = time.time()
         data = {}
         for asset in self.assets:
             for suffix in ["_5m.parquet", "_5m_2025.parquet"]:
                 path = self.data_dir / f"{asset}{suffix}"
                 if path.exists():
-                    self.logger.info(f"Loading {asset} from {path}")
+                    self.logger.info(f"Loading {asset} from {path}...")
                     data[asset] = pd.read_parquet(path)
                     break
+        
+        if data:
+            self.logger.info(f"Step 1: Data loading complete in {time.time() - start_time:.2f}s")
         return data
 
     def precompute_market_features(self, df_dict):
         """Precomputes Groups B, C, D, F for all assets using vectorized operations."""
-        self.logger.info("Precomputing market features (B, C, D, F) for all assets...")
+        start_time = time.time()
+        self.logger.info("Step 2: Precomputing 40 market features (vectorized)...")
         precomputed = {}
         
         for asset, df in df_dict.items():
+            asset_start = time.time()
             self.logger.info(f"Vectorizing {asset} features...")
             
             # Common components
@@ -275,11 +282,14 @@ class DatasetGenerator:
             ], axis=1).fillna(0).values
             
             precomputed[asset] = combined
+            self.logger.info(f"Finished {asset} vectorization in {time.time() - asset_start:.2f}s")
             
+        self.logger.info(f"Step 2 Complete: Market features precomputed in {time.time() - start_time:.2f}s")
         return precomputed
 
     def run_inference_chunk(self, model_path, df_dict, precomputed, start_idx, end_idx, stage):
         """Worker function for multiprocessing."""
+        chunk_start = time.time()
         # Subset the data
         chunk_df_dict = {asset: df.iloc[start_idx:end_idx] for asset, df in df_dict.items()}
         chunk_precomputed = {asset: arr[start_idx:end_idx] for asset, arr in precomputed.items()}
@@ -296,15 +306,23 @@ class DatasetGenerator:
         
         obs, _ = env.reset()
         done = False
+        steps = 0
+        total_steps = end_idx - start_idx
+        
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             env.set_last_action(action)
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
+            steps += 1
+            if steps % 10000 == 0:
+                print(f"Worker Processed: {steps}/{total_steps} bars ({(steps/total_steps)*100:.1f}%)")
             
+        print(f"Worker Finished {total_steps} bars in {time.time() - chunk_start:.2f}s")
         return env.signals
 
     def run(self, model_path, output_path):
+        run_start = time.time()
         df_dict = self.load_data()
         if not df_dict:
             if DataFetcherTraining:
@@ -321,6 +339,7 @@ class DatasetGenerator:
         precomputed = self.precompute_market_features(df_dict)
         
         # Detect stage
+        self.logger.info("Step 3: Loading model and detecting stage...")
         model = PPO.load(model_path, device='cpu')
         action_dim = model.action_space.shape[0]
         stage = 1 if action_dim == 5 else (2 if action_dim == 10 else 3)
@@ -332,17 +351,21 @@ class DatasetGenerator:
         chunks = [(i * chunk_size, (i + 1) * chunk_size if i < self.n_jobs - 1 else total_len) 
                   for i in range(self.n_jobs)]
         
-        self.logger.info(f"Spawning {self.n_jobs} workers to process {total_len} bars...")
+        self.logger.info(f"Step 4: Spawning {self.n_jobs} workers to process {total_len} bars...")
+        inference_start = time.time()
         
         with multiprocessing.Pool(self.n_jobs) as pool:
             worker_func = partial(self.run_inference_chunk, model_path, df_dict, precomputed, stage=stage)
             results = pool.starmap(worker_func, chunks)
             
+        self.logger.info(f"Step 5: Inference and Labeling complete in {time.time() - inference_start:.2f}s")
+        
         # Combine results
         all_signals = [sig for chunk_signals in results for sig in chunk_signals]
-        self.logger.info(f"Generated {len(all_signals)} total signals.")
+        self.logger.info(f"Step 6: Generated {len(all_signals)} total signals.")
         
         self.save_dataset(all_signals, output_path)
+        self.logger.info(f"TOTAL RUNTIME: {time.time() - run_start:.2f}s")
 
     def save_dataset(self, signals, output_path):
         if not signals: return
