@@ -22,11 +22,12 @@
 - [x] Task: Conductor - User Manual Verification 'Virtual Trade Simulation' (Protocol in workflow.md) c72389e
 
 
-## Phase 5: Metrics & Comparative Analysis
-- [ ] Task: Extend metrics engine for TradeGuard and Shadow Portfolio
-    - [ ] Write tests for Net Value-Add and Block Accuracy calculations
-    - [ ] Implement comparative metrics (Full System vs. Baseline)
-- [ ] Task: Conductor - User Manual Verification 'Metrics & Comparative Analysis' (Protocol in workflow.md)
+## Phase 5: Metrics & Comparative Analysis [checkpoint: 3042168]
+- [x] Task: Extend metrics engine for TradeGuard and Shadow Portfolio 3042168
+    - [x] Write tests for Net Value-Add and Block Accuracy calculations 3042168
+    - [x] Implement comparative metrics (Full System vs. Baseline) 3042168
+- [x] Task: Conductor - User Manual Verification 'Metrics & Comparative Analysis' (Protocol in workflow.md) 3042168
+
 
 ## Phase 6: Reporting & Visualization
 - [ ] Task: Implement comprehensive visualization suite

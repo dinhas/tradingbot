@@ -21,7 +21,7 @@ if not hasattr(np, "_core"):
 
 from stable_baselines3 import PPO
 from Alpha.backtest.backtest_combined import CombinedBacktest
-from Alpha.backtest.backtest import BacktestMetrics
+from Alpha.backtest.backtest import BacktestMetrics, FullSystemMetrics
 from Alpha.backtest.tradeguard_feature_builder import TradeGuardFeatureBuilder
 
 logger = logging.getLogger(__name__)
@@ -161,8 +161,9 @@ class FullSystemBacktest(CombinedBacktest):
     def run_backtest(self, episodes=1):
         """
         Full integrated backtest loop with Alpha, Risk, and TradeGuard.
+        Tracks both Full System and Shadow Portfolio (Baseline).
         """
-        metrics_tracker = BacktestMetrics()
+        metrics_tracker = FullSystemMetrics()
         
         logger.info(f"Running {episodes} episodes with Full System...")
         
@@ -176,6 +177,11 @@ class FullSystemBacktest(CombinedBacktest):
             self.peak_equity = self.initial_equity
             self.env.equity = self.initial_equity
             self.env.peak_equity = self.initial_equity
+            
+            # Reset Shadow Portfolio
+            self.shadow_equity = self.initial_equity
+            self.shadow_peak_equity = self.initial_equity
+            self.active_virtual_trades = [] # Trades that are active in shadow but blocked in real
             
             # Reset histories
             for asset in self.env.assets:
@@ -250,9 +256,15 @@ class FullSystemBacktest(CombinedBacktest):
                             combined_actions[asset] = act_info
                         else:
                             # BLOCKED by TradeGuard
-                            self._simulate_blocked_trade(asset, direction, act_info, prob)
+                            blocked_record = self._simulate_blocked_trade(asset, direction, act_info, prob)
+                            metrics_tracker.add_blocked_trade(blocked_record)
+                            
+                            # Update Shadow Portfolio (compounding PnL)
+                            # theoretical_pnl is a ratio (e.g. 0.01 for 1%)
+                            self.shadow_equity *= (1 + blocked_record['theoretical_pnl'])
                 
                 # 4. Execute approved trades in environment
+                prev_real_equity = self.env.equity
                 self._execute_approved_trades(combined_actions)
                 
                 # 5. Advance Environment
@@ -265,6 +277,14 @@ class FullSystemBacktest(CombinedBacktest):
                     'equity': self.env.equity,
                     'timestamp': self.env._get_current_timestamp()
                 }
+                
+                # 6. Synchronize Shadow Portfolio for approved trades
+                # The shadow portfolio also executed these trades.
+                # We apply the same PnL ratio as seen in the real portfolio.
+                real_pnl_ratio = (self.env.equity - prev_real_equity) / prev_real_equity if prev_real_equity > 0 else 0
+                self.shadow_equity *= (1 + real_pnl_ratio)
+                
+                self.shadow_peak_equity = max(self.shadow_peak_equity, self.shadow_equity)
                 
                 # Advance tracking
                 obs = self.env._validate_observation(self.env._get_observation())
@@ -282,14 +302,17 @@ class FullSystemBacktest(CombinedBacktest):
                         metrics_tracker.add_trade(trade)
                 
                 metrics_tracker.add_equity_point(info['timestamp'], info['equity'])
+                metrics_tracker.add_shadow_equity_point(info['timestamp'], self.shadow_equity)
+                
                 step_count += 1
                 
                 if step_count % 1000 == 0:
-                    logger.info(f"Step {step_count}, Equity: ${self.equity:.2f}")
+                    logger.info(f"Step {step_count}, Equity: ${self.equity:.2f}, Shadow: ${self.shadow_equity:.2f}")
                     
-            logger.info(f"Episode {episode + 1}/{episodes} complete. Steps: {step_count}, Final Equity: ${self.equity:.2f}")
+            logger.info(f"Episode {episode + 1}/{episodes} complete. Steps: {step_count}, Final Equity: ${self.equity:.2f}, Shadow: ${self.shadow_equity:.2f}")
             
         return metrics_tracker
+
 
     def _execute_approved_trades(self, combined_actions):
         """Helper to execute approved trades and close others"""
@@ -355,7 +378,7 @@ class FullSystemBacktest(CombinedBacktest):
             # Simulate outcome using peek-ahead
             outcome = self.env._simulate_trade_outcome_with_timing(asset)
             
-            self.blocked_trades.append({
+            record = {
                 'timestamp': self.env._get_current_timestamp(),
                 'asset': asset,
                 'direction': direction,
@@ -367,7 +390,9 @@ class FullSystemBacktest(CombinedBacktest):
                 'sl': self.env.positions[asset]['sl'],
                 'tp': self.env.positions[asset]['tp'],
                 'entry_price': price
-            })
+            }
+            self.blocked_trades.append(record)
+            return record
         finally:
             # Restore the actual environment position
             self.env.positions[asset] = real_pos

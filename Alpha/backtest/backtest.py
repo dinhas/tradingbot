@@ -59,38 +59,31 @@ class BacktestMetrics:
         
     def calculate_metrics(self):
         """Calculate all PRD metrics"""
-        if not self.trades:
-            logger.warning("No trades to analyze!")
-            return {}
-            
-        df_trades = pd.DataFrame(self.trades)
-        
-        # Use net_pnl if available, otherwise calculate it
-        if 'net_pnl' in df_trades.columns:
-            df_trades['final_pnl'] = df_trades['net_pnl']
-        else:
-            df_trades['final_pnl'] = df_trades['pnl'] - df_trades['fees']
-        
-        # Separate winning and losing trades based on net P&L
-        winning_trades = df_trades[df_trades['final_pnl'] > 0]
-        losing_trades = df_trades[df_trades['final_pnl'] < 0]
-        
-        gross_profit = winning_trades['final_pnl'].sum() if len(winning_trades) > 0 else 0
-        gross_loss = abs(losing_trades['final_pnl'].sum()) if len(losing_trades) > 0 else 0
-        
-        # PRIMARY METRIC: Profit Factor
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
-        
-        # Total Return
+        # Total Return (can be calculated without trades)
         initial_equity = self.equity_curve[0] if self.equity_curve else 1000
         final_equity = self.equity_curve[-1] if self.equity_curve else initial_equity
         total_return = (final_equity - initial_equity) / initial_equity
         
         # Max Drawdown
         equity_array = np.array(self.equity_curve)
-        running_max = np.maximum.accumulate(equity_array)
-        drawdown = (equity_array - running_max) / running_max
-        max_drawdown = drawdown.min()
+        if len(equity_array) > 0:
+            running_max = np.maximum.accumulate(equity_array)
+            drawdown = (equity_array - running_max) / running_max
+            max_drawdown = drawdown.min()
+        else:
+            max_drawdown = 0
+
+        if not self.trades:
+            logger.warning("No trades to analyze!")
+            return {
+                'total_return': total_return,
+                'max_drawdown': max_drawdown,
+                'final_equity': final_equity,
+                'initial_equity': initial_equity,
+                'total_trades': 0
+            }
+            
+        df_trades = pd.DataFrame(self.trades)
         
         # Sharpe Ratio (assuming 252 trading days, 5min candles)
         if len(self.equity_curve) > 1:
@@ -172,6 +165,76 @@ class BacktestMetrics:
             }
             
         return per_asset
+
+
+class FullSystemMetrics(BacktestMetrics):
+    """
+    Extends BacktestMetrics to handle TradeGuard specifics and Shadow Portfolio.
+    """
+    def __init__(self):
+        super().__init__()
+        self.blocked_trades = []
+        self.shadow_equity_curve = []
+        self.shadow_timestamps = []
+
+    def add_blocked_trade(self, trade_info):
+        """Add a trade that was blocked by TradeGuard"""
+        self.blocked_trades.append(trade_info)
+
+    def add_shadow_equity_point(self, timestamp, equity):
+        """Add equity snapshot for the Shadow Portfolio (Baseline)"""
+        self.shadow_timestamps.append(timestamp)
+        self.shadow_equity_curve.append(equity)
+
+    def calculate_tradeguard_metrics(self):
+        """Calculate TradeGuard-specific performance metrics"""
+        if not self.blocked_trades and not self.trades:
+            return {}
+
+        total_signals = len(self.trades) + len(self.blocked_trades)
+        approval_rate = len(self.trades) / total_signals if total_signals > 0 else 0
+
+        # Block Accuracy: How many blocked trades would have been losses?
+        good_blocks = sum(1 for t in self.blocked_trades if t['theoretical_pnl'] <= 0)
+        bad_blocks = sum(1 for t in self.blocked_trades if t['theoretical_pnl'] > 0)
+        block_accuracy = good_blocks / len(self.blocked_trades) if self.blocked_trades else 0
+
+        # Net Value-Add: (Sum of avoided losses) - (Sum of missed profits)
+        avoided_losses = sum(abs(t['theoretical_pnl']) for t in self.blocked_trades if t['theoretical_pnl'] <= 0)
+        missed_profits = sum(t['theoretical_pnl'] for t in self.blocked_trades if t['theoretical_pnl'] > 0)
+        net_value_add = avoided_losses - missed_profits
+
+        return {
+            'approval_rate': approval_rate,
+            'block_accuracy': block_accuracy,
+            'net_value_add_pct': net_value_add,
+            'total_blocked': len(self.blocked_trades),
+            'good_blocks': good_blocks,
+            'bad_blocks': bad_blocks,
+            'avoided_losses_pct': avoided_losses,
+            'missed_profits_pct': missed_profits
+        }
+
+    def calculate_metrics(self):
+        """Calculate base metrics plus TradeGuard and Shadow Portfolio metrics"""
+        # Call the base class method to get standard metrics
+        metrics = super().calculate_metrics()
+        
+        # TradeGuard metrics
+        tg_metrics = self.calculate_tradeguard_metrics()
+        metrics['tradeguard'] = tg_metrics
+        
+        # Shadow Portfolio (Baseline) Return
+        if self.shadow_equity_curve:
+            initial_shadow = self.shadow_equity_curve[0]
+            final_shadow = self.shadow_equity_curve[-1]
+            shadow_return = (final_shadow - initial_shadow) / initial_shadow
+            metrics['baseline_return'] = shadow_return
+            
+            # Net Value-Add over Baseline
+            metrics['net_value_add_vs_baseline'] = metrics.get('total_return', 0) - shadow_return
+            
+        return metrics
 
 
 def make_backtest_env(data_dir, stage):
