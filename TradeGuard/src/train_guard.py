@@ -1,8 +1,9 @@
 import pandas as pd
 from pathlib import Path
 import lightgbm as lgb
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_score
 import logging
+import numpy as np
 
 class DataLoader:
     def __init__(self, file_path: str):
@@ -139,3 +140,103 @@ class ModelTrainer:
         
         logging.info(f"Best parameters found: {best_params}")
         return best_params
+
+    def train_final_model(self, train_df: pd.DataFrame, params: dict) -> lgb.Booster:
+        """
+        Trains the final model on the full development set using the best hyperparameters.
+        
+        Args:
+            train_df (pd.DataFrame): Full development set (2016-2023).
+            params (dict): Best hyperparameters.
+            
+        Returns:
+            lgb.Booster: Trained model.
+        """
+        X_train = train_df.drop(columns=['label'])
+        y_train = train_df['label']
+        
+        lgb_train = lgb.Dataset(X_train, label=y_train)
+        
+        # Train model
+        model = lgb.train(
+            params,
+            lgb_train,
+            num_boost_round=100
+        )
+        
+        return model
+
+    def evaluate_model(self, model: lgb.Booster, df: pd.DataFrame, threshold: float = 0.5) -> dict:
+        """
+        Evaluates the model on the provided dataset.
+        
+        Args:
+            model (lgb.Booster): Trained model.
+            df (pd.DataFrame): Dataset to evaluate on.
+            threshold (float): Probability threshold for binary classification.
+            
+        Returns:
+            dict: Evaluation metrics.
+        """
+        X = df.drop(columns=['label'])
+        y = df['label']
+        
+        probs = model.predict(X)
+        preds = (probs >= threshold).astype(int)
+        
+        metrics = {
+            'auc': roc_auc_score(y, probs),
+            'precision': precision_score(y, preds, zero_division=0),
+            'recall': recall_score(y, preds, zero_division=0),
+            'f1': f1_score(y, preds, zero_division=0)
+        }
+        
+        return metrics
+
+    def optimize_threshold(self, model: lgb.Booster, df: pd.DataFrame, target_precision: float = 0.6) -> tuple:
+        """
+        Finds the optimal probability threshold to meet a precision target.
+        
+        Args:
+            model (lgb.Booster): Trained model.
+            df (pd.DataFrame): Dataset to optimize on.
+            target_precision (float): Target precision value.
+            
+        Returns:
+            tuple: (best_threshold, best_metrics)
+        """
+        X = df.drop(columns=['label'])
+        y = df['label']
+        probs = model.predict(X)
+        
+        best_threshold = 0.5
+        best_metrics = {}
+        max_f1 = -1
+        
+        # Iterate through possible thresholds
+        for threshold in np.linspace(0.1, 0.9, 81):
+            preds = (probs >= threshold).astype(int)
+            prec = precision_score(y, preds, zero_division=0)
+            rec = recall_score(y, preds, zero_division=0)
+            f1 = f1_score(y, preds, zero_division=0)
+            
+            if prec >= target_precision:
+                if f1 > max_f1:
+                    max_f1 = f1
+                    best_threshold = threshold
+                    best_metrics = {
+                        'precision': prec,
+                        'recall': rec,
+                        'f1': f1,
+                        'auc': roc_auc_score(y, probs)
+                    }
+        
+        # If no threshold met the precision target, pick the one with highest precision
+        if not best_metrics:
+            logging.warning(f"Could not find threshold meeting target precision of {target_precision}")
+            # Fallback logic or just return the best we found
+            # (Simplified for now)
+            best_threshold = 0.5
+            best_metrics = self.evaluate_model(model, df, threshold=best_threshold)
+
+        return best_threshold, best_metrics
