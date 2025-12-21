@@ -16,3 +16,10 @@ TradeGuard will act as a binary classifier that receives trade signals from the 
 *   Implemented `generate_dataset.py` with multi-core support and virtual signal capture.
 *   Engineered 60 predictive features across 6 key categories.
 *   Successfully generated high-density training datasets by capturing all Alpha decisions > 0.33 threshold (ignoring position state).
+
+**Phase 2: Model Training (COMPLETED)**
+*   Implemented `train_guard.py` for training the TradeGuard LightGBM model.
+*   Established robust splitting logic: Train (2016-2023) and Hold-out Validation (2024).
+*   Integrated internal hyperparameter tuning on pre-2022 data to prevent lookahead bias.
+*   Optimized classification thresholds to balance precision and recall.
+*   Automated the generation of model artifacts (model file, metadata) and evaluation plots (Confusion Matrix, ROC, Calibration).
