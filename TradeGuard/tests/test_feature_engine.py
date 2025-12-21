@@ -239,10 +239,10 @@ class TestFeatureEngine(unittest.TestCase):
         df = pd.DataFrame({'open': opens, 'high': highs, 'low': lows, 'close': closes})
         
         trade_info = {
-            'entry_price': 1.1050,
-            'sl': 1.1000,
-            'tp': 1.1150,
-            'direction': 1 # Long
+            'entry_price': 1.1060, # Different from closes[29]=1.1050
+            'sl': 1.1010,
+            'tp': 1.1160,
+            'direction': 1
         }
         
         portfolio_state = {

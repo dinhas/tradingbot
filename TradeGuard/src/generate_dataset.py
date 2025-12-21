@@ -438,6 +438,14 @@ class FeatureEngine:
         f.append(sum(t['pnl'] for t in rt) if rt else 0)
         return f
 
+    def calculate_risk_output(self, risk_params):
+        """Calculates features from Risk Model output."""
+        return [
+            risk_params.get('sl_mult', 1.0),
+            risk_params.get('tp_mult', 1.0),
+            risk_params.get('risk_factor', 1.0)
+        ]
+
     def calculate_news_proxies(self, df):
         idx = -1
         atr = AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range().iloc[idx]
@@ -487,11 +495,21 @@ class FeatureEngine:
             1.0 if is_london and is_ny else 0.0, (h * 60 + ts.minute) / 1440.0
         ]
 
-    def calculate_execution_stats(self, df_ignored, trade_info, portfolio_state, current_atr):
+    def calculate_execution_stats(self, df, trade_info, portfolio_state, current_atr=None):
+        if current_atr is None:
+            # Calculate ATR if not provided (fallback for tests)
+            from ta.volatility import AverageTrueRange
+            current_atr = AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range().iloc[-1]
+            
         sl_dist = abs(trade_info['entry_price'] - trade_info['sl'])
         tp_dist = abs(trade_info['entry_price'] - trade_info['tp'])
+        
+        entry_dist = 0.0
+        if df is not None:
+            entry_dist = abs(trade_info['entry_price'] - df['close'].iloc[-1])
+        
         return [
-            0.0, # entry_atr_distance placeholder
+            entry_dist / (current_atr + 1e-6),
             sl_dist / (current_atr + 1e-6),
             tp_dist / (current_atr + 1e-6),
             tp_dist / (sl_dist + 1e-6),
