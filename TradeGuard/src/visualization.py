@@ -3,6 +3,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, roc_curve, auc
 from sklearn.calibration import calibration_curve
+import json
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -131,5 +132,23 @@ class ModelVisualizer:
             threshold: Optimal threshold
             filename: Output filename
         """
-        # Stub for next task
-        pass
+        data = {
+            "metrics": metrics,
+            "threshold": threshold
+        }
+        save_path = self.output_dir / filename
+        with open(save_path, 'w') as f:
+            json.dump(data, f, indent=4)
+        logging.info(f"Saved metadata to {save_path}")
+
+    def save_model(self, model, filename="guard_model.txt"):
+        """
+        Saves the LightGBM model to a text file.
+        
+        Args:
+            model: Trained LightGBM booster
+            filename: Output filename
+        """
+        save_path = self.output_dir / filename
+        model.save_model(str(save_path))
+        logging.info(f"Saved model to {save_path}")

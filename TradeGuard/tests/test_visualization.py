@@ -10,11 +10,7 @@ import os
 
 # Add src to path if needed, though pytest usually handles it if conftest is set up or installed
 # For now, we assume TradeGuard package structure
-try:
-    from TradeGuard.src.visualization import ModelVisualizer
-except ImportError:
-    # If module doesn't exist yet, we'll create a dummy for the test to fail on instantiation or logic
-    ModelVisualizer = None
+from TradeGuard.src.visualization import ModelVisualizer
 
 @pytest.fixture
 def sample_data():
@@ -102,3 +98,15 @@ class TestModelVisualizer:
         
         assert data['metrics']['auc'] == 0.75
         assert data['threshold'] == 0.55
+
+    def test_save_model(self, mock_model, output_dir):
+        """Test model saving."""
+        viz = ModelVisualizer(output_dir)
+        output_file = output_dir / "guard_model.txt"
+        
+        viz.save_model(mock_model, filename="guard_model.txt")
+        
+        mock_model.save_model.assert_called_once()
+        # Verify call args if needed, or just that it was called.
+        # Since mock_model.save_model is a mock, it won't actually create a file unless side_effect does.
+        # So we assert called.
