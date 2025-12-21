@@ -85,9 +85,10 @@ class ModelTrainer:
         """
         # Prepare datasets
         # Assuming 'label' is the target column
-        X_train = train_df.drop(columns=['label'])
+        drop_cols = ['label', 'asset', 'timestamp']
+        X_train = train_df.drop(columns=[c for c in drop_cols if c in train_df.columns])
         y_train = train_df['label']
-        X_tune = tune_df.drop(columns=['label'])
+        X_tune = tune_df.drop(columns=[c for c in drop_cols if c in tune_df.columns])
         y_tune = tune_df['label']
         
         lgb_train = lgb.Dataset(X_train, label=y_train)
@@ -152,7 +153,8 @@ class ModelTrainer:
         Returns:
             lgb.Booster: Trained model.
         """
-        X_train = train_df.drop(columns=['label'])
+        drop_cols = ['label', 'asset', 'timestamp']
+        X_train = train_df.drop(columns=[c for c in drop_cols if c in train_df.columns])
         y_train = train_df['label']
         
         lgb_train = lgb.Dataset(X_train, label=y_train)
@@ -178,7 +180,8 @@ class ModelTrainer:
         Returns:
             dict: Evaluation metrics.
         """
-        X = df.drop(columns=['label'])
+        drop_cols = ['label', 'asset', 'timestamp']
+        X = df.drop(columns=[c for c in drop_cols if c in df.columns])
         y = df['label']
         
         probs = model.predict(X)
@@ -205,7 +208,8 @@ class ModelTrainer:
         Returns:
             tuple: (best_threshold, best_metrics)
         """
-        X = df.drop(columns=['label'])
+        drop_cols = ['label', 'asset', 'timestamp']
+        X = df.drop(columns=[c for c in drop_cols if c in df.columns])
         y = df['label']
         probs = model.predict(X)
         
