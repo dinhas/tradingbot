@@ -222,8 +222,9 @@ class LightweightDatasetEnv:
             
     def _cache_data_arrays(self):
         """Cache DataFrame columns as numpy arrays for performance."""
-        first_asset = list(self.df_dict.keys())[0]
-        self.max_steps = len(self.df_dict[first_asset]) - 2  # -2 to ensure we never hit boundary
+        # Find minimum length across all assets to prevent IndexErrors due to misalignment
+        min_len = min(len(df) for df in self.df_dict.values())
+        self.max_steps = min_len  # We can go up to the full length (handled by bounds checks)
         
         self.close_arrays = {}
         self.low_arrays = {}
@@ -233,27 +234,31 @@ class LightweightDatasetEnv:
         
         for asset in self.assets:
             df = self.df_dict[asset]
-            self.close_arrays[asset] = df['close'].values.astype(np.float32)
-            self.low_arrays[asset] = df['low'].values.astype(np.float32)
-            self.high_arrays[asset] = df['high'].values.astype(np.float32)
-            self.open_arrays[asset] = df['open'].values.astype(np.float32)
-            self.volume_arrays[asset] = df['volume'].values.astype(np.float32)
+            # Slice to min_len to ensure all arrays are perfectly aligned
+            self.close_arrays[asset] = df['close'].values[:min_len].astype(np.float32)
+            self.low_arrays[asset] = df['low'].values[:min_len].astype(np.float32)
+            self.high_arrays[asset] = df['high'].values[:min_len].astype(np.float32)
+            self.open_arrays[asset] = df['open'].values[:min_len].astype(np.float32)
+            self.volume_arrays[asset] = df['volume'].values[:min_len].astype(np.float32)
             
         # Precompute ATR arrays efficiently
         self.atr_arrays = {}
         for asset in self.assets:
-            df = self.df_dict[asset]
-            high = df['high'].values
-            low = df['low'].values
-            close = df['close'].values
+            high = self.high_arrays[asset]
+            low = self.low_arrays[asset]
+            close = self.close_arrays[asset]
             
             # Calculate ATR (14-period)
             tr = np.maximum(high[1:] - low[1:], 
-                           np.abs(high[1:] - close[:-1]),
-                           np.abs(low[1:] - close[:-1]))
-            atr = np.zeros(len(df))
-            atr[14:] = pd.Series(tr).rolling(14).mean().values[13:]
-            atr[:14] = atr[14] if len(atr) > 14 else 0.0001
+                           np.maximum(np.abs(high[1:] - close[:-1]),
+                                    np.abs(low[1:] - close[:-1]))) # Fixed np.maximum for tr
+            atr = np.zeros(min_len)
+            if min_len > 14:
+                atr[14:] = pd.Series(tr).rolling(14).mean().values[13:]
+                atr[:14] = atr[14]
+            else:
+                atr[:] = 0.0001
+                
             self.atr_arrays[asset] = atr.astype(np.float32)
             
     def reset(self, seed=None, options=None):
