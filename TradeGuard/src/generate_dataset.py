@@ -186,6 +186,320 @@ class DatasetGenerationEnv(TradingEnv):
         super()._open_position(asset, direction, act, price, atr)
 
 
+class LightweightDatasetEnv:
+    """
+    Lightweight environment for dataset generation that skips expensive TradingEnv preprocessing.
+    Only implements the minimum needed to run the PPO model and record trade signals.
+    """
+    def __init__(self, df_dict, feature_engine, precomputed_features, stage=3):
+        self.df_dict = df_dict
+        self.guard_feature_engine = feature_engine
+        self.precomputed_features = precomputed_features
+        self.stage = stage
+        self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+        
+        # Constants
+        self.MIN_ATR_MULTIPLIER = 0.0001
+        self.MAX_POS_SIZE_PCT = 0.50
+        self.MAX_TOTAL_EXPOSURE = 0.60
+        self.MIN_POSITION_SIZE = 0.1
+        
+        # Cache numpy arrays for fast access
+        self._cache_data_arrays()
+        
+        # State tracking
+        self.signals = []
+        self.last_action = None
+        self.asset_signal_history = {asset: [] for asset in self.assets}
+        
+        # Determine action dimensions
+        if self.stage == 1:
+            self.action_dim = 5
+        elif self.stage == 2:
+            self.action_dim = 10
+        else:
+            self.action_dim = 20
+            
+    def _cache_data_arrays(self):
+        """Cache DataFrame columns as numpy arrays for performance."""
+        first_asset = list(self.df_dict.keys())[0]
+        self.max_steps = len(self.df_dict[first_asset]) - 1
+        
+        self.close_arrays = {}
+        self.low_arrays = {}
+        self.high_arrays = {}
+        self.open_arrays = {}
+        self.volume_arrays = {}
+        
+        for asset in self.assets:
+            df = self.df_dict[asset]
+            self.close_arrays[asset] = df['close'].values.astype(np.float32)
+            self.low_arrays[asset] = df['low'].values.astype(np.float32)
+            self.high_arrays[asset] = df['high'].values.astype(np.float32)
+            self.open_arrays[asset] = df['open'].values.astype(np.float32)
+            self.volume_arrays[asset] = df['volume'].values.astype(np.float32)
+            
+        # Precompute ATR arrays efficiently
+        self.atr_arrays = {}
+        for asset in self.assets:
+            df = self.df_dict[asset]
+            high = df['high'].values
+            low = df['low'].values
+            close = df['close'].values
+            
+            # Calculate ATR (14-period)
+            tr = np.maximum(high[1:] - low[1:], 
+                           np.abs(high[1:] - close[:-1]),
+                           np.abs(low[1:] - close[:-1]))
+            atr = np.zeros(len(df))
+            atr[14:] = pd.Series(tr).rolling(14).mean().values[13:]
+            atr[:14] = atr[14] if len(atr) > 14 else 0.0001
+            self.atr_arrays[asset] = atr.astype(np.float32)
+            
+    def reset(self, seed=None, options=None):
+        """Reset the environment."""
+        self.current_step = 200  # Start after indicator warmup
+        self.equity = 10000.0
+        self.start_equity = self.equity
+        self.peak_equity = self.equity
+        self.leverage = 100
+        self.positions = {asset: None for asset in self.assets}
+        self.all_trades = []
+        self.completed_trades = []
+        self.asset_signal_history = {asset: [] for asset in self.assets}
+        
+        return self._get_observation(), {}
+    
+    def set_last_action(self, action):
+        self.last_action = action
+        
+    def step(self, action):
+        """Execute one step."""
+        self.completed_trades = []
+        
+        # Parse and execute trades
+        parsed_actions = self._parse_action(action)
+        self._execute_trades(parsed_actions)
+        
+        # Advance time
+        self.current_step += 1
+        
+        # Check termination
+        truncated = self.current_step >= self.max_steps
+        terminated = False
+        
+        # Update peak equity
+        self.peak_equity = max(self.peak_equity, self.equity)
+        
+        return self._get_observation(), 0.0, terminated, truncated, {}
+    
+    def _get_observation(self):
+        """Build a simple observation vector for the model."""
+        # Build a 140-feature observation (simplified version)
+        obs = np.zeros(140, dtype=np.float32)
+        
+        for i, asset in enumerate(self.assets):
+            base_idx = i * 25
+            price = self.close_arrays[asset][self.current_step]
+            atr = self.atr_arrays[asset][self.current_step]
+            
+            # Basic price features
+            if self.current_step > 0:
+                prev_price = self.close_arrays[asset][self.current_step - 1]
+                obs[base_idx] = price
+                obs[base_idx + 1] = (price - prev_price) / prev_price if prev_price != 0 else 0
+            
+            obs[base_idx + 3] = atr
+            
+            # Position state
+            pos = self.positions[asset]
+            if pos:
+                obs[base_idx + 13] = 1  # has_position
+                obs[base_idx + 14] = pos['size'] / self.equity if self.equity > 0 else 0
+                
+        # Global features
+        obs[125] = self.equity / self.start_equity
+        obs[126] = 1 - (self.equity / self.peak_equity) if self.peak_equity > 0 else 0
+        
+        return obs
+    
+    def _parse_action(self, action):
+        """Parse action array into trading decisions."""
+        parsed = {}
+        for i, asset in enumerate(self.assets):
+            if self.stage == 1:
+                direction_raw = action[i]
+                size_raw = 0.5
+                sl_raw = 1.5
+                tp_raw = 3.0
+            elif self.stage == 2:
+                base_idx = i * 2
+                direction_raw = action[base_idx]
+                size_raw = np.clip((action[base_idx + 1] + 1) / 2, 0, 1)
+                sl_raw = 1.5
+                tp_raw = 3.0
+            else:
+                base_idx = i * 4
+                direction_raw = action[base_idx]
+                size_raw = np.clip((action[base_idx + 1] + 1) / 2, 0, 1)
+                sl_raw = np.clip((action[base_idx + 2] + 1) / 2 * 2.5 + 0.5, 0.5, 3.0)
+                tp_raw = np.clip((action[base_idx + 3] + 1) / 2 * 3.5 + 1.5, 1.5, 5.0)
+                
+            parsed[asset] = {
+                'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
+                'size': size_raw,
+                'sl_mult': sl_raw,
+                'tp_mult': tp_raw
+            }
+        return parsed
+    
+    def _execute_trades(self, actions):
+        """Execute trading decisions and record signals."""
+        for asset, act in actions.items():
+            direction = act['direction']
+            
+            # Update signal history
+            self.asset_signal_history[asset].append(direction)
+            if len(self.asset_signal_history[asset]) > 20:
+                self.asset_signal_history[asset].pop(0)
+            
+            # Record any non-zero signal
+            if direction != 0:
+                price = self.close_arrays[asset][self.current_step]
+                atr = self.atr_arrays[asset][self.current_step]
+                self._record_signal(asset, direction, act, price, atr)
+                
+    def _calculate_persistence_reversal(self, asset, current_direction):
+        history = self.asset_signal_history[asset]
+        if len(history) < 2:
+            return 1.0, 0.0
+        
+        count = 0
+        for sig in reversed(history[:-1]):
+            if sig == current_direction:
+                count += 1
+            else:
+                break
+        persistence = count + 1.0
+        
+        prev_signal = 0
+        for sig in reversed(history[:-1]):
+            if sig != 0:
+                prev_signal = sig
+                break
+        
+        reversal = 1.0 if prev_signal != 0 and prev_signal != current_direction else 0.0
+        return persistence, reversal
+    
+    def _record_signal(self, asset, direction, act, price, atr):
+        """Record a signal with features and outcome label."""
+        # Calculate SL/TP
+        atr_val = max(atr, price * self.MIN_ATR_MULTIPLIER)
+        sl_dist = act['sl_mult'] * atr_val
+        tp_dist = act['tp_mult'] * atr_val
+        sl = price - (direction * sl_dist)
+        tp = price + (direction * tp_dist)
+        
+        # Simulate outcome
+        outcome = self._simulate_outcome(asset, direction, sl, tp)
+        
+        # Calculate features
+        asset_idx = self.assets.index(asset)
+        if self.stage == 1:
+            base_idx = asset_idx
+        elif self.stage == 2:
+            base_idx = asset_idx * 2
+        else:
+            base_idx = asset_idx * 4
+            
+        persistence, reversal = self._calculate_persistence_reversal(asset, direction)
+        
+        # Group A: Alpha confidence features
+        f_a = [
+            self.last_action[base_idx] if self.last_action is not None else 0,
+            abs(self.last_action[base_idx]) if self.last_action is not None else 0,
+            0.0,  # std placeholder
+            persistence,
+            reversal,
+            1 - (self.equity / self.peak_equity) if self.peak_equity > 0 else 0,
+            sum(1 for p in self.positions.values() if p is not None),
+            0.0,  # exposure placeholder
+            0.5,  # win rate placeholder
+            0.0   # pnl sum placeholder
+        ]
+        
+        # Get precomputed market features (Groups B, C, D, F)
+        if self.precomputed_features and asset in self.precomputed_features:
+            f_market = self.precomputed_features[asset][self.current_step].tolist()
+        else:
+            f_market = [0.0] * 40
+            
+        # Group E: Execution stats
+        f_e = [
+            0.0,  # entry_dist
+            sl_dist / (atr_val + 1e-6),
+            tp_dist / (atr_val + 1e-6),
+            tp_dist / (sl_dist + 1e-6),
+            0.0,  # position_value
+            1 - (self.equity / self.peak_equity) if self.peak_equity > 0 else 0,
+            0.0, 0.5, 0.5, 0.0  # placeholders
+        ]
+        
+        # Combine features
+        all_features = f_a + f_market[:30] + f_e + f_market[30:]
+        
+        # Get timestamp
+        timestamp = self.df_dict[asset].index[self.current_step]
+        
+        self.signals.append({
+            'timestamp': timestamp,
+            'asset': asset,
+            'direction': direction,
+            'label': 1 if outcome['pnl'] > 0 else 0,
+            'features': all_features,
+            'outcome_pnl': outcome['pnl']
+        })
+        
+    def _simulate_outcome(self, asset, direction, sl, tp):
+        """Look ahead to determine trade outcome."""
+        start_idx = self.current_step + 1
+        end_idx = min(start_idx + 1000, len(self.low_arrays[asset]))
+        
+        if start_idx >= end_idx:
+            return {'pnl': 0.0}
+            
+        lows = self.low_arrays[asset][start_idx:end_idx]
+        highs = self.high_arrays[asset][start_idx:end_idx]
+        entry_price = self.close_arrays[asset][self.current_step]
+        
+        if direction == 1:  # Long
+            sl_hit_mask = lows <= sl
+            tp_hit_mask = highs >= tp
+        else:  # Short
+            sl_hit_mask = highs >= sl
+            tp_hit_mask = lows <= tp
+            
+        sl_hit = sl_hit_mask.any()
+        tp_hit = tp_hit_mask.any()
+        
+        if sl_hit and tp_hit:
+            first_sl = np.argmax(sl_hit_mask)
+            first_tp = np.argmax(tp_hit_mask)
+            exit_price = sl if first_sl <= first_tp else tp
+        elif sl_hit:
+            exit_price = sl
+        elif tp_hit:
+            exit_price = tp
+        else:
+            exit_price = self.close_arrays[asset][end_idx - 1]
+            
+        # Calculate PnL
+        price_change = (exit_price - entry_price) * direction
+        pnl = price_change / entry_price if entry_price != 0 else 0
+        
+        return {'pnl': pnl}
+
+
 class DatasetGenerator:
     def __init__(self, data_dir="TradeGuard/data", n_jobs=-1):
         self.logger = self.setup_logging()
@@ -327,44 +641,61 @@ class DatasetGenerator:
 
     @staticmethod
     def run_inference_chunk(data_dir, assets, model_path, start_idx, end_idx, stage):
-        """Worker function for multiprocessing. Loads data locally to avoid IPC overhead."""
+        """Worker function for multiprocessing. Optimized to load only necessary data."""
+        import os
         chunk_start = time.time()
+        worker_id = os.getpid()
+        print(f"[Worker {worker_id}] Starting: processing bars {start_idx} to {end_idx}")
         
-        # Load data locally in the worker
+        # Load data locally in the worker - only the chunk we need plus lookback
         data_path = Path(data_dir)
+        LOOKBACK = 500  # Buffer for indicators that need history
+        actual_start = max(0, start_idx - LOOKBACK)
+        
         df_dict = {}
         for asset in assets:
             for suffix in ["_5m.parquet", "_5m_2025.parquet"]:
                 p = data_path / f"{asset}{suffix}"
                 if p.exists():
-                    df_dict[asset] = pd.read_parquet(p)
+                    # Read only the rows we need
+                    full_df = pd.read_parquet(p)
+                    df_dict[asset] = full_df.iloc[actual_start:end_idx].copy()
                     break
         
         if not df_dict:
-            print("Worker found no data.")
+            print(f"[Worker {worker_id}] ERROR: No data found.")
             return []
 
-        # Precompute features locally
-        precomputed = DatasetGenerator.precompute_market_features(df_dict, logger=None)
+        print(f"[Worker {worker_id}] Data loaded: {len(next(iter(df_dict.values())))} rows")
 
-        # Subset the data
-        chunk_df_dict = {asset: df.iloc[start_idx:end_idx] for asset, df in df_dict.items()}
-        chunk_precomputed = {asset: arr[start_idx:end_idx] for asset, arr in precomputed.items()}
+        # Precompute market features for just this chunk (with lookback)
+        precomputed = DatasetGenerator.precompute_market_features(df_dict, logger=None)
+        
+        # Slice off the lookback portion - we only want start_idx:end_idx
+        offset = start_idx - actual_start
+        chunk_df_dict = {asset: df.iloc[offset:].copy() for asset, df in df_dict.items()}
+        chunk_precomputed = {asset: arr[offset:] for asset, arr in precomputed.items()}
+        
+        print(f"[Worker {worker_id}] Features precomputed, loading model...")
         
         model = PPO.load(model_path, device='cpu')
-        env = DatasetGenerationEnv(
+        
+        print(f"[Worker {worker_id}] Creating environment...")
+        
+        # Use the lightweight environment that skips heavy preprocessing
+        env = LightweightDatasetEnv(
             df_dict=chunk_df_dict,
             feature_engine=FeatureEngine(),
             precomputed_features=chunk_precomputed,
-            data_dir=str(data_dir),
-            stage=stage,
-            data=chunk_df_dict
+            stage=stage
         )
+        
+        print(f"[Worker {worker_id}] Environment ready, starting inference...")
         
         obs, _ = env.reset()
         done = False
         steps = 0
-        total_steps = end_idx - start_idx
+        total_steps = len(next(iter(chunk_df_dict.values()))) - 1
         
         while not done:
             action, _ = model.predict(obs, deterministic=True)
@@ -372,10 +703,10 @@ class DatasetGenerator:
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             steps += 1
-            if steps % 10000 == 0:
-                print(f"Worker Processed: {steps}/{total_steps} bars ({(steps/total_steps)*100:.1f}%)")
+            if steps % 20000 == 0:
+                print(f"[Worker {worker_id}] Progress: {steps}/{total_steps} bars ({(steps/total_steps)*100:.1f}%)")
             
-        print(f"Worker Finished {total_steps} bars in {time.time() - chunk_start:.2f}s")
+        print(f"[Worker {worker_id}] FINISHED: {total_steps} bars in {time.time() - chunk_start:.2f}s, collected {len(env.signals)} signals")
         return env.signals
 
     def run(self, model_path, output_path):
