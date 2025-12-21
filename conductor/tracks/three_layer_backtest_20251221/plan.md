@@ -5,7 +5,7 @@
 - [x] Task: Conductor - User Manual Verification 'Infrastructure & Model Loading' (Protocol in workflow.md) 0e3b665
 
 ## Phase 2: Feature Engineering & Parity
-- [ ] Task: Implement `TradeGuardFeatureBuilder` using existing preprocessing logic
+- [x] Task: Implement `TradeGuardFeatureBuilder` using existing preprocessing logic e6400ee
     - [ ] Write tests to compare generated feature vectors against training dataset schema
     - [ ] Implement extraction logic from `generate_dataset.py` for all 6 feature groups
 - [ ] Task: Conductor - User Manual Verification 'Feature Engineering & Parity' (Protocol in workflow.md)
