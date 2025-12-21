@@ -325,16 +325,52 @@ class FullSystemBacktest(CombinedBacktest):
 
     def _simulate_blocked_trade(self, asset, direction, act, prob):
         """
-        Phase 4 logic placeholder: simulate blocked trade outcome.
+        Simulates the outcome of a trade that was blocked by TradeGuard.
+        Uses the environment's peek-ahead simulation logic.
         """
-        self.blocked_trades.append({
-            'timestamp': self.env._get_current_timestamp(),
-            'asset': asset,
+        # Save current position to restore it after simulation
+        real_pos = self.env.positions[asset]
+        
+        # Calculate SL/TP for virtual labeling
+        price = self.env._get_current_prices()[asset]
+        atr = self.env._get_current_atrs()[asset]
+        atr_val = max(atr, price * self.env.MIN_ATR_MULTIPLIER)
+        
+        sl_dist = act['sl_mult'] * atr_val
+        tp_dist = act['tp_mult'] * atr_val
+        
+        # Create virtual position for simulation
+        self.env.positions[asset] = {
             'direction': direction,
-            'prob': prob,
-            'threshold': self.guard_threshold,
-            'theoretical_pnl': 0.0 # Will be calculated in Phase 4
-        })
+            'entry_price': price,
+            'size': 1.0, 
+            'sl': price - (direction * sl_dist),
+            'tp': price + (direction * tp_dist),
+            'entry_step': self.env.current_step,
+            'sl_dist': sl_dist,
+            'tp_dist': tp_dist
+        }
+        
+        try:
+            # Simulate outcome using peek-ahead
+            outcome = self.env._simulate_trade_outcome_with_timing(asset)
+            
+            self.blocked_trades.append({
+                'timestamp': self.env._get_current_timestamp(),
+                'asset': asset,
+                'direction': direction,
+                'prob': prob,
+                'threshold': self.guard_threshold,
+                'theoretical_pnl': outcome['pnl'],
+                'outcome': outcome.get('reason', 'unknown'),
+                'exit_step': outcome.get('exit_step', self.env.current_step),
+                'sl': self.env.positions[asset]['sl'],
+                'tp': self.env.positions[asset]['tp'],
+                'entry_price': price
+            })
+        finally:
+            # Restore the actual environment position
+            self.env.positions[asset] = real_pos
 
 if __name__ == "__main__":
     pass

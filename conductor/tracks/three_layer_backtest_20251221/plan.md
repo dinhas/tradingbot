@@ -15,11 +15,12 @@
 - [x] Task: Conductor - User Manual Verification 'Integrated Backtest Loop' (Protocol in workflow.md) 37facd6
 
 
-## Phase 4: Virtual Trade Simulation
-- [ ] Task: Implement outcome simulation for blocked signals
-    - [ ] Write tests to verify virtual PnL calculation against known outcomes
-    - [ ] Implement logging for `blocked_trades` with theoretical results
-- [ ] Task: Conductor - User Manual Verification 'Virtual Trade Simulation' (Protocol in workflow.md)
+## Phase 4: Virtual Trade Simulation [checkpoint: 5122978]
+- [x] Task: Implement outcome simulation for blocked signals 5122978
+    - [x] Write tests to verify virtual PnL calculation against known outcomes 5122978
+    - [x] Implement logging for `blocked_trades` with theoretical results 5122978
+- [x] Task: Conductor - User Manual Verification 'Virtual Trade Simulation' (Protocol in workflow.md) 5122978
+
 
 ## Phase 5: Metrics & Comparative Analysis
 - [ ] Task: Extend metrics engine for TradeGuard and Shadow Portfolio
