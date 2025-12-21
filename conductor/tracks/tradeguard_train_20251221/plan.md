@@ -16,7 +16,7 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 
 ## Phase 3: Final Training & Evaluation [checkpoint: ]
 - [x] Task: Create tests for final model retraining on full 2016-2023 set 13a0e21
-- [ ] Task: Implement final training with best parameters
+- [x] Task: Implement final training with best parameters f77f486
 - [ ] Task: Implement 2024 hold-out set evaluation and threshold optimization
 - [ ] Task: Conductor - User Manual Verification 'Final Training & Evaluation' (Protocol in workflow.md)
 
