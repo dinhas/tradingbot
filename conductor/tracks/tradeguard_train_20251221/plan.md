@@ -11,7 +11,7 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 ## Phase 2: Hyperparameter Tuning (Internal Split) [checkpoint: ]
 - [x] Task: Create tests for internal tuning split logic (2016-2021 vs 2022-2023) 13c09f3
 - [x] Task: Implement LightGBM hyperparameter tuning using the internal split 2c7bce3
-- [ ] Task: Verify that best parameters are correctly identified and logged
+- [x] Task: Verify that best parameters are correctly identified and logged fdb416c
 - [ ] Task: Conductor - User Manual Verification 'Hyperparameter Tuning' (Protocol in workflow.md)
 
 ## Phase 3: Final Training & Evaluation [checkpoint: ]
