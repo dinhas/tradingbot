@@ -21,8 +21,8 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [x] Task: Conductor - User Manual Verification 'Final Training & Evaluation' (Protocol in workflow.md) 0f18294
 
 ## Phase 4: Artifact Generation & Visualization [checkpoint: ]
-- [ ] Task: Create tests for visualization generation (CM, FI, Calibration, ROC)
-- [ ] Task: Implement plotting functions for Confusion Matrix and Feature Importance
+- [x] Task: Create tests for visualization generation (CM, FI, Calibration, ROC) aef4eba
+- [~] Task: Implement plotting functions for Confusion Matrix and Feature Importance
 - [ ] Task: Implement plotting functions for Calibration Curve and ROC Curve
 - [ ] Task: Implement metadata export (`model_metadata.json` and `guard_model.txt`)
 - [ ] Task: Conductor - User Manual Verification 'Artifact Generation & Visualization' (Protocol in workflow.md)
