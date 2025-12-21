@@ -1,10 +1,8 @@
 # Implementation Plan: Three-Layer Backtest
 
-## Phase 1: Infrastructure & Model Loading
+## Phase 1: Infrastructure & Model Loading [checkpoint: 0e3b665]
 - [x] Task: Initialize `backtest_full_system.py` and implement model loader 4f2c26c
-    - [ ] Write tests to verify LightGBM model and metadata loading (fail-fast behavior)
-    - [ ] Implement `load_tradeguard_model` with schema validation
-- [ ] Task: Conductor - User Manual Verification 'Infrastructure & Model Loading' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Infrastructure & Model Loading' (Protocol in workflow.md) 0e3b665
 
 ## Phase 2: Feature Engineering & Parity
 - [ ] Task: Implement `TradeGuardFeatureBuilder` using existing preprocessing logic
