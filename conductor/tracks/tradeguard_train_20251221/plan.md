@@ -18,7 +18,7 @@ This plan follows the TDD-first workflow. Each implementation task is preceded b
 - [x] Task: Create tests for final model retraining on full 2016-2023 set 13a0e21
 - [x] Task: Implement final training with best parameters f77f486
 - [x] Task: Implement 2024 hold-out set evaluation and threshold optimization db87057
-- [ ] Task: Conductor - User Manual Verification 'Final Training & Evaluation' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Final Training & Evaluation' (Protocol in workflow.md) 0f18294
 
 ## Phase 4: Artifact Generation & Visualization [checkpoint: ]
 - [ ] Task: Create tests for visualization generation (CM, FI, Calibration, ROC)
