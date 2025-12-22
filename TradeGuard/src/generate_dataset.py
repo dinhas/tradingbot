@@ -715,12 +715,11 @@ class DatasetGenerator:
         return precomputed
 
     @staticmethod
-    def run_inference_chunk(data_dir, assets, model_path, start_idx, end_idx, stage):
-        """Worker function for multiprocessing. Optimized to load only necessary data."""
-        import os
+    def run_inference_chunk(data_dir, assets, model_path, start_idx, end_idx, stage, worker_id=0, use_tqdm=True):
+        """Worker function for dataset generation. Kaggle-compatible with tqdm progress bar."""
+        from tqdm import tqdm
+        
         chunk_start = time.time()
-        worker_id = os.getpid()
-        print(f"[Worker {worker_id}] Starting: processing bars {start_idx} to {end_idx}")
         
         # Load data locally in the worker - only the chunk we need plus lookback
         data_path = Path(data_dir)
@@ -732,7 +731,6 @@ class DatasetGenerator:
             for suffix in ["_5m.parquet", "_5m_2025.parquet"]:
                 p = data_path / f"{asset}{suffix}"
                 if p.exists():
-                    # Read only the rows we need
                     full_df = pd.read_parquet(p)
                     df_dict[asset] = full_df.iloc[actual_start:end_idx].copy()
                     break
@@ -741,23 +739,19 @@ class DatasetGenerator:
             print(f"[Worker {worker_id}] ERROR: No data found.")
             return []
 
-        print(f"[Worker {worker_id}] Data loaded: {len(next(iter(df_dict.values())))} rows")
-
         # Precompute market features for just this chunk (with lookback)
+        print(f"[Worker {worker_id}] Precomputing features for {len(next(iter(df_dict.values())))} rows...")
         precomputed = DatasetGenerator.precompute_market_features(df_dict, logger=None)
         
-        # Slice off the lookback portion - we only want start_idx:end_idx
+        # Slice off the lookback portion
         offset = start_idx - actual_start
         chunk_df_dict = {asset: df.iloc[offset:].copy() for asset, df in df_dict.items()}
         chunk_precomputed = {asset: arr[offset:] for asset, arr in precomputed.items()}
         
-        print(f"[Worker {worker_id}] Features precomputed, loading model...")
-        
+        print(f"[Worker {worker_id}] Loading model...")
         model = PPO.load(model_path, device='cpu')
         
-        print(f"[Worker {worker_id}] Creating environment...")
-        
-        # Use the lightweight environment that skips heavy preprocessing
+        # Create lightweight environment
         env = LightweightDatasetEnv(
             df_dict=chunk_df_dict,
             feature_engine=FeatureEngine(),
@@ -765,23 +759,31 @@ class DatasetGenerator:
             stage=stage
         )
         
-        print(f"[Worker {worker_id}] Environment ready, starting inference...")
-        
         obs, _ = env.reset()
         done = False
-        steps = 0
-        total_steps = len(next(iter(chunk_df_dict.values()))) - 1
+        total_steps = env.max_steps - env.current_step
+        
+        # Create progress bar
+        desc = f"Worker {worker_id}" if worker_id > 0 else "Processing"
+        pbar = tqdm(total=total_steps, desc=desc, unit="bars", 
+                    disable=not use_tqdm, ncols=100,
+                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
         
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             env.set_last_action(action)
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
-            steps += 1
-            if steps % 20000 == 0:
-                print(f"[Worker {worker_id}] Progress: {steps}/{total_steps} bars ({(steps/total_steps)*100:.1f}%)")
+            pbar.update(1)
             
-        print(f"[Worker {worker_id}] FINISHED: {total_steps} bars in {time.time() - chunk_start:.2f}s, collected {len(env.signals)} signals")
+            # Update postfix with signals count every 5000 steps
+            if pbar.n % 5000 == 0:
+                pbar.set_postfix({'signals': len(env.signals)})
+        
+        pbar.close()
+        
+        elapsed = time.time() - chunk_start
+        print(f"[Worker {worker_id}] DONE: {total_steps} bars in {elapsed:.1f}s ({total_steps/elapsed:.0f} bars/s), {len(env.signals)} signals")
         return env.signals
 
     def run(self, model_path, output_path):
@@ -805,39 +807,52 @@ class DatasetGenerator:
         model = PPO.load(model_path, device='cpu')
         action_dim = model.action_space.shape[0]
         stage = 1 if action_dim == 5 else (2 if action_dim == 10 else 3)
-        del model # Free memory
+        self.logger.info(f"Detected Stage {stage} model (action_dim={action_dim})")
+        del model  # Free memory
         
         total_len = len(next(iter(df_dict.values())))
         inference_start = time.time()
         
-        # SINGLE-THREADED MODE (for Kaggle or when n_jobs=1)
+        # SINGLE-THREADED MODE (Kaggle-safe, recommended)
         if self.n_jobs == 1:
-            self.logger.info(f"Step 4: Processing {total_len} bars in SINGLE-THREADED mode...")
+            self.logger.info(f"Step 4: Processing {total_len:,} bars (single-threaded with progress bar)...")
             
-            # Run the worker function directly without multiprocessing
+            # Run directly without multiprocessing - uses tqdm progress bar
             all_signals = DatasetGenerator.run_inference_chunk(
-                str(self.data_dir), self.assets, model_path, 0, total_len, stage
+                str(self.data_dir), self.assets, model_path, 0, total_len, stage,
+                worker_id=0, use_tqdm=True
             )
         else:
-            # MULTI-THREADED MODE
+            # MULTI-THREADED MODE (may not work on Kaggle)
+            self.logger.info(f"Step 4: Processing {total_len:,} bars with {self.n_jobs} workers...")
+            self.logger.warning("Multi-threaded mode may hang on Kaggle. Use --single if issues occur.")
+            
             chunk_size = total_len // self.n_jobs
-            chunks = [(str(self.data_dir), self.assets, model_path, i * chunk_size, (i + 1) * chunk_size if i < self.n_jobs - 1 else total_len, stage) 
-                      for i in range(self.n_jobs)]
+            chunks = []
+            for i in range(self.n_jobs):
+                start = i * chunk_size
+                end = (i + 1) * chunk_size if i < self.n_jobs - 1 else total_len
+                # Add worker_id and disable tqdm in multi-threaded mode
+                chunks.append((str(self.data_dir), self.assets, model_path, start, end, stage, i+1, False))
             
-            self.logger.info(f"Step 4: Spawning {self.n_jobs} workers to process {total_len} bars...")
+            try:
+                with multiprocessing.Pool(self.n_jobs) as pool:
+                    results = pool.starmap(DatasetGenerator.run_inference_chunk, chunks)
+                # Combine results from all workers
+                all_signals = [sig for chunk_signals in results for sig in chunk_signals]
+            except Exception as e:
+                self.logger.error(f"Multiprocessing failed: {e}")
+                self.logger.info("Falling back to single-threaded mode...")
+                all_signals = DatasetGenerator.run_inference_chunk(
+                    str(self.data_dir), self.assets, model_path, 0, total_len, stage,
+                    worker_id=0, use_tqdm=True
+                )
             
-            # Use starmap to pass arguments
-            with multiprocessing.Pool(self.n_jobs) as pool:
-                results = pool.starmap(DatasetGenerator.run_inference_chunk, chunks)
-                
-            # Combine results from all workers
-            all_signals = [sig for chunk_signals in results for sig in chunk_signals]
-            
-        self.logger.info(f"Step 5: Inference and Labeling complete in {time.time() - inference_start:.2f}s")
-        self.logger.info(f"Step 6: Generated {len(all_signals)} total signals.")
+        self.logger.info(f"Step 5: Inference complete in {time.time() - inference_start:.1f}s")
+        self.logger.info(f"Step 6: Generated {len(all_signals):,} total signals.")
         
         self.save_dataset(all_signals, output_path)
-        self.logger.info(f"TOTAL RUNTIME: {time.time() - run_start:.2f}s")
+        self.logger.info(f"TOTAL RUNTIME: {time.time() - run_start:.1f}s")
 
     def save_dataset(self, signals, output_path):
         if not signals: return
@@ -970,9 +985,14 @@ class FeatureEngine:
 if __name__ == "__main__":
     import argparse
     import platform
+    import os
+    
+    # Detect if running in Kaggle or Colab
+    IS_KAGGLE = os.path.exists('/kaggle')
+    IS_COLAB = os.path.exists('/content')
+    IS_NOTEBOOK = IS_KAGGLE or IS_COLAB
     
     # Use 'fork' on Linux (Kaggle/Colab), 'spawn' on Windows
-    # 'fork' works better in containerized environments like Kaggle
     if platform.system() != 'Windows':
         try:
             multiprocessing.set_start_method('fork', force=True)
@@ -988,14 +1008,26 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="Alpha/models/checkpoints/8.03.zip", help="Path to Alpha PPO model")
     parser.add_argument("--data", type=str, default="TradeGuard/data", help="Directory containing asset parquet files")
     parser.add_argument("--output", type=str, default="TradeGuard/data/guard_dataset.parquet", help="Output Parquet file")
-    parser.add_argument("--jobs", type=int, default=-1, help="Number of parallel jobs (-1 for all cores, 1 for single-threaded)")
-    parser.add_argument("--single", action="store_true", help="Force single-threaded mode (use this for Kaggle)")
+    parser.add_argument("--jobs", type=int, default=1, help="Number of parallel jobs (default=1 for Kaggle compatibility)")
+    parser.add_argument("--single", action="store_true", help="Force single-threaded mode (recommended for Kaggle)")
     
     args = parser.parse_args()
     
-    # Force single-threaded if --single is specified
-    n_jobs = 1 if args.single else args.jobs
+    # Determine number of jobs
+    if args.single:
+        n_jobs = 1
+    elif args.jobs == -1:
+        # Auto-detect: Use 1 for Kaggle, 2 for Colab, all cores otherwise
+        if IS_KAGGLE:
+            n_jobs = 1
+            print("Kaggle detected: Using single-threaded mode for stability")
+        elif IS_COLAB:
+            n_jobs = 2
+            print("Colab detected: Using 2 workers")
+        else:
+            n_jobs = multiprocessing.cpu_count()
+    else:
+        n_jobs = args.jobs
     
     generator = DatasetGenerator(data_dir=args.data, n_jobs=n_jobs)
     generator.run(args.model, args.output)
-    
