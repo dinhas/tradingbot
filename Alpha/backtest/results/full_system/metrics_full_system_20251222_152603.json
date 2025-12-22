@@ -1,0 +1,29 @@
+{
+  "profit_factor": 1.6591658510866698,
+  "total_return": 2.6941518276324645,
+  "sharpe_ratio": 2.615088807467982,
+  "max_drawdown": -0.24300491560155837,
+  "win_rate": 0.6569216015209303,
+  "avg_rr_ratio": 2.8558096885681152,
+  "trade_frequency": 21341.547907308803,
+  "avg_hold_time_minutes": 6.173854301186848,
+  "total_trades": 7473321,
+  "winning_trades": 4909386,
+  "losing_trades": 2563935,
+  "gross_profit": 1680756.533529183,
+  "gross_loss": 1013012.9742173589,
+  "final_equity": 36.94151827632464,
+  "initial_equity": 10.0,
+  "tradeguard": {
+    "approval_rate": 0.9602186166995826,
+    "block_accuracy": 0.751495400754483,
+    "net_value_add_pct": 432.8955078125,
+    "total_blocked": 309616,
+    "good_blocks": 232675,
+    "bad_blocks": 76941,
+    "avoided_losses_pct": 11469.2861328125,
+    "missed_profits_pct": 11036.390625
+  },
+  "baseline_return": -1.0,
+  "net_value_add_vs_baseline": 3.6941518276324645
+}

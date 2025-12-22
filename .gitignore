@@ -96,5 +96,5 @@ coverage.xml
 .pytest_cache/
 
 *.csv
-*.json
+
 *.npy
