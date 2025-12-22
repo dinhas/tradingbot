@@ -362,11 +362,15 @@ class FullSystemBacktest(CombinedBacktest):
         sl_dist = act['sl_mult'] * atr_val
         tp_dist = act['tp_mult'] * atr_val
         
+        # Calculate ACTUAL intended size pct and notional size
+        size_pct = act['size'] * self.env.MAX_POS_SIZE_PCT
+        position_size = size_pct * self.env.equity
+        
         # Create virtual position for simulation
         self.env.positions[asset] = {
             'direction': direction,
             'entry_price': price,
-            'size': 1.0, 
+            'size': position_size, 
             'sl': price - (direction * sl_dist),
             'tp': price + (direction * tp_dist),
             'entry_step': self.env.current_step,
@@ -378,13 +382,16 @@ class FullSystemBacktest(CombinedBacktest):
             # Simulate outcome using peek-ahead
             outcome = self.env._simulate_trade_outcome_with_timing(asset)
             
+            # Calculate PnL as a ratio of current equity for compounding shadow portfolio
+            theoretical_pnl_ratio = outcome['pnl'] / self.env.equity if self.env.equity > 0 else 0
+            
             record = {
                 'timestamp': self.env._get_current_timestamp(),
                 'asset': asset,
                 'direction': direction,
                 'prob': prob,
                 'threshold': self.guard_threshold,
-                'theoretical_pnl': outcome['pnl'],
+                'theoretical_pnl': theoretical_pnl_ratio,
                 'outcome': outcome.get('reason', 'unknown'),
                 'exit_step': outcome.get('exit_step', self.env.current_step),
                 'sl': self.env.positions[asset]['sl'],

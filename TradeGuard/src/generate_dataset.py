@@ -599,7 +599,8 @@ class DatasetGenerator:
             f11 = vol / (vol_avg_50 + 1e-6)
             f12 = (vol - vol_avg_50) / (vol_std_50 + 1e-6)
             f13 = range_val / (atr_14 + 1e-6)
-            f14 = np.zeros(n)  # Placeholder for range quantile (skip slow quantile)
+            # f14: range_compression (rolling quantile)
+            f14 = (pd.Series(range_val).rolling(100, min_periods=1).rank(pct=True).values < 0.1).astype(np.float64)
             f15 = body / (range_val + 1e-6)
             
             upper_wick = high - np.maximum(open_p, close)
@@ -615,7 +616,8 @@ class DatasetGenerator:
             f18 = vol_diff / (vol_ma_10 + 1e-6)
             
             f19 = atr_14 / (close + 1e-6)
-            f20 = np.zeros(n)  # Placeholder for ATR quantile
+            # f20: quiet_market (rolling quantile)
+            f20 = (pd.Series(atr_14).rolling(100, min_periods=1).rank(pct=True).values < 0.05).astype(np.float64)
             
             # Group C: Market Regime (fast approximations)
             # ADX approximation using simple directional movement
@@ -638,7 +640,11 @@ class DatasetGenerator:
             
             f24 = (high - rolling_low_25) / (rolling_high_25 - rolling_low_25 + 1e-6) * 100  # Aroon up proxy
             f25 = (rolling_high_25 - low) / (rolling_high_25 - rolling_low_25 + 1e-6) * 100  # Aroon down proxy
-            f26 = np.full(n, 0.5)  # Hurst placeholder
+            # f26: Simplified Hurst approximation (Efficiency Ratio)
+            net_change_20 = np.zeros(n)
+            net_change_20[20:] = np.abs(close[20:] - close[:-20])
+            abs_sum_20 = pd.Series(np.abs(np.diff(close, prepend=close[0]))).rolling(20).sum().values
+            f26 = net_change_20 / (abs_sum_20 + 1e-6)
             
             net_change_10 = np.zeros(n)
             net_change_10[10:] = np.abs(close[10:] - close[:-10])
@@ -659,16 +665,13 @@ class DatasetGenerator:
             std_20 = fast_rolling_std(close, 20)
             f30 = (std_20 * 4) / (sma_20 + 1e-6)  # BB width approximation
             
-            # Group D: Session Edge (already fast - just need proper indexing)
+            # ... (Session Edge features remain same) ...
             try:
                 hours = df.index.hour.values
                 minutes = df.index.minute.values
                 dows = df.index.dayofweek.values
             except AttributeError:
-                # Fallback for non-datetime index
-                hours = np.zeros(n)
-                minutes = np.zeros(n)
-                dows = np.zeros(n)
+                hours = np.zeros(n); minutes = np.zeros(n); dows = np.zeros(n)
             
             f31 = np.sin(2 * np.pi * hours / 24)
             f32 = np.cos(2 * np.pi * hours / 24)
@@ -686,17 +689,38 @@ class DatasetGenerator:
             f52 = body / (atr_14 + 1e-6)
             f53 = upper_wick / (body + 1e-6)
             f54 = lower_wick / (body + 1e-6)
-            f55 = np.full(n, 5.0)  # Placeholder
             
-            # Rolling max/min for 20 periods - fully vectorized using pandas
+            # f55: consecutive_direction (vectorized approximation)
+            diffs = np.sign(close - open_p)
+            f55 = np.zeros(n)
+            curr_count = 0
+            for i in range(1, n):
+                if diffs[i] == diffs[i-1]:
+                    curr_count += 1
+                else:
+                    curr_count = 1
+                f55[i] = curr_count
+            
+            # Rolling max/min for 20 periods
             rolling_high_20 = pd.Series(high).rolling(20, min_periods=1).max().values
             rolling_low_20 = pd.Series(low).rolling(20, min_periods=1).min().values
             
             f56 = (rolling_high_20 - close) / (atr_14 + 1e-6)
             f57 = (close - rolling_low_20) / (atr_14 + 1e-6)
-            f58 = np.zeros(n)
+            
+            # f58: EMA alignment (9 vs 21)
+            ema9 = pd.Series(close).ewm(span=9).mean().values
+            ema21 = pd.Series(close).ewm(span=21).mean().values
+            f58 = (ema9 - ema21) / (ema21 + 1e-6)
+            
+            # f59: price_velocity (5-period)
             f59 = np.zeros(n)
-            f60 = np.zeros(n)
+            f59[5:] = (close[5:] - close[:-5]) / (atr_14[5:] + 1e-6)
+            
+            # f60: VPT (Volume Price Trend)
+            vpt = np.zeros(n)
+            vpt[1:] = vol[1:] * (close[1:] - close[:-1]) / close[:-1]
+            f60 = np.cumsum(vpt) / (np.max(np.abs(np.cumsum(vpt))) + 1e-6)
             
             # Combine all 40 features into numpy array
             combined = np.column_stack([
@@ -958,14 +982,24 @@ class FeatureEngine:
         if df is not None:
             entry_dist = abs(trade_info['entry_price'] - df['close'].iloc[-1])
         
+        # Calculate real momentum and volatility features
+        rsi = ta.momentum.RSIIndicator(df['close'], window=14).rsi().iloc[-1]
+        bb = ta.volatility.BollingerBands(df['close'], window=20)
+        bb_pos = (df['close'].iloc[-1] - bb.bollinger_lband().iloc[-1]) / (bb.bollinger_hband().iloc[-1] - bb.bollinger_lband().iloc[-1] + 1e-6)
+        macd = ta.trend.MACD(df['close'])
+        macd_hist = macd.macd_diff().iloc[-1]
+        
+        # Feature 47: Spread Estimate (High-Low range normalized)
+        spread_est = (df['high'].iloc[-1] - df['low'].iloc[-1]) / (df['close'].iloc[-1] + 1e-6)
+        
         return [
             entry_dist / (current_atr + 1e-6),
             sl_dist / (current_atr + 1e-6),
             tp_dist / (current_atr + 1e-6),
             tp_dist / (sl_dist + 1e-6),
-            portfolio_state.get('position_value', 0) / portfolio_state['equity'],
+            portfolio_state.get('position_value', 0) / portfolio_state['equity'] if portfolio_state['equity'] > 0 else 0,
             1 - (portfolio_state['equity'] / portfolio_state['peak_equity']) if portfolio_state['peak_equity'] > 0 else 0,
-            0.0, 0.5, 0.5, 0.0 # Placeholders for RSI, BB, MACD
+            spread_est, rsi, bb_pos, macd_hist
         ]
 
     def calculate_price_action_context(self, df):
@@ -973,13 +1007,37 @@ class FeatureEngine:
         o, h, l, c = df['open'].iloc[idx], df['high'].iloc[idx], df['low'].iloc[idx], df['close'].iloc[idx]
         atr = AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range().iloc[idx]
         body = abs(c - o)
+        
+        # Calculate consecutive direction
+        closes = df['close'].values
+        opens = df['open'].values
+        directions = np.sign(closes - opens)
+        current_dir = directions[-1]
+        count = 0
+        for d in reversed(directions):
+            if d == current_dir:
+                count += 1
+            else:
+                break
+        
+        # EMA alignment
+        ema9 = ta.trend.EMAIndicator(df['close'], window=9).ema_indicator().iloc[-1]
+        ema21 = ta.trend.EMAIndicator(df['close'], window=21).ema_indicator().iloc[-1]
+        ema_align = (ema9 - ema21) / (ema21 + 1e-6)
+        
+        # Velocity
+        velocity = (c - df['close'].iloc[-5]) / (atr + 1e-6) if len(df) >= 5 else 0
+        
+        # VPT (Volume Price Trend)
+        vpt = ta.volume.VolumePriceTrendIndicator(df['close'], df['volume']).volume_price_trend().iloc[-1]
+        
         return [
             1.0 if c > o else 0.0, body / (atr + 1e-6),
             (h - max(o, c)) / (body + 1e-6), (min(o, c) - l) / (body + 1e-6),
-            5.0, # consecutive_direction placeholder
+            float(count),
             (df['high'].iloc[-20:].max() - c) / (atr + 1e-6),
             (c - df['low'].iloc[-20:].min()) / (atr + 1e-6),
-            0.0, 0.0, 0.0 # EMA, Velocity, VPT placeholders
+            ema_align, velocity, vpt
         ]
 
 if __name__ == "__main__":

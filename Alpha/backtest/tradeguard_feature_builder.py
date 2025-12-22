@@ -78,7 +78,8 @@ class TradeGuardFeatureBuilder:
             f11 = vol / (vol_avg_50 + 1e-6)
             f12 = (vol - vol_avg_50) / (vol_std_50 + 1e-6)
             f13 = range_val / (atr_14 + 1e-6)
-            f14 = np.zeros(n)  # Placeholder
+            # f14: range_compression (rolling quantile)
+            f14 = (pd.Series(range_val).rolling(100, min_periods=1).rank(pct=True).values < 0.1).astype(np.float64)
             f15 = body / (range_val + 1e-6)
             upper_wick = high - np.maximum(open_p, close)
             lower_wick = np.minimum(open_p, close) - low
@@ -90,7 +91,8 @@ class TradeGuardFeatureBuilder:
             vol_ma_10 = fast_rolling_mean(vol, 10)
             f18 = vol_diff / (vol_ma_10 + 1e-6)
             f19 = atr_14 / (close + 1e-6)
-            f20 = np.zeros(n)
+            # f20: quiet_market (rolling quantile)
+            f20 = (pd.Series(atr_14).rolling(100, min_periods=1).rank(pct=True).values < 0.05).astype(np.float64)
 
             # Group C: Market Regime (10 features)
             dm_plus = np.zeros(n); dm_minus = np.zeros(n)
@@ -106,7 +108,10 @@ class TradeGuardFeatureBuilder:
             rolling_low_25 = pd.Series(low).rolling(25, min_periods=1).min().values
             f24 = (high - rolling_low_25) / (rolling_high_25 - rolling_low_25 + 1e-6) * 100
             f25 = (rolling_high_25 - low) / (rolling_high_25 - rolling_low_25 + 1e-6) * 100
-            f26 = np.full(n, 0.5)
+            # f26: Simplified Hurst approximation (Efficiency Ratio)
+            net_change_20 = np.zeros(n); net_change_20[20:] = np.abs(close[20:] - close[:-20])
+            abs_sum_20 = pd.Series(np.abs(np.diff(close, prepend=close[0]))).rolling(20).sum().values
+            f26 = net_change_20 / (abs_sum_20 + 1e-6)
             net_change_10 = np.zeros(n); net_change_10[10:] = np.abs(close[10:] - close[:-10])
             close_diff = np.zeros(n); close_diff[1:] = np.abs(close[1:] - close[:-1])
             abs_sum_10 = fast_rolling_mean(close_diff, 10) * 10
@@ -136,12 +141,27 @@ class TradeGuardFeatureBuilder:
             f52 = body / (atr_14 + 1e-6)
             f53 = upper_wick / (body + 1e-6)
             f54 = lower_wick / (body + 1e-6)
-            f55 = np.full(n, 5.0)
+            # f55: consecutive_direction (vectorized approximation)
+            diffs = np.sign(close - open_p)
+            f55 = np.zeros(n)
+            curr_count = 0
+            for i in range(1, n):
+                if diffs[i] == diffs[i-1]: curr_count += 1
+                else: curr_count = 1
+                f55[i] = curr_count
             rolling_high_20 = pd.Series(high).rolling(20, min_periods=1).max().values
             rolling_low_20 = pd.Series(low).rolling(20, min_periods=1).min().values
             f56 = (rolling_high_20 - close) / (atr_14 + 1e-6)
             f57 = (close - rolling_low_20) / (atr_14 + 1e-6)
-            f58 = np.zeros(n); f59 = np.zeros(n); f60 = np.zeros(n)
+            # f58: EMA alignment (9 vs 21)
+            ema9 = pd.Series(close).ewm(span=9).mean().values
+            ema21 = pd.Series(close).ewm(span=21).mean().values
+            f58 = (ema9 - ema21) / (ema21 + 1e-6)
+            # f59: price_velocity (5-period)
+            f59 = np.zeros(n); f59[5:] = (close[5:] - close[:-5]) / (atr_14[5:] + 1e-6)
+            # f60: VPT (Volume Price Trend)
+            vpt_raw = np.zeros(n); vpt_raw[1:] = vol[1:] * (close[1:] - close[:-1]) / close[:-1]
+            f60 = np.cumsum(vpt_raw) / (np.max(np.abs(np.cumsum(vpt_raw))) + 1e-6)
 
             combined = np.column_stack([
                 f11, f12, f13, f14, f15, f16, f17, f18, f19, f20,  # B
@@ -186,14 +206,26 @@ class TradeGuardFeatureBuilder:
         sl_dist = abs(trade_info['entry_price'] - trade_info['sl'])
         tp_dist = abs(trade_info['entry_price'] - trade_info['tp'])
         
+        # Calculate real indicators for Group E (parity with generate_dataset.py)
+        # Using simple windows from the raw data
+        df_chunk = self.df_dict[asset].iloc[max(0, step-50):step+1]
+        
+        import ta
+        rsi = ta.momentum.RSIIndicator(df_chunk['close'], window=14).rsi().iloc[-1]
+        bb = ta.volatility.BollingerBands(df_chunk['close'], window=20)
+        bb_pos = (df_chunk['close'].iloc[-1] - bb.bollinger_lband().iloc[-1]) / (bb.bollinger_hband().iloc[-1] - bb.bollinger_lband().iloc[-1] + 1e-6)
+        macd = ta.trend.MACD(df_chunk['close'])
+        macd_hist = macd.macd_diff().iloc[-1]
+        spread_est = (df_chunk['high'].iloc[-1] - df_chunk['low'].iloc[-1]) / (df_chunk['close'].iloc[-1] + 1e-6)
+        
         f_e = [
-            0.0, # entry_dist (relative to last close, usually 0 at bar start)
+            0.0, # entry_dist (usually 0 at bar start)
             sl_dist / (atr_val + 1e-6),
             tp_dist / (atr_val + 1e-6),
             tp_dist / (sl_dist + 1e-6),
             portfolio_state.get('position_value', 0) / portfolio_state['equity'] if portfolio_state['equity'] > 0 else 0,
             1 - (portfolio_state['equity'] / portfolio_state['peak_equity']) if portfolio_state['peak_equity'] > 0 else 0,
-            0.0, 0.5, 0.5, 0.0 # Placeholders
+            spread_est, rsi, bb_pos, macd_hist
         ]
         
         # Group D & F (20 features from precomputed)
