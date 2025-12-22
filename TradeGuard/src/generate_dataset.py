@@ -60,7 +60,7 @@ class TrainingDatasetGenerator:
             
             # Initialize environment for this chunk
             # is_training=False ensures it starts from step 500 or beginning
-            raw_env = TradingEnv(data=sliced_data, is_training=False)
+            raw_env = TradingEnv(data=sliced_data, is_training=False, stage=1)
             env = DummyVecEnv([lambda: raw_env])
             
             # Load model into this env
@@ -135,7 +135,7 @@ class TrainingDatasetGenerator:
                         if len(action_history[asset]) > 20:
                             action_history[asset].pop(0)
 
-                obs, _, _, _, _ = env.step(action)
+                obs, _, _, _ = env.step(action)
                 current_chunk_step += 1
 
             # Cleanup this chunk

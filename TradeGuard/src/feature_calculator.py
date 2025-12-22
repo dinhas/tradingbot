@@ -17,12 +17,33 @@ class TradeGuardFeatureCalculator:
         self.precomputed_features = self._precompute_market_features(df_dict)
         
     def _precompute_market_features(self, df_dict):
+        self.ohlcv_arrays = {}
         precomputed = {}
         for asset in self.assets:
             if asset not in df_dict: continue
             df = df_dict[asset]
             n = len(df)
-            h, l, c, v, o = df['high'].values, df['low'].values, df['close'].values, df['volume'].values, df['open'].values
+            
+            # Handle column names (prefixed vs standard)
+            if 'high' in df.columns:
+                h = df['high'].values
+                l = df['low'].values
+                c = df['close'].values
+                v = df['volume'].values
+                o = df['open'].values
+            else:
+                # Try prefixed
+                try:
+                    h = df[f"{asset}_high"].values
+                    l = df[f"{asset}_low"].values
+                    c = df[f"{asset}_close"].values
+                    v = df[f"{asset}_volume"].values
+                    o = df[f"{asset}_open"].values
+                except KeyError:
+                    logger.error(f"Could not find OHLCV columns for {asset}. Columns: {df.columns}")
+                    continue
+            
+            self.ohlcv_arrays[asset] = {'high': h, 'low': l}
             
             # 1. Volatility / Base Indicators
             tr = np.zeros(n)
@@ -54,10 +75,11 @@ class TradeGuardFeatureCalculator:
             f6 = (std20 * 4) / (pd.Series(c).rolling(20).mean() + 1e-6) # BB Width
             
             # 3. Candle / Momentum (10 Features)
-            f7 = ta.momentum.RSIIndicator(df['close'], window=14).rsi().values
-            bb = ta.volatility.BollingerBands(df['close'])
+            c_series = pd.Series(c)
+            f7 = ta.momentum.RSIIndicator(c_series, window=14).rsi().values
+            bb = ta.volatility.BollingerBands(c_series)
             f8 = (c - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-6) # BB Pos
-            f9 = ta.trend.MACD(df['close']).macd_diff().values
+            f9 = ta.trend.MACD(c_series).macd_diff().values
             
             ema9 = pd.Series(c).ewm(span=9).mean()
             ema21 = pd.Series(c).ewm(span=21).mean()
@@ -105,7 +127,7 @@ class TradeGuardFeatureCalculator:
             t_info = trade_infos.get(asset, {'entry':0, 'sl':0, 'tp':0})
             sl_dist = abs(t_info['entry'] - t_info['sl'])
             tp_dist = abs(t_info['entry'] - t_info['tp'])
-            atr_val = (self.df_dict[asset]['high'].iloc[step] - self.df_dict[asset]['low'].iloc[step]) + 1e-6
+            atr_val = (self.ohlcv_arrays[asset]['high'][step] - self.ohlcv_arrays[asset]['low'][step]) + 1e-6
             
             f_exec = [
                 sl_dist / atr_val,
