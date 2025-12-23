@@ -15,7 +15,7 @@
     - **Sub-task:** Write unit tests for `TradeGuardEnv` (state transitions, reward calculation, termination).
 - [ ] Task: Conductor - User Manual Verification 'Configuration & Environment Setup' (Protocol in workflow.md)
 
-## Phase 2: Training Pipeline Implementation
+## Phase 2: Training Pipeline Implementation [checkpoint: 2c5c2b6]
 - [x] Task: Create `TradeGuard/src/train_guard.py` a27352c
     - **Sub-task:** Implement config loading logic.
     - **Sub-task:** Setup `DummyVecEnv` wrapping `TradeGuardEnv`.
