@@ -2,7 +2,6 @@
 import os
 import numpy as np
 import pandas as pd
-import torch
 from pathlib import Path
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
