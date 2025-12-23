@@ -41,11 +41,27 @@ class TrainingDatasetGenerator:
         return data
 
     def generate(self, output_file='TradeGuard/data/training_dataset.parquet', chunk_size=50000):
-        total_rows = len(self.full_data[self.assets[0]])
-        logger.info(f"Starting dataset generation. Total rows: {total_rows}, Chunk size: {chunk_size}")
+        # Load Risk Model
+        risk_model_path = "RiskLayer/models/2.15.zip"
+        logger.info(f"Loading Risk Model from {risk_model_path}...")
+        try:
+            risk_model = PPO.load(risk_model_path, device='cpu')
+        except Exception as e:
+            logger.error(f"Failed to load Risk Model: {e}")
+            return
+
+        # Determine total rows based on the SHORTEST asset to avoid out-of-bounds slicing
+        min_len = min(len(df) for df in self.full_data.values())
+        total_rows = min_len
+        logger.info(f"Starting dataset generation. Total rows (min across assets): {total_rows}, Chunk size: {chunk_size}")
         
         dataset = []
         action_history = {asset: [] for asset in self.assets}
+        
+        # Risk Layer State (Global across chunks to maintain continuity)
+        from collections import deque
+        risk_history_pnl = deque([0.0]*5, maxlen=5)
+        risk_history_actions = deque([np.zeros(3) for _ in range(5)], maxlen=5)
         
         # We need a small overlap (e.g. 500 bars) for indicators to warm up in each environment
         warmup = 500 
@@ -56,30 +72,38 @@ class TrainingDatasetGenerator:
                 
                 # Slice data with warmup
                 slice_start = max(0, start_idx - warmup)
+                
+                # Safety check: Ensure we have enough data
+                if slice_start >= end_idx:
+                     logger.warning(f"Skipping chunk {start_idx}-{end_idx} (Slice start {slice_start} >= End {end_idx})")
+                     continue
+
                 sliced_data = {asset: self.full_data[asset].iloc[slice_start:end_idx] for asset in self.assets}
                 
-                # logger.info(f"Processing chunk {start_idx} to {end_idx} (Warmup: {slice_start})")
-                
+                # Double check that no dataframe is empty
+                if any(df.empty for df in sliced_data.values()):
+                    logger.warning(f"Skipping chunk {start_idx}-{end_idx} due to empty dataframe in slice.")
+                    continue
+
                 # Initialize environment for this chunk
                 # is_training=False ensures it starts from step 500 or beginning
                 raw_env = TradingEnv(data=sliced_data, is_training=False, stage=1)
                 env = DummyVecEnv([lambda: raw_env])
                 
-                # Load model into this env
+                # Load Alpha model into this env
                 model = PPO.load(self.model_path, env=env)
                 
                 # Feature calculator for this slice
                 tg_calculator = TradeGuardFeatureCalculator(raw_env.data)
                 
                 obs = env.reset()
-                # If we are in a middle chunk, we need to skip the warmup part for data collection
-                # but run the Alpha model to maintain state if necessary (Alpha state is mostly in observations)
                 
                 current_chunk_step = 0
                 # Steps to skip are the warmup bars
                 steps_to_skip = start_idx - slice_start
                 
                 while current_chunk_step < len(raw_env.processed_data):
+                    # 1. Get Alpha Direction
                     action, _ = model.predict(obs, deterministic=True)
                     
                     # Only collect data after warmup
@@ -88,22 +112,61 @@ class TrainingDatasetGenerator:
                         portfolio_state = self._get_portfolio_state(raw_env, parsed_actions, action_history)
                         
                         trade_infos = {}
+                        
+                        # Process each asset
                         for asset in self.assets:
                             act = parsed_actions[asset]
                             if act['direction'] != 0:
+                                # 2. Prepare Risk Model Observation (165 dims)
+                                # [0..139] Market State (from Alpha Obs)
+                                # Note: Alpha Obs is 140 dims. Risk Model expects 140 dims. 
+                                # We assume they are compatible (same feature engine).
+                                market_obs = obs[0] # Alpha observation
+                                
+                                # [140..144] Account State
+                                # RiskEnv uses: [equity_norm, drawdown, leverage, risk_cap, padding]
+                                # We approximate these since we aren't running a full RiskEnv
+                                equity_norm = 1.0 # Assuming constant equity for generation or tracking it
+                                drawdown = 0.0    # Assuming flat
+                                risk_cap = 1.0
+                                account_obs = np.array([equity_norm, drawdown, 0.0, risk_cap, 0.0], dtype=np.float32)
+                                
+                                # [145..164] History
+                                hist_pnl = np.array(risk_history_pnl, dtype=np.float32)
+                                hist_acts = np.array(risk_history_actions, dtype=np.float32).flatten()
+                                
+                                risk_obs = np.concatenate([market_obs, account_obs, hist_pnl, hist_acts])
+                                
+                                # 3. Get Risk Action
+                                risk_action, _ = risk_model.predict(risk_obs, deterministic=True)
+                                
+                                # 4. Decode Risk Action (RiskLayer Logic)
+                                # SL: 0.2 - 2.0 ATR
+                                sl_mult = np.clip((risk_action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)
+                                # TP: 0.5 - 4.0 ATR
+                                tp_mult = np.clip((risk_action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
+                                # Risk: used for position size, but here we just need SL/TP outcomes
+                                risk_val = np.clip((risk_action[2] + 1) / 2, 0.0, 1.0)
+
+                                # 5. Define Trade
                                 price = raw_env.close_arrays[asset][raw_env.current_step]
                                 atr = raw_env.atr_arrays[asset][raw_env.current_step]
                                 
-                                sl_dist = act['sl_mult'] * atr
-                                tp_dist = act['tp_mult'] * atr
+                                sl_dist = sl_mult * atr
+                                tp_dist = tp_mult * atr
                                 
                                 trade_infos[asset] = {
                                     'entry': price,
                                     'sl': price - (act['direction'] * sl_dist),
                                     'tp': price + (act['direction'] * tp_dist),
-                                    'direction': act['direction']
+                                    'direction': act['direction'],
+                                    'sl_mult': sl_mult, # Save for reference
+                                    'tp_mult': tp_mult
                                 }
-                        
+                                
+                                # Update Risk History (Tentative - using dummy result until simulation)
+                                # We update it properly after simulation below
+                                
                         if trade_infos:
                             tg_features = tg_calculator.get_multi_asset_obs(
                                 raw_env.current_step, 
@@ -121,9 +184,21 @@ class TrainingDatasetGenerator:
                                     'tp': t_info['tp'],
                                     'entry_step': raw_env.current_step
                                 }
+                                # 6. Simulate Outcome
                                 result = raw_env._simulate_trade_outcome_with_timing(asset)
                                 label = 1 if result['exit_reason'] == 'TP' or (result['pnl'] > 0 and result['closed']) else 0
                                 outcomes[f'target_{asset}'] = label
+                                
+                                # 7. Update Risk History with REAL outcome
+                                # PnL Ratio (approximate for history)
+                                pnl_ratio = 0.01 if label == 1 else -0.01 
+                                if result['pnl'] != 0:
+                                     # Normalize roughly like RiskEnv
+                                     pnl_ratio = result['pnl'] / 1000.0 # based on size 1000
+                                
+                                risk_history_pnl.append(pnl_ratio)
+                                risk_history_actions.append(risk_action) # Store the raw action we just took
+                                
                                 raw_env.positions[asset] = None
 
                             row = {f'f_{i}': val for i, val in enumerate(tg_features)}
