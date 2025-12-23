@@ -9,6 +9,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 import logging
 import sys
 import gc
+from tqdm import tqdm
 
 # Add project root to sys.path
 project_root = str(Path(__file__).resolve().parent.parent.parent)
@@ -49,105 +50,109 @@ class TrainingDatasetGenerator:
         # We need a small overlap (e.g. 500 bars) for indicators to warm up in each environment
         warmup = 500 
         
-        for start_idx in range(0, total_rows, chunk_size):
-            end_idx = min(start_idx + chunk_size, total_rows)
-            
-            # Slice data with warmup
-            slice_start = max(0, start_idx - warmup)
-            sliced_data = {asset: self.full_data[asset].iloc[slice_start:end_idx] for asset in self.assets}
-            
-            logger.info(f"Processing chunk {start_idx} to {end_idx} (Warmup: {slice_start})")
-            
-            # Initialize environment for this chunk
-            # is_training=False ensures it starts from step 500 or beginning
-            raw_env = TradingEnv(data=sliced_data, is_training=False, stage=1)
-            env = DummyVecEnv([lambda: raw_env])
-            
-            # Load model into this env
-            model = PPO.load(self.model_path, env=env)
-            
-            # Feature calculator for this slice
-            tg_calculator = TradeGuardFeatureCalculator(raw_env.data)
-            
-            obs = env.reset()
-            # If we are in a middle chunk, we need to skip the warmup part for data collection
-            # but run the Alpha model to maintain state if necessary (Alpha state is mostly in observations)
-            
-            current_chunk_step = 0
-            # Steps to skip are the warmup bars
-            steps_to_skip = start_idx - slice_start
-            
-            while current_chunk_step < len(raw_env.processed_data):
-                action, _ = model.predict(obs, deterministic=True)
+        with tqdm(total=total_rows, desc="Generating Dataset", unit="rows") as pbar:
+            for start_idx in range(0, total_rows, chunk_size):
+                end_idx = min(start_idx + chunk_size, total_rows)
                 
-                # Only collect data after warmup
-                if current_chunk_step >= steps_to_skip:
-                    parsed_actions = raw_env._parse_action(action[0])
-                    portfolio_state = self._get_portfolio_state(raw_env, parsed_actions, action_history)
+                # Slice data with warmup
+                slice_start = max(0, start_idx - warmup)
+                sliced_data = {asset: self.full_data[asset].iloc[slice_start:end_idx] for asset in self.assets}
+                
+                # logger.info(f"Processing chunk {start_idx} to {end_idx} (Warmup: {slice_start})")
+                
+                # Initialize environment for this chunk
+                # is_training=False ensures it starts from step 500 or beginning
+                raw_env = TradingEnv(data=sliced_data, is_training=False, stage=1)
+                env = DummyVecEnv([lambda: raw_env])
+                
+                # Load model into this env
+                model = PPO.load(self.model_path, env=env)
+                
+                # Feature calculator for this slice
+                tg_calculator = TradeGuardFeatureCalculator(raw_env.data)
+                
+                obs = env.reset()
+                # If we are in a middle chunk, we need to skip the warmup part for data collection
+                # but run the Alpha model to maintain state if necessary (Alpha state is mostly in observations)
+                
+                current_chunk_step = 0
+                # Steps to skip are the warmup bars
+                steps_to_skip = start_idx - slice_start
+                
+                while current_chunk_step < len(raw_env.processed_data):
+                    action, _ = model.predict(obs, deterministic=True)
                     
-                    trade_infos = {}
-                    for asset in self.assets:
-                        act = parsed_actions[asset]
-                        if act['direction'] != 0:
-                            price = raw_env.close_arrays[asset][raw_env.current_step]
-                            atr = raw_env.atr_arrays[asset][raw_env.current_step]
-                            
-                            sl_dist = act['sl_mult'] * atr
-                            tp_dist = act['tp_mult'] * atr
-                            
-                            trade_infos[asset] = {
-                                'entry': price,
-                                'sl': price - (act['direction'] * sl_dist),
-                                'tp': price + (act['direction'] * tp_dist),
-                                'direction': act['direction']
-                            }
-                    
-                    if trade_infos:
-                        tg_features = tg_calculator.get_multi_asset_obs(
-                            raw_env.current_step, 
-                            trade_infos, 
-                            portfolio_state
-                        )
+                    # Only collect data after warmup
+                    if current_chunk_step >= steps_to_skip:
+                        parsed_actions = raw_env._parse_action(action[0])
+                        portfolio_state = self._get_portfolio_state(raw_env, parsed_actions, action_history)
                         
-                        outcomes = {}
-                        for asset, t_info in trade_infos.items():
-                            raw_env.positions[asset] = {
-                                'direction': t_info['direction'],
-                                'entry_price': t_info['entry'],
-                                'size': 1000, 
-                                'sl': t_info['sl'],
-                                'tp': t_info['tp'],
-                                'entry_step': raw_env.current_step
-                            }
-                            result = raw_env._simulate_trade_outcome_with_timing(asset)
-                            label = 1 if result['exit_reason'] == 'TP' or (result['pnl'] > 0 and result['closed']) else 0
-                            outcomes[f'target_{asset}'] = label
-                            raw_env.positions[asset] = None
+                        trade_infos = {}
+                        for asset in self.assets:
+                            act = parsed_actions[asset]
+                            if act['direction'] != 0:
+                                price = raw_env.close_arrays[asset][raw_env.current_step]
+                                atr = raw_env.atr_arrays[asset][raw_env.current_step]
+                                
+                                sl_dist = act['sl_mult'] * atr
+                                tp_dist = act['tp_mult'] * atr
+                                
+                                trade_infos[asset] = {
+                                    'entry': price,
+                                    'sl': price - (act['direction'] * sl_dist),
+                                    'tp': price + (act['direction'] * tp_dist),
+                                    'direction': act['direction']
+                                }
+                        
+                        if trade_infos:
+                            tg_features = tg_calculator.get_multi_asset_obs(
+                                raw_env.current_step, 
+                                trade_infos, 
+                                portfolio_state
+                            )
+                            
+                            outcomes = {}
+                            for asset, t_info in trade_infos.items():
+                                raw_env.positions[asset] = {
+                                    'direction': t_info['direction'],
+                                    'entry_price': t_info['entry'],
+                                    'size': 1000, 
+                                    'sl': t_info['sl'],
+                                    'tp': t_info['tp'],
+                                    'entry_step': raw_env.current_step
+                                }
+                                result = raw_env._simulate_trade_outcome_with_timing(asset)
+                                label = 1 if result['exit_reason'] == 'TP' or (result['pnl'] > 0 and result['closed']) else 0
+                                outcomes[f'target_{asset}'] = label
+                                raw_env.positions[asset] = None
 
-                        row = {f'f_{i}': val for i, val in enumerate(tg_features)}
-                        row.update(outcomes)
-                        row['timestamp'] = raw_env._get_current_timestamp()
-                        dataset.append(row)
+                            row = {f'f_{i}': val for i, val in enumerate(tg_features)}
+                            row.update(outcomes)
+                            row['timestamp'] = raw_env._get_current_timestamp()
+                            dataset.append(row)
 
-                    # Update persistence history
-                    for asset in self.assets:
-                        action_history[asset].append(parsed_actions[asset]['direction'])
-                        if len(action_history[asset]) > 20:
-                            action_history[asset].pop(0)
+                        # Update persistence history
+                        for asset in self.assets:
+                            action_history[asset].append(parsed_actions[asset]['direction'])
+                            if len(action_history[asset]) > 20:
+                                action_history[asset].pop(0)
 
-                obs, _, _, _ = env.step(action)
-                current_chunk_step += 1
+                    obs, _, _, _ = env.step(action)
+                    current_chunk_step += 1
 
-            # Cleanup this chunk
-            del model
-            del env
-            del raw_env
-            del tg_calculator
-            gc.collect()
-            
-            # Periodically save to avoid losing all data on crash
-            if len(dataset) > 1000:
-                logger.info(f"Progress check: {len(dataset)} samples collected so far.")
+                # Cleanup this chunk
+                del model
+                del env
+                del raw_env
+                del tg_calculator
+                gc.collect()
+                
+                # Update progress bar
+                pbar.update(end_idx - start_idx)
+                
+                # Periodically save to avoid losing all data on crash
+                if len(dataset) > 1000 and len(dataset) % 10000 < 100: # Log less frequently
+                    pbar.set_postfix({'samples': len(dataset)})
 
         # Save Final Dataset
         if dataset:
