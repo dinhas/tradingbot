@@ -1,6 +1,6 @@
 # Implementation Plan - TradeGuard RL Training
 
-## Phase 1: Configuration & Environment Setup
+## Phase 1: Configuration & Environment Setup [checkpoint: a3b65cd]
 - [x] Task: Create `TradeGuard/config/ppo_config.yaml` 0e3c82e
     - Define default PPO hyperparameters (lr, n_steps, batch_size, gamma, gae_lambda, ent_coef).
     - Define environment parameters (reward_scaling, penalty_factors).
