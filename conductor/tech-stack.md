@@ -3,7 +3,6 @@
 ## Core Technologies
 *   **Language:** Python
 *   **Reinforcement Learning:** Stable-Baselines3 (PPO), Gymnasium
-*   **Machine Learning (Classification):** LightGBM, Scikit-learn
 *   **Data Analysis:** Pandas, Numpy, TA (Technical Analysis Library)
 
 ## Infrastructure & APIs
