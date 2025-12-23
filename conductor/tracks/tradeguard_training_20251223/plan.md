@@ -16,7 +16,7 @@
 - [ ] Task: Conductor - User Manual Verification 'Configuration & Environment Setup' (Protocol in workflow.md)
 
 ## Phase 2: Training Pipeline Implementation
-- [ ] Task: Create `TradeGuard/src/train_guard.py`
+- [x] Task: Create `TradeGuard/src/train_guard.py` a27352c
     - **Sub-task:** Implement config loading logic.
     - **Sub-task:** Setup `DummyVecEnv` wrapping `TradeGuardEnv`.
     - **Sub-task:** Initialize PPO model with loaded config.
