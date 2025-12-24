@@ -37,6 +37,13 @@ class TradeGuardEnv(gym.Env):
         # Cache features for faster access
         self.features = self.df[[f'f_{i}' for i in range(105)]].values.astype(np.float32)
         
+        # OPTIMIZATION: Cache PnL and Target columns as numpy arrays
+        self.pnl_arrays = {}
+        self.target_arrays = {}
+        for a in self.assets:
+            self.pnl_arrays[a] = self.df[f'pnl_{a}'].values.astype(np.float32)
+            self.target_arrays[a] = self.df[f'target_{a}'].values.astype(np.float32)
+        
         logger.info(f"TradeGuardEnv initialized with {self.total_steps} samples.")
 
     def reset(self, seed=None, options=None):
@@ -51,18 +58,17 @@ class TradeGuardEnv(gym.Env):
         return obs, info
 
     def step(self, action):
-        row = self.df.iloc[self.current_step]
-        
-        reward = 0
+        # OPTIMIZATION: Use numpy arrays instead of pandas iloc
+        reward = 0.0
         
         if action == 1: # Allow
             # Reward is the sum of actual PnLs
             for a in self.assets:
-                reward += row.get(f'pnl_{a}', 0)
+                reward += self.pnl_arrays[a][self.current_step]
         else: # Block
             for a in self.assets:
-                pnl = row.get(f'pnl_{a}', 0)
-                target = row.get(f'target_{a}', 0) # 1 if it was a win
+                pnl = self.pnl_arrays[a][self.current_step]
+                target = self.target_arrays[a][self.current_step]
                 
                 if target == 1:
                     # Missed Win Penalty
@@ -84,7 +90,6 @@ class TradeGuardEnv(gym.Env):
             obs = np.zeros(105, dtype=np.float32)
             
         info = {
-            'timestamp': row.get('timestamp'),
             'step': self.current_step
         }
         

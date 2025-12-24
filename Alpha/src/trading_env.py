@@ -42,7 +42,8 @@ class TradingEnv(gym.Env):
         self.feature_engine = FeatureEngine()
         self.raw_data, self.processed_data = self.feature_engine.preprocess_data(self.data)
         
-        # OPTIMIZATION: Cache data as numpy arrays for fast access
+        # OPTIMIZATION: Build static observation matrix
+        self._build_optimization_matrix()
         self._cache_data_arrays()
         
         # Define Action Space based on Stage
@@ -67,6 +68,88 @@ class TradingEnv(gym.Env):
         self.MAX_TOTAL_EXPOSURE = 0.60
         self.DRAWDOWN_LIMIT = 0.25
         
+    def _build_optimization_matrix(self):
+        """
+        Constructs a master numpy matrix (Steps x 140) containing all STATIC market data.
+        Dynamic features (portfolio state) are left as 0 and filled at runtime.
+        """
+        n_steps = len(self.processed_data)
+        self.master_obs_matrix = np.zeros((n_steps, 140), dtype=np.float32)
+        
+        # Map feature names to indices
+        self.feature_map = {name: i for i, name in enumerate(self.feature_engine.feature_names)}
+        
+        # Cache indices for dynamic features for fast updates
+        self.dynamic_indices = {
+            'equity': self.feature_map['equity'],
+            'margin_usage_pct': self.feature_map['margin_usage_pct'],
+            'drawdown': self.feature_map['drawdown'],
+            'num_open_positions': self.feature_map['num_open_positions']
+        }
+        
+        self.asset_dynamic_indices = {}
+        for asset in self.assets:
+            self.asset_dynamic_indices[asset] = {
+                'has_position': self.feature_map[f"{asset}_has_position"],
+                'position_size': self.feature_map[f"{asset}_position_size"],
+                'unrealized_pnl': self.feature_map[f"{asset}_unrealized_pnl"],
+                'position_age': self.feature_map[f"{asset}_position_age"],
+                'entry_price': self.feature_map[f"{asset}_entry_price"],
+                'current_sl': self.feature_map[f"{asset}_current_sl"],
+                'current_tp': self.feature_map[f"{asset}_current_tp"]
+            }
+        
+        # Fill static features from DataFrame columns
+        for col in self.processed_data.columns:
+            if col in self.feature_map:
+                idx = self.feature_map[col]
+                self.master_obs_matrix[:, idx] = self.processed_data[col].values
+
+    def _get_observation(self):
+        """
+        Optimized observation retrieval using pre-computed matrix.
+        """
+        # 1. Copy pre-computed static data for current step
+        # using copy() ensures we don't mutate the master matrix
+        obs = self.master_obs_matrix[self.current_step].copy()
+        
+        # 2. Update Global Dynamic Features
+        total_exposure = sum(pos['size'] for pos in self.positions.values() if pos is not None)
+        
+        obs[self.dynamic_indices['equity']] = self.equity
+        obs[self.dynamic_indices['margin_usage_pct']] = total_exposure / self.equity if self.equity > 0 else 0
+        obs[self.dynamic_indices['drawdown']] = 1.0 - (self.equity / self.peak_equity)
+        obs[self.dynamic_indices['num_open_positions']] = sum(1 for p in self.positions.values() if p is not None)
+        
+        # 3. Update Per-Asset Dynamic Features
+        current_prices = self._get_current_prices()
+        
+        for asset in self.assets:
+            pos = self.positions[asset]
+            indices = self.asset_dynamic_indices[asset]
+            
+            if pos:
+                # Calculate metrics
+                price_change = (current_prices[asset] - pos['entry_price']) * pos['direction']
+                price_change_pct = price_change / pos['entry_price'] if pos['entry_price'] != 0 else 0
+                unrealized_pnl = price_change_pct * (pos['size'] * self.leverage)
+                
+                # Update Vector
+                obs[indices['has_position']] = 1.0
+                obs[indices['position_size']] = pos['size'] / self.equity
+                obs[indices['unrealized_pnl']] = unrealized_pnl
+                obs[indices['position_age']] = self.current_step - pos['entry_step']
+                obs[indices['entry_price']] = pos['entry_price']
+                obs[indices['current_sl']] = pos['sl']
+                obs[indices['current_tp']] = pos['tp']
+            else:
+                # No position (already 0 in matrix, but resetting ensures safety if we reused arrays)
+                # Since we copy() from master (where they are 0), we don't strictly need to zero them 
+                # unless the master matrix was dirty, which it isn't.
+                pass
+                
+        return obs
+
     def _cache_data_arrays(self):
         """Cache DataFrame columns as numpy arrays for performance."""
         self.close_arrays = {}
@@ -610,51 +693,6 @@ class TradingEnv(gym.Env):
             )
         
         return reward
-
-    def _get_observation(self):
-        """Build observation vector from market data and portfolio state."""
-        current_row = self.processed_data.iloc[self.current_step]
-        
-        # FIX: Calculate actual margin usage and correct drawdown
-        total_exposure = sum(pos['size'] for pos in self.positions.values() if pos is not None)
-        
-        portfolio_state = {
-            'equity': self.equity,
-            'margin_usage_pct': total_exposure / self.equity if self.equity > 0 else 0,
-            'drawdown': 1 - (self.equity / self.peak_equity),  # FIX: Inverted formula
-            'num_open_positions': sum(1 for p in self.positions.values() if p is not None)
-        }
-        
-        current_prices = self._get_current_prices()
-        for asset in self.assets:
-            pos = self.positions[asset]
-            if pos:
-                # FIX: Calculate normalized unrealized P&L
-                price_change = (current_prices[asset] - pos['entry_price']) * pos['direction']
-                price_change_pct = price_change / pos['entry_price'] if pos['entry_price'] != 0 else 0
-                unrealized_pnl = price_change_pct * (pos['size'] * self.leverage)
-                
-                portfolio_state[asset] = {
-                    'has_position': 1,
-                    'position_size': pos['size'] / self.equity,
-                    'unrealized_pnl': unrealized_pnl,
-                    'position_age': self.current_step - pos['entry_step'],
-                    'entry_price': pos['entry_price'],
-                    'current_sl': pos['sl'],
-                    'current_tp': pos['tp']
-                }
-            else:
-                portfolio_state[asset] = {
-                    'has_position': 0,
-                    'position_size': 0,
-                    'unrealized_pnl': 0,
-                    'position_age': 0,
-                    'entry_price': 0,
-                    'current_sl': 0,
-                    'current_tp': 0
-                }
-        
-        return self.feature_engine.get_observation(current_row, portfolio_state)
 
     def _get_current_prices(self):
         """Get current close prices for all assets using cached arrays."""

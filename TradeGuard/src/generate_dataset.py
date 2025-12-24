@@ -65,6 +65,8 @@ class TrainingDatasetGenerator:
             raise ValueError("No overlapping data found across assets! Cannot generate dataset.")
             
         logger.info(f"Aligning all assets to common time range. Overlapping rows: {len(common_index)}")
+        logger.info(f"Data Range: {common_index.min()} to {common_index.max()}")
+        
         for asset in self.assets:
             data[asset] = data[asset].loc[common_index]
             
@@ -87,6 +89,15 @@ class TrainingDatasetGenerator:
         
         dataset = []
         action_history = {asset: [] for asset in self.assets}
+        
+        # Statistics
+        stats = {
+            'total_steps': 0,
+            'alpha_signals': 0,
+            'risk_blocked_low_conf': 0, # hypothetical block if risk_val < 0.2
+            'risk_blocked_bad_rr': 0,   # hypothetical block if TP < SL
+            'saved_rows': 0
+        }
         
         # Risk Layer State (Global across chunks to maintain continuity)
         from collections import deque
@@ -147,6 +158,8 @@ class TrainingDatasetGenerator:
                         for asset in self.assets:
                             act = parsed_actions[asset]
                             if act['direction'] != 0:
+                                stats['alpha_signals'] += 1
+                                
                                 # 2. Prepare Risk Model Observation (165 dims)
                                 # [0..139] Market State (from Alpha Obs)
                                 # Note: Alpha Obs is 140 dims. Risk Model expects 140 dims. 
@@ -177,6 +190,12 @@ class TrainingDatasetGenerator:
                                 tp_mult = np.clip((risk_action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
                                 # Risk: used for position size, but here we just need SL/TP outcomes
                                 risk_val = np.clip((risk_action[2] + 1) / 2, 0.0, 1.0)
+                                
+                                # Track stats for "Blocking"
+                                if risk_val < 0.2: # Example threshold for "Low Confidence"
+                                    stats['risk_blocked_low_conf'] += 1
+                                if tp_mult < sl_mult: # Example threshold for "Bad RR"
+                                    stats['risk_blocked_bad_rr'] += 1
 
                                 # 5. Define Trade
                                 price = raw_env.close_arrays[asset][raw_env.current_step]
@@ -191,7 +210,8 @@ class TrainingDatasetGenerator:
                                     'tp': price + (act['direction'] * tp_dist),
                                     'direction': act['direction'],
                                     'sl_mult': sl_mult, # Save for reference
-                                    'tp_mult': tp_mult
+                                    'tp_mult': tp_mult,
+                                    'risk_val': risk_val
                                 }
                                 
                                 # Update Risk History (Tentative - using dummy result until simulation)
@@ -235,12 +255,15 @@ class TrainingDatasetGenerator:
                             row.update(outcomes)
                             row['timestamp'] = raw_env._get_current_timestamp()
                             dataset.append(row)
+                            stats['saved_rows'] += 1
 
                         # Update persistence history
                         for asset in self.assets:
                             action_history[asset].append(parsed_actions[asset]['direction'])
                             if len(action_history[asset]) > 20:
                                 action_history[asset].pop(0)
+                        
+                        stats['total_steps'] += 1
 
                     obs, _, _, _ = env.step(action)
                     current_chunk_step += 1
@@ -257,9 +280,16 @@ class TrainingDatasetGenerator:
                 
                 # Periodically save to avoid losing all data on crash
                 if len(dataset) > 1000 and len(dataset) % 10000 < 100: # Log less frequently
-                    pbar.set_postfix({'samples': len(dataset)})
+                    pbar.set_postfix({'samples': len(dataset), 'alpha': stats['alpha_signals']})
 
         # Save Final Dataset
+        logger.info("Generation Stats:")
+        logger.info(f"  Total Steps Processed: {stats['total_steps']}")
+        logger.info(f"  Total Alpha Signals: {stats['alpha_signals']}")
+        logger.info(f"  Risk Model Low Conf (<0.2): {stats['risk_blocked_low_conf']} ({stats['risk_blocked_low_conf']/max(1, stats['alpha_signals']):.1%})")
+        logger.info(f"  Risk Model Bad RR (TP<SL): {stats['risk_blocked_bad_rr']} ({stats['risk_blocked_bad_rr']/max(1, stats['alpha_signals']):.1%})")
+        logger.info(f"  Saved Rows: {stats['saved_rows']}")
+
         if dataset:
             df = pd.DataFrame(dataset)
             df.to_parquet(output_file)

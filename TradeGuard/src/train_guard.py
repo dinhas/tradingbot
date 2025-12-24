@@ -32,8 +32,22 @@ class TradeGuardTrainer:
     def _setup_env(self):
         # Allow overriding dataset_path for testing
         env_config = self.config.copy()
-        raw_env = TradeGuardEnv(env_config)
-        return DummyVecEnv([lambda: raw_env])
+        
+        # Use SubprocVecEnv for parallel training
+        import multiprocessing
+        from stable_baselines3.common.vec_env import SubprocVecEnv
+        
+        n_cpu = multiprocessing.cpu_count()
+        # Create a function that returns the environment
+        def make_env(rank, seed=0):
+            def _init():
+                env = TradeGuardEnv(env_config)
+                env.reset(seed=seed + rank)
+                return env
+            return _init
+            
+        logger.info(f"Creating {n_cpu} parallel environments...")
+        return SubprocVecEnv([make_env(i) for i in range(n_cpu)])
         
     def _setup_model(self):
         ppo_params = self.config['ppo']

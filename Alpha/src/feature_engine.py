@@ -197,6 +197,27 @@ class FeatureEngine:
         df['session_ny'] = ((hours >= 13) & (hours < 22)).astype(int)
         df['session_overlap'] = ((hours >= 13) & (hours < 17)).astype(int)
         
+        # Global Market Regime Features (Pre-calculated)
+        # Risk on score: (GBPUSD_return + XAUUSD_return) / 2
+        # Handle missing columns gracefully if assets are different
+        gbp_ret = df["GBPUSD_return_1"] if "GBPUSD_return_1" in df.columns else 0
+        xau_ret = df["XAUUSD_return_1"] if "XAUUSD_return_1" in df.columns else 0
+        df['risk_on_score'] = (gbp_ret + xau_ret) / 2
+        
+        # Asset dispersion: std of returns across all assets
+        ret_cols = [f"{a}_return_1" for a in self.assets if f"{a}_return_1" in df.columns]
+        if ret_cols:
+            df['asset_dispersion'] = df[ret_cols].std(axis=1)
+        else:
+            df['asset_dispersion'] = 0
+            
+        # Market volatility: mean ATR ratio
+        atr_ratio_cols = [f"{a}_atr_ratio" for a in self.assets if f"{a}_atr_ratio" in df.columns]
+        if atr_ratio_cols:
+            df['market_volatility'] = df[atr_ratio_cols].mean(axis=1)
+        else:
+            df['market_volatility'] = 0
+        
         return df
 
     def _normalize_features(self, df):
@@ -212,6 +233,9 @@ class FeatureEngine:
                 f"{asset}_rsi_14", f"{asset}_macd_hist",
                 f"{asset}_volume_ratio"
             ])
+            
+        # Add Global Features to normalization
+        cols_to_normalize.extend(['risk_on_score', 'asset_dispersion', 'market_volatility'])
             
         for col in cols_to_normalize:
             if col in df.columns:
