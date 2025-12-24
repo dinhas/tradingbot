@@ -225,6 +225,11 @@ class TrainingDatasetGenerator:
                             )
                             
                             outcomes = {}
+                            # Initialize all outcome columns to 0.0 to ensure DataFrame consistency
+                            for asset in self.assets:
+                                outcomes[f'target_{asset}'] = 0.0
+                                outcomes[f'pnl_{asset}'] = 0.0
+                                
                             for asset, t_info in trade_infos.items():
                                 raw_env.positions[asset] = {
                                     'direction': t_info['direction'],
@@ -238,6 +243,7 @@ class TrainingDatasetGenerator:
                                 result = raw_env._simulate_trade_outcome_with_timing(asset)
                                 label = 1 if result['exit_reason'] == 'TP' or (result['pnl'] > 0 and result['closed']) else 0
                                 outcomes[f'target_{asset}'] = label
+                                outcomes[f'pnl_{asset}'] = result['pnl']
                                 
                                 # 7. Update Risk History with REAL outcome
                                 # PnL Ratio (approximate for history)
