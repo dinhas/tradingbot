@@ -34,9 +34,40 @@ class TrainingDatasetGenerator:
     def _load_all_data(self):
         logger.info("Loading all market data files...")
         data = {}
+        common_index = None
+        
         for asset in self.assets:
             file_path = os.path.join(self.data_dir, f"{asset}_5m.parquet")
-            data[asset] = pd.read_parquet(file_path)
+            # Handle potential missing files gracefully or ensure they exist
+            if not os.path.exists(file_path):
+                 # Fallback to 2025 file if exists (matching TradingEnv logic)
+                 file_path_2025 = os.path.join(self.data_dir, f"{asset}_5m_2025.parquet")
+                 if os.path.exists(file_path_2025):
+                     file_path = file_path_2025
+                 else:
+                     raise FileNotFoundError(f"Data file for {asset} not found at {file_path}")
+
+            df = pd.read_parquet(file_path)
+            # Ensure index is datetime and sorted
+            if not isinstance(df.index, pd.DatetimeIndex):
+                df.index = pd.to_datetime(df.index)
+            df.sort_index(inplace=True)
+            
+            data[asset] = df
+            
+            if common_index is None:
+                common_index = df.index
+            else:
+                common_index = common_index.intersection(df.index)
+        
+        # Align all assets to the common intersection
+        if common_index is None or len(common_index) == 0:
+            raise ValueError("No overlapping data found across assets! Cannot generate dataset.")
+            
+        logger.info(f"Aligning all assets to common time range. Overlapping rows: {len(common_index)}")
+        for asset in self.assets:
+            data[asset] = data[asset].loc[common_index]
+            
         return data
 
     def generate(self, output_file='TradeGuard/data/training_dataset.parquet', chunk_size=50000):
