@@ -3,7 +3,6 @@ import sys
 import json
 import logging
 from pathlib import Path
-import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -20,53 +19,37 @@ if not hasattr(np, "_core"):
     sys.modules["numpy._core"] = np.core
 
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv
 from Alpha.backtest.backtest_combined import CombinedBacktest
 from Alpha.backtest.backtest import BacktestMetrics, FullSystemMetrics, generate_full_system_charts
 from Alpha.backtest.tradeguard_feature_builder import TradeGuardFeatureBuilder
 
 logger = logging.getLogger(__name__)
 
-def load_tradeguard_model(model_path, metadata_path):
-    """
-    Loads the TradeGuard model and its metadata.
-    Fails fast if either is missing or invalid.
-    """
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"TradeGuard model not found at {model_path}")
-    if not os.path.exists(metadata_path):
-        raise FileNotFoundError(f"TradeGuard metadata not found at {metadata_path}")
-    
-    try:
-        model = lgb.Booster(model_file=model_path)
-    except Exception as e:
-        raise ValueError(f"Failed to load TradeGuard model: {e}")
-        
-    try:
-        with open(metadata_path, 'r') as f:
-            metadata = json.load(f)
-    except Exception as e:
-        raise ValueError(f"Failed to load TradeGuard metadata: {e}")
-        
-    if 'threshold' not in metadata:
-        raise KeyError("Metadata must contain 'threshold'")
-        
-    return model, metadata
-
 class FullSystemBacktest(CombinedBacktest):
     """
-    Extends CombinedBacktest to include TradeGuard filtering.
+    Extends CombinedBacktest to include TradeGuard filtering (RL Version).
     """
-    def __init__(self, alpha_model_path, risk_model_path, guard_model_path, guard_metadata_path, data_dir, initial_equity=10):
+    def __init__(self, alpha_model_path, risk_model_path, guard_model_path, data_dir, initial_equity=10):
         # Load models
         alpha_model = PPO.load(alpha_model_path)
         risk_model = PPO.load(risk_model_path)
-        guard_model, guard_metadata = load_tradeguard_model(guard_model_path, guard_metadata_path)
         
+        # Load TradeGuard Model (PPO)
+        if not os.path.exists(guard_model_path):
+             raise FileNotFoundError(f"TradeGuard model not found at {guard_model_path}")
+        
+        # We need to construct a dummy env for PPO load if using custom features, 
+        # but usually PPO.load works fine without env for inference if observation space matches.
+        # However, to be safe, we can wrap it.
+        try:
+             guard_model = PPO.load(guard_model_path)
+        except Exception as e:
+             raise ValueError(f"Failed to load TradeGuard PPO model: {e}")
+
         super().__init__(alpha_model, risk_model, data_dir, initial_equity)
         
         self.guard_model = guard_model
-        self.guard_threshold = guard_metadata['threshold']
-        self.guard_metadata = guard_metadata
         
         # Initialize feature builder (requires data from env)
         # TradingEnv stores the dictionary of dataframes in self.env.data
@@ -80,83 +63,53 @@ class FullSystemBacktest(CombinedBacktest):
         # Initialize last_alpha_actions (needed for Group A features)
         self.last_alpha_actions = np.zeros(self.env.action_dim, dtype=np.float32)
         
-        logger.info(f"Initialized FullSystemBacktest with TradeGuard threshold: {self.guard_threshold}")
+        logger.info(f"Initialized FullSystemBacktest with TradeGuard RL Model")
 
-    def evaluate_tradeguard(self, asset, action_info):
+    def _get_portfolio_state_for_features(self, alpha_actions_parsed):
         """
-        Calculates TradeGuard probability and applies threshold filtering.
+        Constructs the portfolio state dictionary required by TradeGuardFeatureBuilder.
         """
-        # 1. Build portfolio state
-        total_exposure = sum(pos['size'] for pos in self.env.positions.values() if pos is not None)
-        
-        # Build asset_recent_actions for this asset
-        asset_recent_actions = list(self.asset_histories[asset]['action_history'])
-        # Map to raw action values (first component for direction)
-        asset_recent_actions_raw = [a[0] for a in asset_recent_actions]
-        if len(asset_recent_actions_raw) < 5:
-            asset_recent_actions_raw = [0.0] * (5 - len(asset_recent_actions_raw)) + asset_recent_actions_raw
-            
-        persistence, reversal = self._calculate_persistence_reversal(asset, action_info['direction'])
-        
-        portfolio_state = {
-            'equity': self.env.equity,
-            'peak_equity': self.env.peak_equity,
-            'total_exposure': total_exposure,
-            'open_positions_count': sum(1 for p in self.env.positions.values() if p is not None),
-            'recent_trades': [{'pnl': t['net_pnl']} for t in self.env.all_trades[-10:]],
-            'asset_action_raw': self.last_alpha_actions[self.env.assets.index(asset)] if self.last_alpha_actions is not None else 0.0,
-            'asset_recent_actions': asset_recent_actions_raw,
-            'asset_signal_persistence': persistence,
-            'asset_signal_reversal': reversal,
-            'position_value': self.env.equity * action_info['size'] * 0.5 # Approximate
+        state = {
+            'total_drawdown': 1.0 - (self.env.equity / self.env.peak_equity),
+            'total_exposure': sum(p['size'] for p in self.env.positions.values() if p is not None) / (self.env.equity + 1e-6)
         }
         
-        trade_info = {
-            'entry_price': self.env._get_current_prices()[asset],
-            'sl': 0, # Will be filled below if needed
-            'tp': 0,
-            'direction': action_info['direction']
-        }
-        
-        # We need SL/TP to build features (Group E)
-        atr = self.env._get_current_atrs()[asset]
-        atr_val = max(atr, trade_info['entry_price'] * self.env.MIN_ATR_MULTIPLIER)
-        trade_info['sl'] = trade_info['entry_price'] - (action_info['direction'] * action_info['sl_mult'] * atr_val)
-        trade_info['tp'] = trade_info['entry_price'] + (action_info['direction'] * action_info['tp_mult'] * atr_val)
-
-        # 2. Build feature vector
-        features = self.feature_builder.build_features(asset, self.env.current_step, trade_info, portfolio_state)
-        
-        # 3. Predict
-        prob = self.guard_model.predict(np.array([features]))[0]
-        
-        return prob >= self.guard_threshold, prob
-
-    def _calculate_persistence_reversal(self, asset, current_direction):
-        """Helper to match generate_dataset logic"""
-        history = list(self.asset_histories[asset]['action_history'])
-        # Directions are sign(action[0])
-        sig_history = [np.sign(a[0]) if abs(a[0]) > 0.33 else 0 for a in history]
-        
-        if len(sig_history) < 1:
-            return 1.0, 0.0
+        for asset in self.env.assets:
+            # Calculate persistence/reversal
+            history = list(self.asset_histories[asset]['action_history'])
+            # Directions are sign(action[0]) - wait, action_history stores [sl, tp, risk] in CombinedBacktest
+            # We need directional history. 
+            # In CombinedBacktest, action_history stores the RISK actions.
+            # We need to track ALPHA directional history separately if we want persistence.
+            # Let's derive it from recent trades or use a new tracker.
             
-        count = 0
-        for sig in reversed(sig_history):
-            if sig == current_direction:
-                count += 1
-            else:
-                break
-        persistence = count + 1.0
-        
-        prev_signal = 0
-        for sig in reversed(sig_history):
-            if sig != 0:
-                prev_signal = sig
-                break
-        
-        reversal = 1.0 if prev_signal != 0 and prev_signal != current_direction else 0.0
-        return persistence, reversal
+            # For now, let's use the current direction from alpha_actions_parsed
+            current_dir = alpha_actions_parsed[asset]
+            
+            # We don't have a dedicated direction history in CombinedBacktest base class easily accessible 
+            # in the format we want (it has pnl_history).
+            # Let's implement a simple local tracker for direction history in this class.
+            # See self.direction_histories initialized in run_backtest
+            
+            hist = self.direction_histories[asset]
+            
+            persistence = 0
+            if hist:
+                 for a in reversed(hist):
+                      if a == current_dir and a != 0:
+                           persistence += 1
+                      else:
+                           break
+            
+            reversal = 1 if (len(hist) > 0 and hist[-1] != current_dir and current_dir != 0) else 0
+
+            state[asset] = {
+                'action_raw': current_dir, # Using integer direction as raw proxy
+                'signal_persistence': persistence,
+                'signal_reversal': reversal
+            }
+            
+        return state
 
     def run_backtest(self, episodes=1):
         """
@@ -181,28 +134,33 @@ class FullSystemBacktest(CombinedBacktest):
             # Reset Shadow Portfolio
             self.shadow_equity = self.initial_equity
             self.shadow_peak_equity = self.initial_equity
-            self.active_virtual_trades = [] # Trades that are active in shadow but blocked in real
+            self.active_virtual_trades = [] 
             
             # Reset histories
+            self.direction_histories = {asset: [] for asset in self.env.assets}
             for asset in self.env.assets:
                 self.asset_histories[asset]['pnl_history'] = deque([0.0] * 5, maxlen=5)
                 self.asset_histories[asset]['action_history'] = deque([np.zeros(3, dtype=np.float32) for _ in range(5)], maxlen=5)
             
             while not done:
+                # Clear completed trades from previous step to avoid duplication
+                self.env.completed_trades = []
+                
                 # 1. Alpha Prediction
                 alpha_action, _ = self.alpha_model.predict(obs, deterministic=True)
                 self.last_alpha_actions = alpha_action
                 
-                # Parse Alpha action to get directions (Stage 1: 5 outputs)
+                # Parse Alpha action to get directions
                 directions = {}
                 for i, asset in enumerate(self.env.assets):
                     direction_raw = alpha_action[i]
                     direction = 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0)
                     directions[asset] = direction
                 
-                combined_actions = {}
-                
                 # 2. Risk Evaluation for each asset
+                pending_new_trades = {}
+                continuing_trades = {}
+                
                 for asset, direction in directions.items():
                     if direction == 0:
                         continue
@@ -234,35 +192,79 @@ class FullSystemBacktest(CombinedBacktest):
                         asset, entry_price, atr, sl_mult, tp_mult, risk_raw_scaled, direction
                     )
                     
+                    # Check for valid trade
                     if size_pct > 0 and risk_info:
-                        # Prepare action info for TradeGuard
+                        # Prepare action info
                         act_info = {
                             'direction': direction,
                             'size': size_pct,
                             'sl_mult': sl_mult,
                             'tp_mult': tp_mult,
-                            'risk_raw': risk_raw_scaled
+                            'risk_raw': risk_raw_scaled,
+                            # Additional info for Feature Builder
+                            'entry': entry_price,
+                            'sl': entry_price - (direction * sl_mult * atr),
+                            'tp': entry_price + (direction * tp_mult * atr)
                         }
                         
-                        # 3. TradeGuard Evaluation
-                        is_approved, prob = self.evaluate_tradeguard(asset, act_info)
-                        
-                        if is_approved:
-                            # Store action in history
-                            self.asset_histories[asset]['action_history'].append(
-                                np.array([sl_mult, tp_mult, risk_raw_scaled], dtype=np.float32)
-                            )
-                            
-                            combined_actions[asset] = act_info
+                        # Entry Filter Logic: Only new entries or reversals go through TradeGuard
+                        current_pos = self.env.positions[asset]
+                        if current_pos is not None and current_pos['direction'] == direction:
+                            continuing_trades[asset] = act_info
                         else:
-                            # BLOCKED by TradeGuard
-                            blocked_record = self._simulate_blocked_trade(asset, direction, act_info, prob)
+                            pending_new_trades[asset] = act_info
+
+                # Initialize combined_actions with continuing trades (allowed by default to prevent churn)
+                combined_actions = continuing_trades.copy()
+                for asset, act_info in continuing_trades.items():
+                    self.asset_histories[asset]['action_history'].append(
+                        np.array([act_info['sl_mult'], act_info['tp_mult'], act_info['risk_raw']], dtype=np.float32)
+                    )
+                
+                # 3. TradeGuard Global Evaluation (Only for NEW or REVERSAL entries)
+                if pending_new_trades:
+                    # Build Portfolio State
+                    portfolio_state = self._get_portfolio_state_for_features(directions)
+                    
+                    # Use all trades (continuing + new) for guard context, but only block 'new' ones
+                    evaluation_set = {**continuing_trades, **pending_new_trades}
+                    
+                    features = self.feature_builder.get_multi_asset_obs(
+                        self.env.current_step, 
+                        evaluation_set, 
+                        portfolio_state
+                    )
+                    
+                    # Predict (Allow/Block)
+                    # Action 1 = Allow, 0 = Block
+                    guard_action, _ = self.guard_model.predict(features, deterministic=True)
+                    
+                    # Probability (Optional, if supported by policy)
+                    # For PPO, we can get distribution, but let's stick to deterministic action for now.
+                    prob = 1.0 if guard_action == 1 else 0.0 
+                    
+                    if guard_action == 1:
+                        # APPROVED: Add all pending new trades to combined_actions
+                        for asset, act_info in pending_new_trades.items():
+                            self.asset_histories[asset]['action_history'].append(
+                                np.array([act_info['sl_mult'], act_info['tp_mult'], act_info['risk_raw']], dtype=np.float32)
+                            )
+                            combined_actions[asset] = act_info
+                    else:
+                        # BLOCKED: Simulate all pending new trades for metrics
+                        for asset, act_info in pending_new_trades.items():
+                            blocked_record = self._simulate_blocked_trade(asset, act_info['direction'], act_info, prob)
                             metrics_tracker.add_blocked_trade(blocked_record)
                             
-                            # Update Shadow Portfolio (compounding PnL)
-                            # theoretical_pnl is a ratio (e.g. 0.01 for 1%)
+                            # Update Shadow Portfolio (compounding PnL for baseline)
                             self.shadow_equity *= (1 + blocked_record['theoretical_pnl'])
-                
+
+                # Update Direction History (for persistence features)
+                for asset in self.env.assets:
+                    self.direction_histories[asset].append(directions[asset])
+                    if len(self.direction_histories[asset]) > 20:
+                        self.direction_histories[asset].pop(0)
+
                 # 4. Execute approved trades in environment
                 prev_real_equity = self.env.equity
                 self._execute_approved_trades(combined_actions)
@@ -280,7 +282,6 @@ class FullSystemBacktest(CombinedBacktest):
                 
                 # 6. Synchronize Shadow Portfolio for approved trades
                 # The shadow portfolio also executed these trades.
-                # We apply the same PnL ratio as seen in the real portfolio.
                 real_pnl_ratio = (self.env.equity - prev_real_equity) / prev_real_equity if prev_real_equity > 0 else 0
                 self.shadow_equity *= (1 + real_pnl_ratio)
                 
@@ -341,10 +342,29 @@ class FullSystemBacktest(CombinedBacktest):
                 if direction != 0:
                     self.env._open_position(asset, direction, act, price, atr)
                     
-        # Close positions for flat signals
+        # Close positions for flat signals OR if not in combined_actions (closed by Guard or Alpha)
+        # Note: If Alpha says trade, but Guard says Block, combined_actions won't have it.
+        # But if we had a position, and Alpha says trade (same dir), we should HOLD?
+        # Logic check:
+        # If Alpha says direction X.
+        # Guard says BLOCK.
+        # We do NOT trade.
+        # If we already had a position in direction X:
+        # Should we close it? Or hold it?
+        # Standard logic: If signal is blocked, we treat it as "No Trade".
+        # If "No Trade" (Alpha says 0), we close.
+        # So if Blocked, we should probably close or at least not open new.
+        # The current implementation of _execute_approved_trades iterates combined_actions (Approved).
+        # Any asset NOT in combined_actions is handled in the next loop:
+        
         for asset in self.env.assets:
-            if asset not in combined_actions and self.env.positions[asset] is not None:
-                self.env._close_position(asset, current_prices[asset])
+            # If asset is not in approved actions
+            if asset not in combined_actions:
+                # If we have a position, CLOSE IT.
+                # This implies that if Guard blocks a "continuation" signal, we close the position.
+                # This is a safe "Guard" behavior (if confidence drops, exit).
+                if self.env.positions[asset] is not None:
+                    self.env._close_position(asset, current_prices[asset])
 
     def _simulate_blocked_trade(self, asset, direction, act, prob):
         """
@@ -356,11 +376,9 @@ class FullSystemBacktest(CombinedBacktest):
         
         # Calculate SL/TP for virtual labeling
         price = self.env._get_current_prices()[asset]
-        atr = self.env._get_current_atrs()[asset]
-        atr_val = max(atr, price * self.env.MIN_ATR_MULTIPLIER)
         
-        sl_dist = act['sl_mult'] * atr_val
-        tp_dist = act['tp_mult'] * atr_val
+        sl_dist = act['sl_mult'] * self.env._get_current_atrs()[asset]
+        tp_dist = act['tp_mult'] * self.env._get_current_atrs()[asset]
         
         # Calculate ACTUAL intended size pct and notional size
         size_pct = act['size'] * self.env.MAX_POS_SIZE_PCT
@@ -371,8 +389,8 @@ class FullSystemBacktest(CombinedBacktest):
             'direction': direction,
             'entry_price': price,
             'size': position_size, 
-            'sl': price - (direction * sl_dist),
-            'tp': price + (direction * tp_dist),
+            'sl': act['sl'], # Already calculated
+            'tp': act['tp'], # Already calculated
             'entry_step': self.env.current_step,
             'sl_dist': sl_dist,
             'tp_dist': tp_dist
@@ -382,15 +400,23 @@ class FullSystemBacktest(CombinedBacktest):
             # Simulate outcome using peek-ahead
             outcome = self.env._simulate_trade_outcome_with_timing(asset)
             
+            # Calculate Transaction Costs (approximate round trip)
+            # Matching TradingEnv costs: 0.00002 per side on notional size
+            entry_cost = position_size * 0.00002
+            # Use entry size for exit cost approximation
+            exit_cost = position_size * 0.00002 
+            
+            net_pnl = outcome['pnl'] - entry_cost - exit_cost
+            
             # Calculate PnL as a ratio of current equity for compounding shadow portfolio
-            theoretical_pnl_ratio = outcome['pnl'] / self.env.equity if self.env.equity > 0 else 0
+            theoretical_pnl_ratio = net_pnl / self.env.equity if self.env.equity > 0 else 0
             
             record = {
                 'timestamp': self.env._get_current_timestamp(),
                 'asset': asset,
                 'direction': direction,
                 'prob': prob,
-                'threshold': self.guard_threshold,
+                'threshold': 0.5, # Implicit binary threshold
                 'theoretical_pnl': theoretical_pnl_ratio,
                 'outcome': outcome.get('reason', 'unknown'),
                 'exit_step': outcome.get('exit_step', self.env.current_step),
@@ -422,7 +448,6 @@ def run_full_system_backtest(args):
     alpha_path = project_root / args.alpha_model
     risk_path = project_root / args.risk_model
     guard_path = project_root / args.guard_model
-    meta_path = project_root / args.guard_meta
     data_dir = project_root / args.data_dir
     output_dir = project_root / args.output_dir
     
@@ -435,7 +460,6 @@ def run_full_system_backtest(args):
         alpha_model_path=str(alpha_path),
         risk_model_path=str(risk_path),
         guard_model_path=str(guard_path),
-        guard_metadata_path=str(meta_path),
         data_dir=str(data_dir),
         initial_equity=args.initial_equity
     )
@@ -471,16 +495,16 @@ def run_full_system_backtest(args):
     
     # Print summary
     logger.info("\n" + "="*60)
-    logger.info(f"{'FULL SYSTEM BACKTEST RESULTS':^60}")
+    logger.info(f"{ 'FULL SYSTEM BACKTEST RESULTS':^60}")
     logger.info("="*60)
-    logger.info(f"{'Total Return:':<40} {metrics.get('total_return', 0):.2%}")
-    logger.info(f"{'Baseline Return:':<40} {metrics.get('baseline_return', 0):.2%}")
-    logger.info(f"{'Net Value-Add:':<40} {metrics.get('net_value_add_vs_baseline', 0):.2%}")
-    logger.info(f"{'Max Drawdown:':<40} {metrics.get('max_drawdown', 0):.2%}")
+    logger.info(f"{ 'Total Return:':<40} {metrics.get('total_return', 0):.2%}")
+    logger.info(f"{ 'Baseline Return:':<40} {metrics.get('baseline_return', 0):.2%}")
+    logger.info(f"{ 'Net Value-Add:':<40} {metrics.get('net_value_add_vs_baseline', 0):.2%}")
+    logger.info(f"{ 'Max Drawdown:':<40} {metrics.get('max_drawdown', 0):.2%}")
     if 'tradeguard' in metrics:
         tg = metrics['tradeguard']
-        logger.info(f"{'TradeGuard Approval Rate:':<40} {tg.get('approval_rate', 0):.2%}")
-        logger.info(f"{'TradeGuard Block Accuracy:':<40} {tg.get('block_accuracy', 0):.2%}")
+        logger.info(f"{ 'TradeGuard Approval Rate:':<40} {tg.get('approval_rate', 0):.2%}")
+        logger.info(f"{ 'TradeGuard Block Accuracy:':<40} {tg.get('block_accuracy', 0):.2%}")
     logger.info("="*60)
 
 if __name__ == "__main__":
@@ -488,8 +512,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Three-Layer Full System Backtest")
     parser.add_argument("--alpha-model", type=str, default="Alpha/models/checkpoints/8.03.zip")
     parser.add_argument("--risk-model", type=str, default="RiskLayer/models/2.15.zip")
-    parser.add_argument("--guard-model", type=str, default="TradeGuard/tradeguard_results/guard_model.txt")
-    parser.add_argument("--guard-meta", type=str, default="TradeGuard/tradeguard_results/model_metadata.json")
+    parser.add_argument("--guard-model", type=str, default="TradeGuard/models/manual_test_model.zip")
+    # guard-meta is no longer required for PPO, but keeping it optional or removing it
     parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data")
     parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results/full_system")
     parser.add_argument("--episodes", type=int, default=1)

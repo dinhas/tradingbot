@@ -98,3 +98,6 @@ coverage.xml
 *.csv
 
 *.npy
+
+*png
+*.json
