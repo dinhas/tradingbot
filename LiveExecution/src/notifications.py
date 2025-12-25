@@ -1,12 +1,18 @@
 import json
 import io
 import logging
+import os
+import certifi
 from twisted.internet import reactor
-from twisted.web.client import Agent, FileBodyProducer
+from twisted.web.client import Agent, FileBodyProducer, readBody
 from twisted.web.http_headers import Headers
+
+# Fix for SSL Certificate Verification on Windows
+os.environ['SSL_CERT_FILE'] = certifi.where()
 
 class DiscordNotifier:
     def __init__(self, config):
+        self.config = config
         self.webhook_url = config.get("DISCORD_WEBHOOK_URL")
         self.agent = Agent(reactor)
         self.logger = logging.getLogger("LiveExecution")
@@ -45,6 +51,10 @@ class DiscordNotifier:
 
     def _send_payload(self, payload):
         """Internal method to POST JSON payload."""
+        # Add thread_name if targeting a Forum Channel (safe to add even for text channels usually)
+        if "thread_name" not in payload:
+            payload["thread_name"] = self.config.get("DISCORD_THREAD_NAME", "TradeGuard Alerts")
+
         body = json.dumps(payload).encode('utf-8')
         producer = FileBodyProducer(io.BytesIO(body))
         
@@ -60,6 +70,10 @@ class DiscordNotifier:
         def handle_response(response):
             if response.code not in (200, 204):
                 self.logger.error(f"Discord API returned status {response.code}")
+                # Read body to see error details
+                d_body = readBody(response)
+                d_body.addCallback(lambda b: self.logger.error(f"Response body: {b.decode('utf-8')}"))
+                d_body.addErrback(lambda e: self.logger.error(f"Failed to read error body: {e}"))
             return response
         
         def handle_error(failure):
