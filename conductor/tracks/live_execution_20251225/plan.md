@@ -13,7 +13,7 @@ Implementation of the autonomous live trading system as defined in the PRD, inte
 - [~] Task: Authentication - Implement OAuth2 authentication and account authorization flows.
 - [x] Task: Resilience - Implement reconnection logic with exponential backoff (5 retries). 2a18278
 - [x] Task: Heartbeat - Implement keep-alive heartbeat to maintain connection. 770034f
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: cTrader Communication Layer' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 2: cTrader Communication Layer' (Protocol in workflow.md) [checkpoint: 8670df0]
 
 ## Phase 3: Data Acquisition & Features
 - [ ] Task: Event Handling - Implement `ProtoOATrendbarEvent` listener for M5 candle closes.
