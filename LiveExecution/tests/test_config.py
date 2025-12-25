@@ -22,7 +22,7 @@ class TestConfig(unittest.TestCase):
             "CT_HOST_TYPE": "demo"
         }
         with patch.dict(os.environ, mock_env):
-            config = load_config()
+            config = load_config(os.environ)
             self.assertEqual(config["CT_APP_ID"], "test_app_id")
             self.assertEqual(config["CT_ACCOUNT_ID"], 12345)
             self.assertEqual(config["CT_HOST_TYPE"], "demo")
@@ -34,7 +34,7 @@ class TestConfig(unittest.TestCase):
         }
         with patch.dict(os.environ, mock_env, clear=True):
             with self.assertRaises(ConfigError) as cm:
-                load_config()
+                load_config(os.environ)
             self.assertIn("CT_APP_SECRET", str(cm.exception))
 
     def test_load_config_invalid_type(self):
@@ -48,7 +48,7 @@ class TestConfig(unittest.TestCase):
         }
         with patch.dict(os.environ, mock_env):
             with self.assertRaises(ConfigError) as cm:
-                load_config()
+                load_config(os.environ)
             self.assertIn("CT_ACCOUNT_ID", str(cm.exception))
 
 if __name__ == '__main__':
