@@ -37,7 +37,8 @@ class TestInferenceLogic(unittest.TestCase):
         mock_ml.get_risk_action.return_value = np.array([0.5, 0.1, 0.2]) # Size, SL, TP
         mock_ml.get_tradeguard_action.return_value = 1 # Allow
         
-        orch = Orchestrator(mock_client, mock_fm, mock_ml)
+        mock_notifier = MagicMock()
+        orch = Orchestrator(mock_client, mock_fm, mock_ml, mock_notifier)
         
         # Trigger inference for symbol 1 (EURUSD)
         decision = orch.run_inference_chain(1) 

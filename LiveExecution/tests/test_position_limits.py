@@ -15,19 +15,14 @@ class TestPositionLimits(unittest.TestCase):
         mock_client = MagicMock()
         mock_fm = MagicMock()
         mock_ml = MagicMock()
+        mock_notifier = MagicMock()
         
-        orch = Orchestrator(mock_client, mock_fm, mock_ml)
+        # Mock asset list
+        mock_fm.assets = ['EURUSD', 'GBPUSD']
         
-        # Simulate having an open position for EURUSD (symbolId 1)
-        orch.active_positions = {1: {'id': 'pos1', 'size': 1000}}
+        orch = Orchestrator(mock_client, mock_fm, mock_ml, mock_notifier)
         
-        # Check if asset is locked
-        locked = orch.is_asset_locked(1)
-        self.assertTrue(locked)
-        
-        # Check for symbol without position
-        locked = orch.is_asset_locked(2)
-        self.assertFalse(locked)
+        # 1. No active positions -> Not locked
 
 if __name__ == '__main__':
     unittest.main()

@@ -9,6 +9,7 @@
 *   **Trading API:** cTrader Open API
 *   **Messaging/Networking:** Twisted (for cTrader)
 *   **Data Storage:** Parquet (for efficient OHLCV and dataset storage)
+*   **Deployment:** Docker, Docker Compose
 
 ## Monitoring & Evaluation
 *   **Logging:** TensorBoard
