@@ -22,6 +22,13 @@ class Orchestrator:
         self.portfolio_state['equity'] = account_res.trader.balance / 100.0 # Just a guess on divisor
         # ... update other metrics
 
+    def is_asset_locked(self, symbol_id):
+        """Checks if a position is already open for the given symbol."""
+        locked = symbol_id in self.active_positions
+        if locked:
+            self.logger.info(f"Asset {symbol_id} is locked (position already exists).")
+        return locked
+
     def run_inference_chain(self, symbol_id):
         """
         Executes the full inference pipeline for a given symbol.
