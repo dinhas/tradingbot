@@ -15,6 +15,11 @@ class CTraderClient:
         self.account_id = config["CT_ACCOUNT_ID"]
         self.access_token = config["CT_ACCESS_TOKEN"]
         
+        # Reconnection parameters
+        self.max_retries = 5
+        self.retry_count = 0
+        self.base_delay = 5.0 # Seconds
+        
         # Determine host
         self.host = EndPoints.PROTOBUF_LIVE_HOST if config["CT_HOST_TYPE"] == "live" else EndPoints.PROTOBUF_DEMO_HOST
         self.port = EndPoints.PROTOBUF_PORT
@@ -33,6 +38,7 @@ class CTraderClient:
     @inlineCallbacks
     def _on_connected(self, client):
         self.logger.info("Connected to cTrader. Authenticating...")
+        self.retry_count = 0 # Reset retry count on successful connection
         
         try:
             # 1. Application Auth
@@ -55,6 +61,16 @@ class CTraderClient:
         
     def _on_disconnected(self, client, reason):
         self.logger.warning(f"Disconnected from cTrader: {reason}")
+        
+        if self.retry_count < self.max_retries:
+            self.retry_count += 1
+            delay = self.base_delay * (2 ** (self.retry_count - 1))
+            self.logger.info(f"Reconnecting in {delay} seconds (Attempt {self.retry_count}/{self.max_retries})...")
+            reactor.callLater(delay, self.start)
+        else:
+            self.logger.error("Max reconnection retries reached. Stopping system.")
+            # In a real scenario, we might want to trigger a notification here
+            self.stop()
         
     def _on_message(self, client, message):
         # Placeholder for message handling
