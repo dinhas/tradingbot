@@ -4,7 +4,7 @@ Implementation of the autonomous live trading system as defined in the PRD, inte
 
 ## Phase 1: Core Infrastructure
 - [x] Task: Project Scaffolding - Create `LiveExecution/` directory and basic structure. a27273e
-- [ ] Task: Configuration - Implement `.env` loading and validation for API and Discord credentials.
+- [x] Task: Configuration - Implement `.env` loading and validation for API and Discord credentials. bd67735
 - [ ] Task: Logging - Implement rotating file logger targeting `conductor/logs/` (DEBUG level).
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Core Infrastructure' (Protocol in workflow.md)
 
