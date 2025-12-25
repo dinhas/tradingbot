@@ -6,7 +6,7 @@ Implementation of the autonomous live trading system as defined in the PRD, inte
 - [x] Task: Project Scaffolding - Create `LiveExecution/` directory and basic structure. a27273e
 - [x] Task: Configuration - Implement `.env` loading and validation for API and Discord credentials. bd67735
 - [x] Task: Logging - Implement rotating file logger targeting `conductor/logs/` (DEBUG level). a07b2bb
-- [ ] Task: Conductor - User Manual Verification 'Phase 1: Core Infrastructure' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Core Infrastructure' (Protocol in workflow.md) [checkpoint: 0e6028b]
 
 ## Phase 2: cTrader Communication Layer
 - [ ] Task: Connection - Implement Twisted-based WebSocket client for cTrader Open API.
