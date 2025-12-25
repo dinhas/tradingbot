@@ -92,15 +92,14 @@ class Orchestrator:
         try:
             side = ProtoOATradeSide.BUY if decision['action'] == 1 else ProtoOATradeSide.SELL
             
-            # Convert size percentage to volume (simplified logic for now)
-            # Assuming 100k standard lot, 0.01 size = 1000 units?
-            # Need strict size calc logic here eventually.
-            # For now, just pass a raw volume from decision or fixed test amount
-            # decision['size'] is a % of equity usually from Risk model.
+            # Convert size percentage to volume (Protocol units: Units * 100)
+            # For 0.01 lots (1000 units), we need 100,000 volume.
+            # Assuming decision['size'] is raw lots (e.g. 0.01)
+            volume = int(decision['size'] * 100000 * 100)
             
-            # Placeholder volume calculation
-            volume = int(decision['size'] * 1000000) # Very rough placeholder
-            if volume < 1000: volume = 1000
+            # Ensure minimum volume (100,000 = 0.01 lots)
+            if volume < 100000: 
+                volume = 100000
             
             self.logger.info(f"Executing {decision['asset']}: {side} Vol: {volume}")
             
