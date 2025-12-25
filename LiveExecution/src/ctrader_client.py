@@ -13,6 +13,8 @@ class CTraderClient:
         
         # Callbacks
         self.on_candle_closed = None # To be set by orchestrator
+        self.on_order_execution = None
+        self.on_order_error = None
         
         self.app_id = config["CT_APP_ID"]
         self.app_secret = config["CT_APP_SECRET"]
@@ -99,7 +101,12 @@ class CTraderClient:
             
             if isinstance(payload, ProtoOASpotEvent):
                 self._handle_spot_event(payload)
-            # Add more event handlers as needed
+            elif isinstance(payload, ProtoOAExecutionEvent):
+                if self.on_order_execution:
+                    self.on_order_execution(payload)
+            elif isinstance(payload, ProtoOAOrderErrorEvent):
+                if self.on_order_error:
+                    self.on_order_error(payload)
             
         except Exception as e:
             self.logger.error(f"Error handling message: {e}")

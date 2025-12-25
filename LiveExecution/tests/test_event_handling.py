@@ -61,5 +61,34 @@ class TestEventHandling(unittest.TestCase):
             client._on_message(None, "dummy_payload")
             client.on_candle_closed.assert_not_called()
 
+    @patch('LiveExecution.src.ctrader_client.Client')
+    def test_execution_event_listener(self, mock_client_cls):
+        """Test that ProtoOAExecutionEvent triggers on_order_execution callback."""
+        client = CTraderClient(self.config)
+        client.on_order_execution = MagicMock()
+        
+        event = ProtoOAExecutionEvent()
+        event.executionType = ProtoOAExecutionType.ORDER_FILLED
+        # event.order.volume = 1000 - Removed to avoid potential attribute error in test setup
+        
+        with patch('LiveExecution.src.ctrader_client.Protobuf.extract') as mock_extract:
+            mock_extract.return_value = event
+            client._on_message(None, "dummy_payload")
+            client.on_order_execution.assert_called_once_with(event)
+
+    @patch('LiveExecution.src.ctrader_client.Client')
+    def test_order_error_event_listener(self, mock_client_cls):
+        """Test that ProtoOAOrderErrorEvent triggers on_order_error callback."""
+        client = CTraderClient(self.config)
+        client.on_order_error = MagicMock()
+        
+        event = ProtoOAOrderErrorEvent()
+        event.errorCode = "MARKET_CLOSED"
+        
+        with patch('LiveExecution.src.ctrader_client.Protobuf.extract') as mock_extract:
+            mock_extract.return_value = event
+            client._on_message(None, "dummy_payload")
+            client.on_order_error.assert_called_once_with(event)
+
 if __name__ == '__main__':
     unittest.main()
