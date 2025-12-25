@@ -72,8 +72,7 @@ Thumbs.db
 *.cache
 
 # API Keys and Secrets
-.env
-.env.local
+
 config/credentials.yaml
 config/api_keys.yaml
 *.key

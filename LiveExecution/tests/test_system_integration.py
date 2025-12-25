@@ -20,6 +20,14 @@ class TestSystemIntegration(unittest.TestCase):
         self.mock_ml = MagicMock()
         self.mock_notifier = MagicMock()
         
+        # Mock fetch_open_positions to return a successful empty response
+        mock_pos_res = MagicMock()
+        mock_pos_res.position = []
+        self.mock_client.fetch_open_positions.return_value = succeed(mock_pos_res)
+        
+        # Mock ATR - crucial to be a float to avoid comparison errors with mocks
+        self.mock_fm.get_atr.return_value = 0.001
+        
         # Initialize Orchestrator with mocked dependencies
         self.orchestrator = Orchestrator(
             self.mock_client, 
@@ -54,7 +62,6 @@ class TestSystemIntegration(unittest.TestCase):
         mock_acc_res = MagicMock()
         mock_acc_res.trader.balance = 100000
         
-        # 2. Setup Inference Mocks
         # Alpha returns 1.0 (Buy)
         self.mock_fm.get_alpha_observation.return_value = "alpha_obs_data"
         self.mock_ml.get_alpha_action.return_value = [1.0, 0, 0, 0, 0] # Action for 1st asset
@@ -146,11 +153,19 @@ class TestSystemIntegration(unittest.TestCase):
     def test_asset_locked_check(self):
         """Test that locked assets skip inference."""
         symbol_id = 1
-        self.orchestrator.active_positions[1] = "POSITION_ID"
+        
+        # Mock fetch_open_positions to return a list containing this symbol
+        mock_pos = MagicMock()
+        mock_pos.symbolId = 1
+        mock_pos.positionId = 123
+        
+        mock_res = MagicMock()
+        mock_res.position = [mock_pos]
+        self.mock_client.fetch_open_positions.return_value = succeed(mock_res)
         
         self.orchestrator.on_m5_candle_close(symbol_id)
         
-        # Should NOT fetch data or run inference
+        # Should NOT fetch data or run inference beyond syncing positions
         self.mock_client.fetch_ohlcv.assert_not_called()
         self.mock_ml.get_alpha_action.assert_not_called()
 

@@ -13,6 +13,7 @@ class CTraderClient:
         
         # Callbacks
         self.on_candle_closed = None # To be set by orchestrator
+        self.on_authenticated = None
         self.on_order_execution = None
         self.on_order_error = None
         
@@ -74,6 +75,9 @@ class CTraderClient:
             yield self.client.send(acc_auth_req)
             self.logger.info("Account Auth Success.")
             
+            if self.on_authenticated:
+                self.on_authenticated()
+            
             self._start_heartbeat()
             
         except Exception as e:
@@ -134,7 +138,18 @@ class CTraderClient:
     def _send_heartbeat(self):
         """Sends a heartbeat message and schedules the next one."""
         heartbeat = ProtoHeartbeatEvent()
-        self.client.send(heartbeat)
+        d = self.client.send(heartbeat)
+        
+        # Heartbeats don't have clientMsgId response matching, causing a TimeoutError
+        # because the client waits for a response that never matches. We suppress this.
+        def suppress_timeout(failure):
+            if failure.check(defer.TimeoutError):
+                return None # Checkmate, Timeout.
+            return failure
+            
+        d.addErrback(suppress_timeout)
+        d.addErrback(lambda f: self.logger.warning(f"Heartbeat failed: {f}"))
+
         self.heartbeat_timer = reactor.callLater(self.heartbeat_interval, self._send_heartbeat)
 
     def stop(self):
@@ -171,6 +186,14 @@ class CTraderClient:
     def fetch_account_summary(self):
         """Fetches account details (balance, leverage, etc)."""
         req = ProtoOATraderReq()
+        req.ctidTraderAccountId = self.account_id
+        res_msg = yield self.send_request(req)
+        return Protobuf.extract(res_msg)
+
+    @inlineCallbacks
+    def fetch_open_positions(self):
+        """Fetches currently open positions for the account."""
+        req = ProtoOAReconcileReq()
         req.ctidTraderAccountId = self.account_id
         res_msg = yield self.send_request(req)
         return Protobuf.extract(res_msg)

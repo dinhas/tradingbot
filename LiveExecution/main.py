@@ -40,16 +40,17 @@ def main():
         # Core Components
         client = CTraderClient(config)
         feature_manager = FeatureManager()
-        model_loader = ModelLoader(config)
+        model_loader = ModelLoader()
         
         # Load Models
-        model_loader.load_models()
+        model_loader.load_all_models()
 
         # Orchestrator
         orchestrator = Orchestrator(client, feature_manager, model_loader, notifier)
 
         # 4. Wiring
         # Connect Client Events to Orchestrator
+        client.on_authenticated = orchestrator.bootstrap
         client.on_candle_closed = orchestrator.on_m5_candle_close
         client.on_order_execution = None # TODO: Add handler in orchestrator if needed
         client.on_order_error = None # TODO: Add handler in orchestrator if needed

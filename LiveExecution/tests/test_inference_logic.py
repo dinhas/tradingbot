@@ -31,6 +31,7 @@ class TestInferenceLogic(unittest.TestCase):
         
         # Mock history for price
         mock_fm.history = {'EURUSD': pd.DataFrame([{'close': 1.1}], index=[pd.Timestamp.now()])}
+        mock_fm.get_atr.return_value = 0.001
         
         # Mock model outputs
         mock_ml.get_alpha_action.return_value = np.array([1.0, 0, 0, 0, 0]) # Long for EURUSD

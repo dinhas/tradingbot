@@ -29,6 +29,7 @@ class FeatureManager:
         """
         # Create a single row DataFrame
         ts = candle_data.pop('timestamp')
+        ts = pd.Timestamp(ts)
         # Floor to minutes to ensure alignment across assets even if arrival varies by seconds
         ts = ts.floor('min')
         new_row = pd.DataFrame([candle_data], index=[ts])
@@ -39,6 +40,61 @@ class FeatureManager:
             self.history[asset] = self.history[asset].iloc[-self.max_history:]
             
         self.logger.debug(f"Pushed candle for {asset}. Buffer size: {len(self.history[asset])}")
+
+    def update_data(self, symbol_id, ohlcv_res):
+        """
+        Updates internal history from cTrader trendbars response.
+        """
+        from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATrendbar
+        from datetime import datetime
+        
+        asset = self._get_asset_name_from_id(symbol_id)
+        if not asset:
+             self.logger.error(f"Unknown symbol_id: {symbol_id}")
+             return
+
+        # trendbars are often in chronological order but let's be sure
+        new_rows = []
+        for bar in ohlcv_res.trendbar:
+             # cTrader uses low, deltaOpen, deltaHigh, deltaClose relative to low?
+             # Actually ProtoOATrendbar: low, deltaOpen, deltaHigh, deltaClose
+             # open = low + deltaOpen
+             # high = low + deltaHigh
+             # close = low + deltaClose
+             # divisor is usually 100,000 for prices (pips) or 100 for Gold
+             divisor = 100.0 if asset == 'XAUUSD' else 100000.0
+             
+             low = bar.low / divisor
+             new_rows.append({
+                 'timestamp': datetime.fromtimestamp(bar.utcTimestampInMinutes * 60),
+                 'open': low + (bar.deltaOpen / divisor),
+                 'high': low + (bar.deltaHigh / divisor),
+                 'low': low,
+                 'close': low + (bar.deltaClose / divisor),
+                 'volume': bar.volume
+             })
+        
+        if new_rows:
+             # Sort by timestamp
+             new_rows.sort(key=lambda x: x['timestamp'])
+             # For each row, push
+             for row in new_rows:
+                  self.push_candle(asset, row)
+
+    def _get_asset_name_from_id(self, symbol_id):
+         # Standard mapping from Orchestrator/Client
+         mapping = {1: 'EURUSD', 2: 'GBPUSD', 41: 'XAUUSD', 6: 'USDCHF', 4: 'USDJPY'}
+         return mapping.get(symbol_id)
+
+    def get_atr(self, asset):
+        """Calculates the current 14-period ATR for the given asset."""
+        if len(self.history[asset]) < 15:
+            return 0.0
+        
+        from ta.volatility import AverageTrueRange
+        df = self.history[asset]
+        atr = AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
+        return float(atr.iloc[-1])
 
     def record_risk_trade(self, asset, pnl_pct, actions):
         """
