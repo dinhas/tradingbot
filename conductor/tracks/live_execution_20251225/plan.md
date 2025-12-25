@@ -24,7 +24,7 @@ Implementation of the autonomous live trading system as defined in the PRD, inte
 ## Phase 4: Inference Pipeline
 - [x] Task: Model Loader - Implement loading for SB3 (Alpha, Risk) and LightGBM (TradeGuard) models. 25bbc63
 - [x] Task: Logic Chain - Implement sequential inference: Alpha (Direction) -> Risk (Size, SL/TP) -> TradeGuard (Allow/Block). fbf917e
-- [ ] Task: Position Limits - Implement "Asset Locking" check (max 1 position per asset).
+- [x] Task: Position Limits - Implement "Asset Locking" check (max 1 position per asset). bf2a2c9
 - [ ] Task: Conductor - User Manual Verification 'Phase 4: Inference Pipeline' (Protocol in workflow.md)
 
 ## Phase 5: Execution & Notifications
