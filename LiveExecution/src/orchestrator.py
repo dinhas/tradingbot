@@ -12,8 +12,8 @@ class Orchestrator:
         self.ml = model_loader
         
         # Internal state
-        self.portfolio_state = {} # To be updated from account summary
-        self.active_positions = {} # To be updated from account summary
+        self.portfolio_state = {asset: {} for asset in self.fm.assets} 
+        self.active_positions = {} 
 
     def update_account_state(self, account_res):
         """Updates internal portfolio state from cTrader response."""
@@ -32,71 +32,87 @@ class Orchestrator:
     def run_inference_chain(self, symbol_id):
         """
         Executes the full inference pipeline for a given symbol.
-        1. Get Alpha/Risk Observation
+        1. Get Alpha Observation
         2. Alpha Direction
-        3. Risk Sizing & SL/TP
-        4. TradeGuard Allow/Block
+        3. Get Risk Observation
+        4. Risk Sizing & SL/TP
+        5. TradeGuard Allow/Block
         """
         try:
-            # Prepare portfolio state for Alpha/Risk
-            # (In a real scenario, we'd ensure this is fresh)
+            # 1. Get Alpha Observation (140)
+            alpha_obs = self.fm.get_alpha_observation(self.portfolio_state)
             
-            # 1. Get Alpha/Risk Observation
-            alpha_obs = self.fm.get_alpha_risk_observation(self.portfolio_state)
+            # 2. Alpha Prediction (Returns actions for ALL assets)
+            all_alpha_actions = self.ml.get_alpha_action(alpha_obs)
             
-            # 2. Alpha Prediction
-            alpha_action = self.ml.get_alpha_action(alpha_obs)
-            self.logger.info(f"Alpha predicted action for symbol {symbol_id}: {alpha_action}")
+            # Map symbol_id to index in the 5-asset action array
+            asset_name = self._get_symbol_name(symbol_id)
+            asset_index = self.fm.assets.index(asset_name)
             
-            if alpha_action == 0: # Hold/No Action
+            alpha_action = all_alpha_actions[asset_index]
+            self.logger.info(f"Alpha predicted action for {asset_name} (index {asset_index}): {alpha_action}")
+            
+            if abs(alpha_action) < 0.1: # Threshold for 'Hold'
                 return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold'}
             
-            # 3. Risk Prediction
-            # Risk model often shares the same observation as Alpha in this project's curriculum
-            risk_action = self.ml.get_risk_action(alpha_obs)
-            self.logger.info(f"Risk predicted for symbol {symbol_id}: {risk_action}")
+            # 3. Get Risk Observation (165)
+            risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs, self.portfolio_state)
             
-            # action format usually: [size_pct, sl_pct, tp_pct]
-            size_pct = risk_action[0]
-            sl_pct = risk_action[1]
-            tp_pct = risk_action[2]
+            # 4. Risk Prediction
+            all_risk_actions = self.ml.get_risk_action(risk_obs)
             
-            # 4. TradeGuard Prediction
+            # If Risk model returns a flat array of 15 elements (3 per asset), or nested
+            # Let's assume 3 per asset, flattened: [size0, sl0, tp0, size1, sl1, tp1, ...]
+            # Note: Risk Management model usually predicts for the whole episode sequence, 
+            # but in live it's one trade at a time.
+            
+            # Checking Risk Layer Action Space: shape=(3,)
+            # Wait, if it was trained on sequential episodic, predict might return (3,)
+            # Let's assume it returns (3,) for the current asset being managed.
+            
+            if all_risk_actions.shape[0] == 15: # Multi-asset Risk
+                risk_start = asset_index * 3
+                asset_risk_action = all_risk_actions[risk_start : risk_start + 3]
+            else:
+                asset_risk_action = all_risk_actions
+            
+            size_pct = asset_risk_action[0]
+            sl_pct = asset_risk_action[1]
+            tp_pct = asset_risk_action[2]
+            
+            # 5. TradeGuard Prediction
             # Prepare TradeGuard Observation (needs trade info)
-            # We need to map symbolId back to name for fm
-            symbol_name = self._get_symbol_name(symbol_id)
+            current_price = self.fm.history[asset_name].iloc[-1]['close']
             
-            # Calculate absolute SL/TP based on current price
-            current_price = self.fm.history[symbol_name].iloc[-1]['close']
+            side = 1 if alpha_action > 0 else -1
             
-            # Simplified SL/TP calculation for TradeGuard obs
-            side = 1 if alpha_action == 1 else -1 # 1: Long, 2: Short (Adjust based on model convention)
-            # Usually Alpha action 1=Long, 2=Short
-            
-            sl_price = current_price * (1 - (sl_pct * 0.05 * side)) # Dummy scale factor
+            sl_price = current_price * (1 - (sl_pct * 0.05 * side)) 
             tp_price = current_price * (1 + (tp_pct * 0.1 * side))
             
             trade_infos = {
-                symbol_name: {
+                asset_name: {
                     'entry': current_price,
                     'sl': sl_price,
                     'tp': tp_price
                 }
             }
             
-            # Add action_raw to portfolio_state for TradeGuard
-            self.portfolio_state[symbol_name] = self.portfolio_state.get(symbol_name, {})
-            self.portfolio_state[symbol_name]['action_raw'] = alpha_action
+            # Add discrete action to portfolio_state for TradeGuard
+            discrete_action = 1 if side == 1 else 2
+            self.portfolio_state[asset_name] = self.portfolio_state.get(asset_name, {})
+            self.portfolio_state[asset_name]['action_raw'] = discrete_action
             
             tg_obs = self.fm.get_tradeguard_observation(trade_infos, self.portfolio_state)
             tg_action = self.ml.get_tradeguard_action(tg_obs)
             
             allowed = (tg_action == 1)
-            self.logger.info(f"TradeGuard decision for symbol {symbol_id}: {'ALLOW' if allowed else 'BLOCK'}")
+            self.logger.info(f"TradeGuard decision for {asset_name}: {'ALLOW' if allowed else 'BLOCK'}")
             
             return {
                 'symbol_id': symbol_id,
-                'action': alpha_action,
+                'asset': asset_name,
+                'action': discrete_action,
+                'raw_action': alpha_action,
                 'size': size_pct,
                 'sl': sl_price,
                 'tp': tp_price,

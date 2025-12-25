@@ -23,8 +23,9 @@ class TestDataFetching(unittest.TestCase):
             "CT_HOST_TYPE": "demo"
         }
 
+    @patch('LiveExecution.src.ctrader_client.Protobuf.extract')
     @patch('LiveExecution.src.ctrader_client.Client')
-    def test_fetch_ohlcv(self, mock_client_cls):
+    def test_fetch_ohlcv(self, mock_client_cls, mock_extract):
         client = CTraderClient(self.config)
         mock_client_instance = mock_client_cls.return_value
         
@@ -32,21 +33,17 @@ class TestDataFetching(unittest.TestCase):
         res = ProtoOAGetTrendbarsRes()
         res.symbolId = 1
         res.period = ProtoOATrendbarPeriod.M5
-        # Add some mock trendbars if needed
         
         d = defer.Deferred()
-        d.callback(res)
+        d.callback("dummy_msg")
         mock_client_instance.send.return_value = d
+        mock_extract.return_value = res
         
-        # We'll use a wrapper or just call the method if we implement it as fetch_ohlcv
-        # For now, let's assume we implement a method fetch_ohlcv(symbol_id, count)
-        
-        # Wait, the task says "Implement parallel OHLCV and account summary retrieval"
-        
-        # Let's test a proposed method
         if hasattr(client, 'fetch_ohlcv'):
+            # fetch_ohlcv is now @inlineCallbacks, returns a Deferred
             d_result = client.fetch_ohlcv(1, 100)
-            # Verify send was called with ProtoOAGetTrendbarsReq
+            
+            # Verify send was called
             mock_client_instance.send.assert_called_once()
             req = mock_client_instance.send.call_args[0][0]
             self.assertIsInstance(req, ProtoOAGetTrendbarsReq)
@@ -54,17 +51,18 @@ class TestDataFetching(unittest.TestCase):
         else:
             self.fail("CTraderClient does not have fetch_ohlcv method")
 
+    @patch('LiveExecution.src.ctrader_client.Protobuf.extract')
     @patch('LiveExecution.src.ctrader_client.Client')
-    def test_fetch_account_summary(self, mock_client_cls):
+    def test_fetch_account_summary(self, mock_client_cls, mock_extract):
         client = CTraderClient(self.config)
         mock_client_instance = mock_client_cls.return_value
         
         res = ProtoOATraderRes()
-        # Mock account details
         
         d = defer.Deferred()
-        d.callback(res)
+        d.callback("dummy_msg")
         mock_client_instance.send.return_value = d
+        mock_extract.return_value = res
         
         if hasattr(client, 'fetch_account_summary'):
             client.fetch_account_summary()
