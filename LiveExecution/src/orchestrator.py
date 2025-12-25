@@ -221,6 +221,12 @@ class Orchestrator:
             self.logger.error(traceback.format_exc())
             return None
 
+    def stop(self):
+        """Stops the orchestrator and client."""
+        self.logger.info("Stopping Orchestrator...")
+        self.notifier.send_message("🛑 **System Stopping...**")
+        self.client.stop()
+
     def _get_symbol_name(self, symbol_id):
         """Reverse mapping from symbolId to name."""
         inv_map = {v: k for k, v in self.client.symbol_ids.items()}
