@@ -15,7 +15,18 @@ class CTraderClient:
         self.on_candle_closed = None # To be set by orchestrator
         
         self.app_id = config["CT_APP_ID"]
-        # ...
+        self.app_secret = config["CT_APP_SECRET"]
+        self.account_id = config["CT_ACCOUNT_ID"]
+        self.access_token = config["CT_ACCESS_TOKEN"]
+        
+        # Asset Universe (as per PRD)
+        self.symbol_ids = {
+            'EURUSD': 1,
+            'GBPUSD': 2,
+            'XAUUSD': 41,
+            'USDCHF': 6,
+            'USDJPY': 4
+        }
         
         # Reconnection parameters
         self.max_retries = 5
@@ -123,3 +134,33 @@ class CTraderClient:
         """Stops the client service and heartbeat."""
         self._stop_heartbeat()
         self.client.stopService()
+
+    def send_request(self, request):
+        """Sends a request and returns a Deferred."""
+        return self.client.send(request)
+
+    def fetch_ohlcv(self, symbol_id, count=150, period=ProtoOATrendbarPeriod.M5):
+        """Fetches historical trendbars for a symbol."""
+        from datetime import datetime, timedelta
+        
+        req = ProtoOAGetTrendbarsReq()
+        req.ctidTraderAccountId = self.account_id
+        req.symbolId = symbol_id
+        req.period = period
+        
+        # Calculate timestamps for the requested number of bars
+        # This is an approximation for recent data
+        to_timestamp = int(datetime.now().timestamp() * 1000)
+        # 150 bars of M5 is ~12.5 hours
+        from_timestamp = to_timestamp - (count * 5 * 60 * 1000)
+        
+        req.fromTimestamp = from_timestamp
+        req.toTimestamp = to_timestamp
+        
+        return self.send_request(req)
+
+    def fetch_account_summary(self):
+        """Fetches account details (balance, leverage, etc)."""
+        req = ProtoOATraderReq()
+        req.ctidTraderAccountId = self.account_id
+        return self.send_request(req)
