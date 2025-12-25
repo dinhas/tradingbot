@@ -10,8 +10,8 @@ Implementation of the autonomous live trading system as defined in the PRD, inte
 
 ## Phase 2: cTrader Communication Layer
 - [x] Task: Connection - Implement Twisted-based WebSocket client for cTrader Open API. 22c60a3
-- [ ] Task: Authentication - Implement OAuth2 authentication and account authorization flows.
-- [ ] Task: Resilience - Implement reconnection logic with exponential backoff (5 retries).
+- [~] Task: Authentication - Implement OAuth2 authentication and account authorization flows.
+- [x] Task: Resilience - Implement reconnection logic with exponential backoff (5 retries). 2a18278
 - [ ] Task: Heartbeat - Implement keep-alive heartbeat to maintain connection.
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: cTrader Communication Layer' (Protocol in workflow.md)
 
