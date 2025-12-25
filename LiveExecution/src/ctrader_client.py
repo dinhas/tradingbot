@@ -20,6 +20,10 @@ class CTraderClient:
         self.retry_count = 0
         self.base_delay = 5.0 # Seconds
         
+        # Heartbeat parameters
+        self.heartbeat_interval = 25.0 # Seconds
+        self.heartbeat_timer = None
+        
         # Determine host
         self.host = EndPoints.PROTOBUF_LIVE_HOST if config["CT_HOST_TYPE"] == "live" else EndPoints.PROTOBUF_DEMO_HOST
         self.port = EndPoints.PROTOBUF_PORT
@@ -55,12 +59,15 @@ class CTraderClient:
             yield self.client.send(acc_auth_req)
             self.logger.info("Account Auth Success.")
             
+            self._start_heartbeat()
+            
         except Exception as e:
             self.logger.error(f"Authentication failed: {e}")
             self.stop()
         
     def _on_disconnected(self, client, reason):
         self.logger.warning(f"Disconnected from cTrader: {reason}")
+        self._stop_heartbeat()
         
         if self.retry_count < self.max_retries:
             self.retry_count += 1
@@ -76,6 +83,24 @@ class CTraderClient:
         # Placeholder for message handling
         pass
         
+    def _start_heartbeat(self):
+        """Schedules the first heartbeat."""
+        self._stop_heartbeat()
+        self.heartbeat_timer = reactor.callLater(self.heartbeat_interval, self._send_heartbeat)
+        
+    def _stop_heartbeat(self):
+        """Cancels any scheduled heartbeat."""
+        if self.heartbeat_timer and self.heartbeat_timer.active():
+            self.heartbeat_timer.cancel()
+        self.heartbeat_timer = None
+        
+    def _send_heartbeat(self):
+        """Sends a heartbeat message and schedules the next one."""
+        heartbeat = ProtoHeartbeatEvent()
+        self.client.send(heartbeat)
+        self.heartbeat_timer = reactor.callLater(self.heartbeat_interval, self._send_heartbeat)
+
     def stop(self):
-        """Stops the client service."""
+        """Stops the client service and heartbeat."""
+        self._stop_heartbeat()
         self.client.stopService()
