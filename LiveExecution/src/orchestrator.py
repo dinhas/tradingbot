@@ -1,15 +1,18 @@
 import logging
 import numpy as np
+from twisted.internet.defer import inlineCallbacks, gatherResults
+from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATradeSide
 
 class Orchestrator:
     """
     Coordinates data fetching, feature engineering, and sequential inference.
     """
-    def __init__(self, client, feature_manager, model_loader):
+    def __init__(self, client, feature_manager, model_loader, notifier):
         self.logger = logging.getLogger("LiveExecution")
         self.client = client
         self.fm = feature_manager
         self.ml = model_loader
+        self.notifier = notifier
         
         # Internal state
         self.portfolio_state = {asset: {} for asset in self.fm.assets} 
@@ -28,6 +31,99 @@ class Orchestrator:
         if locked:
             self.logger.info(f"Asset {symbol_id} is locked (position already exists).")
         return locked
+    
+    @inlineCallbacks
+    def on_m5_candle_close(self, symbol_id):
+        """
+        Main Event Handler: Triggered when an M5 candle closes.
+        """
+        asset_name = self._get_symbol_name(symbol_id)
+        self.logger.info(f"--- M5 Close Detected: {asset_name} ({symbol_id}) ---")
+        
+        # 1. Check Locks
+        if self.is_asset_locked(symbol_id):
+            self.logger.info(f"Skipping {asset_name} due to active lock.")
+            return
+
+        try:
+            # 2. Fetch Data (Parallel)
+            # Fetch OHLCV and Account Summary
+            d_ohlcv = self.client.fetch_ohlcv(symbol_id)
+            d_account = self.client.fetch_account_summary()
+            
+            results = yield gatherResults([d_ohlcv, d_account], consumeErrors=True)
+            
+            # Check for errors in results
+            for res in results:
+                if isinstance(res, Exception): # Or Failure
+                     self.logger.error(f"Data fetch failed: {res}")
+                     self.notifier.send_error(f"Data fetch failed for {asset_name}: {res}")
+                     return
+
+            ohlcv_res = results[0]
+            account_res = results[1]
+            
+            # 3. Update State
+            self.fm.update_data(symbol_id, ohlcv_res)
+            self.update_account_state(account_res)
+            
+            # 4. Run Inference
+            decision = self.run_inference_chain(symbol_id)
+            
+            if not decision:
+                return # Error or Hold
+            
+            # 5. Execute & Notify
+            if decision['allowed']:
+                yield self.execute_decision(decision, symbol_id)
+            else:
+                self.notifier.send_block_event({
+                    'symbol': asset_name,
+                    'reason': decision.get('reason', 'TradeGuard Block')
+                })
+                
+        except Exception as e:
+            self.logger.error(f"Orchestration error for {asset_name}: {e}")
+            self.notifier.send_error(f"Orchestration error for {asset_name}: {e}")
+
+    @inlineCallbacks
+    def execute_decision(self, decision, symbol_id):
+        """Places the order and notifies."""
+        try:
+            side = ProtoOATradeSide.BUY if decision['action'] == 1 else ProtoOATradeSide.SELL
+            
+            # Convert size percentage to volume (simplified logic for now)
+            # Assuming 100k standard lot, 0.01 size = 1000 units?
+            # Need strict size calc logic here eventually.
+            # For now, just pass a raw volume from decision or fixed test amount
+            # decision['size'] is a % of equity usually from Risk model.
+            
+            # Placeholder volume calculation
+            volume = int(decision['size'] * 1000000) # Very rough placeholder
+            if volume < 1000: volume = 1000
+            
+            self.logger.info(f"Executing {decision['asset']}: {side} Vol: {volume}")
+            
+            yield self.client.execute_market_order(
+                symbol_id, 
+                volume, 
+                side, 
+                sl_price=decision['sl'], 
+                tp_price=decision['tp']
+            )
+            
+            self.notifier.send_trade_event({
+                'symbol': decision['asset'],
+                'action': 'BUY' if side == ProtoOATradeSide.BUY else 'SELL',
+                'size': volume
+            })
+            
+            # Optimistically lock asset (will be confirmed by execution event later)
+            # self.active_positions[symbol_id] = "PENDING"
+            
+        except Exception as e:
+            self.logger.error(f"Execution failed: {e}")
+            self.notifier.send_error(f"Execution failed for {decision['asset']}: {e}")
 
     def run_inference_chain(self, symbol_id):
         """
