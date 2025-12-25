@@ -30,7 +30,7 @@ Implementation of the autonomous live trading system as defined in the PRD, inte
 ## Phase 5: Execution & Notifications
 - [x] Task: Order Submission - Implement Market Order execution via `ProtoOANewOrderReq`. 35acb79
 - [x] Task: Discord Integration - Implement webhook notifications for trades, blocks, and errors. 1a90d97
-- [ ] Task: Error Handling - Implement rejection handling and execution confirmation logging.
+- [x] Task: Error Handling - Implement rejection handling and execution confirmation logging. 1411b52
 - [ ] Task: Conductor - User Manual Verification 'Phase 5: Execution & Notifications' (Protocol in workflow.md)
 
 ## Phase 6: Orchestration & Dockerization
