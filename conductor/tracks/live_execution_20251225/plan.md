@@ -28,7 +28,7 @@ Implementation of the autonomous live trading system as defined in the PRD, inte
 - [x] Task: Conductor - User Manual Verification 'Phase 4: Inference Pipeline' (Protocol in workflow.md) [checkpoint: d1a6fdb]
 
 ## Phase 5: Execution & Notifications
-- [ ] Task: Order Submission - Implement Market Order execution via `ProtoOANewOrderReq`.
+- [x] Task: Order Submission - Implement Market Order execution via `ProtoOANewOrderReq`. 35acb79
 - [ ] Task: Discord Integration - Implement webhook notifications for trades, blocks, and errors.
 - [ ] Task: Error Handling - Implement rejection handling and execution confirmation logging.
 - [ ] Task: Conductor - User Manual Verification 'Phase 5: Execution & Notifications' (Protocol in workflow.md)
