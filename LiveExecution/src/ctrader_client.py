@@ -139,6 +139,7 @@ class CTraderClient:
         """Sends a request and returns a Deferred."""
         return self.client.send(request)
 
+    @inlineCallbacks
     def fetch_ohlcv(self, symbol_id, count=150, period=ProtoOATrendbarPeriod.M5):
         """Fetches historical trendbars for a symbol."""
         from datetime import datetime, timedelta
@@ -148,19 +149,21 @@ class CTraderClient:
         req.symbolId = symbol_id
         req.period = period
         
-        # Calculate timestamps for the requested number of bars
-        # This is an approximation for recent data
         to_timestamp = int(datetime.now().timestamp() * 1000)
-        # 150 bars of M5 is ~12.5 hours
-        from_timestamp = to_timestamp - (count * 5 * 60 * 1000)
+        # Increase lookback range significantly to account for weekends/holidays (e.g. 2x the count)
+        # 5 mins * count * 2
+        from_timestamp = to_timestamp - (count * 2 * 5 * 60 * 1000)
         
         req.fromTimestamp = from_timestamp
         req.toTimestamp = to_timestamp
         
-        return self.send_request(req)
+        res_msg = yield self.send_request(req)
+        return Protobuf.extract(res_msg)
 
+    @inlineCallbacks
     def fetch_account_summary(self):
         """Fetches account details (balance, leverage, etc)."""
         req = ProtoOATraderReq()
         req.ctidTraderAccountId = self.account_id
-        return self.send_request(req)
+        res_msg = yield self.send_request(req)
+        return Protobuf.extract(res_msg)
