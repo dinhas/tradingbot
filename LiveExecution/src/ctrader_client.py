@@ -167,3 +167,21 @@ class CTraderClient:
         req.ctidTraderAccountId = self.account_id
         res_msg = yield self.send_request(req)
         return Protobuf.extract(res_msg)
+
+    @inlineCallbacks
+    def execute_market_order(self, symbol_id, volume, side, sl_price=None, tp_price=None):
+        """Executes a Market Order."""
+        req = ProtoOANewOrderReq()
+        req.ctidTraderAccountId = self.account_id
+        req.symbolId = symbol_id
+        req.volume = volume
+        req.tradeSide = side
+        req.orderType = ProtoOAOrderType.MARKET
+        
+        if sl_price:
+            req.stopLoss = sl_price
+        if tp_price:
+            req.takeProfit = tp_price
+            
+        res_msg = yield self.send_request(req)
+        return Protobuf.extract(res_msg)
