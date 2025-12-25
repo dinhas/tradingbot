@@ -3,6 +3,7 @@ from twisted.internet.defer import inlineCallbacks
 from ctrader_open_api import Client, Protobuf, TcpProtocol, EndPoints
 from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiMessages_pb2 import *
+from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
 import logging
 
 class CTraderClient:
@@ -10,10 +11,11 @@ class CTraderClient:
         self.config = config
         self.logger = logging.getLogger("LiveExecution")
         
+        # Callbacks
+        self.on_candle_closed = None # To be set by orchestrator
+        
         self.app_id = config["CT_APP_ID"]
-        self.app_secret = config["CT_APP_SECRET"]
-        self.account_id = config["CT_ACCOUNT_ID"]
-        self.access_token = config["CT_ACCESS_TOKEN"]
+        # ...
         
         # Reconnection parameters
         self.max_retries = 5
@@ -80,8 +82,25 @@ class CTraderClient:
             self.stop()
         
     def _on_message(self, client, message):
-        # Placeholder for message handling
-        pass
+        """Handles incoming messages from cTrader."""
+        try:
+            payload = Protobuf.extract(message)
+            
+            if isinstance(payload, ProtoOASpotEvent):
+                self._handle_spot_event(payload)
+            # Add more event handlers as needed
+            
+        except Exception as e:
+            self.logger.error(f"Error handling message: {e}")
+            
+    def _handle_spot_event(self, event):
+        """Processes Spot Events for trendbar closes."""
+        if event.trendbar:
+            for bar in event.trendbar:
+                if bar.period == ProtoOATrendbarPeriod.M5:
+                    self.logger.info(f"M5 Candle closed for symbol {event.symbolId}")
+                    if self.on_candle_closed:
+                        self.on_candle_closed(event.symbolId)
         
     def _start_heartbeat(self):
         """Schedules the first heartbeat."""
