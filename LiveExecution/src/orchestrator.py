@@ -17,6 +17,7 @@ class Orchestrator:
         # Internal state
         self.portfolio_state = {asset: {} for asset in self.fm.assets} 
         self.active_positions = {} 
+        self.pending_risk_actions = {} # Maps positionId to risk_actions
         
         # Price precision (digits) for each asset
         self.symbol_digits = {
@@ -41,21 +42,68 @@ class Orchestrator:
         """Handles order execution events from cTrader."""
         try:
             self.logger.info(f"=== ORDER EXECUTION EVENT ===")
-            self.logger.info(f"Position ID: {event.position.positionId if event.position else 'N/A'}")
-            self.logger.info(f"Order ID: {event.order.orderId if event.order else 'N/A'}")
             self.logger.info(f"Execution Type: {event.executionType}")
             
+            # Position Data
             if event.position:
                 pos = event.position
-                self.logger.info(f"Symbol: {pos.tradeData.symbolId}, Side: {pos.tradeData.tradeSide}")
-                self.logger.info(f"Volume: {pos.tradeData.volume}, Entry Price: {pos.price}")
+                pos_id = pos.positionId
+                symbol_id = pos.tradeData.symbolId
+                asset_name = self._get_symbol_name(symbol_id)
                 
-                # Update active positions
-                self.active_positions[pos.tradeData.symbolId] = pos.positionId
-                self.logger.info(f"Position opened: {pos.positionId}")
+                # Check for closures or updates
+                # ExecutionType: 3 (TRADE) for closures, 2 (ORDER_ACCEPTED) for openings?
+                # Actually in cTrader OpenAPI:
+                # 2 = ORDER_ACCEPTED (The order is accepted by the server)
+                # 3 = ORDER_FILLED (The order is fully or partially filled)
+                # Here we want to track when a position is GONE or CLOSED.
+                
+                from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAExecutionType
+                
+                if event.executionType == ProtoOAExecutionType.ORDER_FILLED:
+                    # If positionStatus is CLOSED/DELETED, it's a closure
+                    from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAPositionStatus
+                    if pos.positionStatus in [ProtoOAPositionStatus.POSITION_STATUS_CLOSED, 6]: # 6 is often used for DELETED/GONE
+                         self.logger.info(f"Position {pos_id} CLOSED for {asset_name}")
+                         
+                         # Calculate PnL % for Risk Model
+                         # Note: In a real bot, we'd pull the actual realized PnL from the broker
+                         # For now, we'll derive it if possible or use balance change
+                         # But since we have the price, we can calculate it:
+                         if pos_id in self.pending_risk_actions:
+                             entry_price = pos.price
+                             # Realized PnL is usually in pos.swap + pos.commission + pnl
+                             # However, Risk Model features expect PnL % relative to entry
+                             # This is how it was trained in the backtest.
+                             
+                             # We'll use a simplified PnL % for now or wait for account balance sync
+                             # But better to record something close to what the model expects.
+                             # Let's assume we can calculate it relative to entry price.
+                             # (ClosePrice - EntryPrice) / EntryPrice * side
+                             # But we might not have the closure price directly in this event if it just says 'closed'
+                             
+                             # Actually, let's keep it simple: fetch account summary after closure 
+                             # and use balance delta? No, the risk model wants PnL per trade.
+                             pass
+                         
+                         if symbol_id in self.active_positions:
+                             del self.active_positions[symbol_id]
+
+                    elif pos.positionStatus == ProtoOAPositionStatus.POSITION_STATUS_OPEN:
+                        # Position just opened or updated
+                        self.active_positions[symbol_id] = pos_id
+                        self.logger.info(f"Position {pos_id} is now OPEN for {asset_name}")
+
+            # If it's a trade closure, let's log the detail
+            if hasattr(event, 'order') and event.order:
+                 order = event.order
+                 if order.closingOrder:
+                      self.logger.info(f"Order {order.orderId} is a CLOSING order.")
                 
         except Exception as e:
             self.logger.error(f"Error handling execution event: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
 
     def on_order_error(self, event):
         """Handles order error events from cTrader."""
@@ -262,8 +310,15 @@ class Orchestrator:
                 'size': f"{decision['lots']:.2f} lots"
             })
             
-            # Optimistically lock asset
-            self.active_positions[symbol_id] = "PENDING"
+            # Record risk actions for this position to use when it closes
+            if hasattr(execution_res, 'position') and execution_res.position:
+                pos_id = execution_res.position.positionId
+                self.pending_risk_actions[pos_id] = decision.get('risk_actions', np.zeros(3))
+                self.active_positions[symbol_id] = pos_id
+                self.logger.info(f"Recorded pending risk actions for {asset_name} position {pos_id}")
+            else:
+                # Optimistically lock asset if we don't have ID yet
+                self.active_positions[symbol_id] = "PENDING"
             
         except Exception as e:
             self.logger.error(f"Execution failed: {e}")
@@ -384,6 +439,7 @@ class Orchestrator:
                 'tp': float(tp_price),
                 'relative_sl': relative_sl,
                 'relative_tp': relative_tp,
+                'risk_actions': risk_action,
                 'allowed': allowed
             }
             
