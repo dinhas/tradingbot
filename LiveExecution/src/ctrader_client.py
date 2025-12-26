@@ -17,6 +17,9 @@ class CTraderClient:
         self.on_order_execution = None
         self.on_order_error = None
         
+        # State tracking for deduplication
+        self.last_bar_timestamps = {}
+        
         self.app_id = config["CT_APP_ID"]
         self.app_secret = config["CT_APP_SECRET"]
         self.account_id = config["CT_ACCOUNT_ID"]
@@ -120,9 +123,24 @@ class CTraderClient:
         if event.trendbar:
             for bar in event.trendbar:
                 if bar.period == ProtoOATrendbarPeriod.M5:
-                    self.logger.info(f"M5 Candle closed for symbol {event.symbolId}")
-                    if self.on_candle_closed:
-                        self.on_candle_closed(event.symbolId)
+                    symbol_id = event.symbolId
+                    # utcTimestampInMinutes identifies the bar (e.g. 07:10 for the 07:10-07:15 bar)
+                    # We only process if this is a NEW bar we haven't seen yet.
+                    current_ts = bar.utcTimestampInMinutes
+                   
+                    last_ts = self.last_bar_timestamps.get(symbol_id)
+                    
+                    if last_ts is None or current_ts > last_ts:
+                        self.logger.info(f"M5 Candle closed for symbol {symbol_id} (TS: {current_ts})")
+                        self.last_bar_timestamps[symbol_id] = current_ts
+                        try:
+                            if self.on_candle_closed:
+                                self.on_candle_closed(symbol_id)
+                        except Exception as e:
+                            self.logger.error(f"Error in on_candle_closed callback: {e}")
+                    else:
+                        # Duplicate event for the same candle (common with multiple spot updates)
+                        pass
         
     def _start_heartbeat(self):
         """Schedules the first heartbeat."""
@@ -197,6 +215,51 @@ class CTraderClient:
         req.ctidTraderAccountId = self.account_id
         res_msg = yield self.send_request(req)
         return Protobuf.extract(res_msg)
+
+    @inlineCallbacks
+    def subscribe_spots(self, symbol_ids):
+        """Subscribes to spot events (prerequisite for trendbar updates)."""
+        req = ProtoOASubscribeSpotsReq()
+        req.ctidTraderAccountId = self.account_id
+        if isinstance(symbol_ids, list):
+            req.symbolId.extend(symbol_ids)
+        else:
+            req.symbolId.append(symbol_ids)
+            
+        res_msg = yield self.send_request(req)
+        return Protobuf.extract(res_msg)
+
+    @inlineCallbacks
+    def subscribe_trendbars(self, symbol_ids, period=ProtoOATrendbarPeriod.M5):
+        """Subscribes to live trendbar updates for each symbol.
+        
+        IMPORTANT: Must call subscribe_spots() FIRST before calling this.
+        This is required by cTrader API to receive trendbar close events.
+        """
+        if not isinstance(symbol_ids, list):
+            symbol_ids = [symbol_ids]
+        
+        for symbol_id in symbol_ids:
+            req = ProtoOASubscribeLiveTrendbarReq()
+            req.ctidTraderAccountId = self.account_id
+            req.symbolId = symbol_id
+            req.period = period
+            
+            res_msg = yield self.send_request(req)
+            self.logger.info(f"Subscribed to M5 trendbars for symbol {symbol_id}")
+        
+        return True
+
+    @inlineCallbacks
+    def subscribe(self, symbol_ids):
+        """Full subscription: spots + M5 trendbars (convenience wrapper)."""
+        # Step 1: Subscribe to spots (required first)
+        yield self.subscribe_spots(symbol_ids)
+        self.logger.info("Subscribed to spot events.")
+        
+        # Step 2: Subscribe to M5 trendbars (required to get candle close events)
+        yield self.subscribe_trendbars(symbol_ids)
+        self.logger.info("Subscribed to M5 trendbar events.")
 
     @inlineCallbacks
     def execute_market_order(self, symbol_id, volume, side, sl_price=None, tp_price=None):

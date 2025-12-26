@@ -75,14 +75,20 @@ class Orchestrator:
             
             results = yield gatherResults(tasks, consumeErrors=True)
             
+            symbols_to_subscribe = []
             for i, res in enumerate(results):
                 asset_name = self.fm.assets[i]
                 symbol_id = self.client.symbol_ids.get(asset_name)
                 if not isinstance(res, Exception):
                     self.fm.update_data(symbol_id, res)
                     self.logger.info(f"Loaded {len(self.fm.history[asset_name])} bars for {asset_name}")
+                    symbols_to_subscribe.append(symbol_id)
                 else:
                     self.logger.error(f"Failed to bootstrap {asset_name}: {res}")
+            
+            if symbols_to_subscribe:
+                self.logger.info(f"Subscribing to spots for: {symbols_to_subscribe}")
+                yield self.client.subscribe(symbols_to_subscribe)
             
             if self.fm.is_ready():
                 self.logger.info("System is READY for live execution.")

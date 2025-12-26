@@ -25,7 +25,7 @@ def main():
 
     # 3. Define the send logic
     def send_and_stop():
-        d = notifier.send_message("Hello from the TradeGuard script! 🚀")
+        d = notifier.send_message("testing tradegurd script")
         
         def success(res):
             print("✅ Message sent successfully!")
