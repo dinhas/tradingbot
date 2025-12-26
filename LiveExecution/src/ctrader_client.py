@@ -262,7 +262,7 @@ class CTraderClient:
         self.logger.info("Subscribed to M5 trendbar events.")
 
     @inlineCallbacks
-    def execute_market_order(self, symbol_id, volume, side, sl_price=None, tp_price=None):
+    def execute_market_order(self, symbol_id, volume, side, relative_sl=None, relative_tp=None):
         """Executes a Market Order."""
         req = ProtoOANewOrderReq()
         req.ctidTraderAccountId = self.account_id
@@ -271,10 +271,10 @@ class CTraderClient:
         req.tradeSide = side
         req.orderType = ProtoOAOrderType.MARKET
         
-        if sl_price:
-            req.stopLoss = sl_price
-        if tp_price:
-            req.takeProfit = tp_price
+        if relative_sl is not None:
+            req.relativeStopLoss = int(relative_sl)
+        if relative_tp is not None:
+            req.relativeTakeProfit = int(relative_tp)
             
         res_msg = yield self.send_request(req)
         return Protobuf.extract(res_msg)

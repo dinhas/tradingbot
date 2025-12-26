@@ -17,7 +17,15 @@ class Orchestrator:
         # Internal state
         self.portfolio_state = {asset: {} for asset in self.fm.assets} 
         self.active_positions = {} 
-
+        
+        # Price precision (digits) for each asset
+        self.symbol_digits = {
+            'EURUSD': 5,
+            'GBPUSD': 5,
+            'USDCHF': 5,
+            'USDJPY': 3,
+            'XAUUSD': 2 # Gold usually has 2 or 3, most commonly 2 for demo/live
+        }
     def update_account_state(self, account_res):
         """Updates internal portfolio state from cTrader response."""
         # ProtoOATrader provides balance, and usually we can derive equity
@@ -28,6 +36,40 @@ class Orchestrator:
         self.portfolio_state['equity'] = self.portfolio_state.get('equity', self.portfolio_state['balance'])
         self.portfolio_state['initial_equity'] = self.portfolio_state.get('initial_equity', self.portfolio_state['equity'])
         self.portfolio_state['peak_equity'] = max(self.portfolio_state.get('peak_equity', 0), self.portfolio_state['equity'])
+
+    def on_order_execution(self, event):
+        """Handles order execution events from cTrader."""
+        try:
+            self.logger.info(f"=== ORDER EXECUTION EVENT ===")
+            self.logger.info(f"Position ID: {event.position.positionId if event.position else 'N/A'}")
+            self.logger.info(f"Order ID: {event.order.orderId if event.order else 'N/A'}")
+            self.logger.info(f"Execution Type: {event.executionType}")
+            
+            if event.position:
+                pos = event.position
+                self.logger.info(f"Symbol: {pos.tradeData.symbolId}, Side: {pos.tradeData.tradeSide}")
+                self.logger.info(f"Volume: {pos.tradeData.volume}, Entry Price: {pos.price}")
+                
+                # Update active positions
+                self.active_positions[pos.tradeData.symbolId] = pos.positionId
+                self.logger.info(f"Position opened: {pos.positionId}")
+                
+        except Exception as e:
+            self.logger.error(f"Error handling execution event: {e}")
+
+    def on_order_error(self, event):
+        """Handles order error events from cTrader."""
+        self.logger.error(f"=== ORDER ERROR EVENT ===")
+        self.logger.error(f"Error Code: {event.errorCode}")
+        self.logger.error(f"Description: {event.description if hasattr(event, 'description') else 'N/A'}")
+        self.logger.error(f"Order ID: {event.orderId if hasattr(event, 'orderId') else 'N/A'}")
+        
+        # Try to get more details
+        if hasattr(event, 'ctidTraderAccountId'):
+            self.logger.error(f"Account ID: {event.ctidTraderAccountId}")
+        
+        # Send notification
+        self.notifier.send_error(f"Order rejected: {event.errorCode} - {getattr(event, 'description', 'No description')}")
 
     def is_asset_locked(self, symbol_id):
         """Checks if a position is already open for the given symbol."""
@@ -81,6 +123,12 @@ class Orchestrator:
                 symbol_id = self.client.symbol_ids.get(asset_name)
                 if not isinstance(res, Exception):
                     self.fm.update_data(symbol_id, res)
+                    
+                    # Initialize last_bar_timestamps from history to prevent immediate trigger on startup
+                    if res.trendbar:
+                        latest_ts = max(bar.utcTimestampInMinutes for bar in res.trendbar)
+                        self.client.last_bar_timestamps[symbol_id] = latest_ts
+                        
                     self.logger.info(f"Loaded {len(self.fm.history[asset_name])} bars for {asset_name}")
                     symbols_to_subscribe.append(symbol_id)
                 else:
@@ -115,10 +163,16 @@ class Orchestrator:
              self.logger.info("FeatureManager not ready (insufficient history). Skipping.")
              return
 
-        # 1. Sync Positions and Check Locks
+        # 1. Sync Positions and Check System/Asset Limits
         yield self.sync_active_positions()
+        
+        # System-level limit: Max 2 open positions
+        if len(self.active_positions) >= 2:
+            self.logger.info(f"System reached max open positions limit (2). Currently open: {list(self.active_positions.keys())}")
+            return
+
         if self.is_asset_locked(symbol_id):
-            self.logger.info(f"Skipping {asset_name} due to active lock.")
+            self.logger.info(f"Skipping {asset_name} due to active lock (symbol already has position).")
             return
 
         try:
@@ -178,7 +232,11 @@ class Orchestrator:
             
             # Convert Lots to cTrader volume (Units * 100)
             # Lots are already calculated in run_inference_chain to match backtest
-            volume = int(decision['lots'] * 100000 * 100)
+            # Round volume to nearest 100,000 (0.01 lots) - cTrader step requirement
+            # 1 Lot = 100,000 units = 10,000,000 protocol volume
+            # 0.01 Lot = 1,000 units = 100,000 protocol volume
+            raw_volume = decision['lots'] * 100000 * 100
+            volume = int(round(raw_volume / 100000) * 100000)
             
             # Ensure minimum volume (100,000 = 0.01 lots)
             if volume < 100000: 
@@ -186,15 +244,16 @@ class Orchestrator:
             
             self.logger.info(f"Executing {decision['asset']}: {side} Lots: {decision['lots']:.2f} Vol: {volume}")
             
-            # Convert SL/TP prices to pips if protocol requires, or keep as price if execute_market_order handles it
-            # Standard NewOrderReq expects price as absolute value (double)
-            yield self.client.execute_market_order(
+            # Use relative SL/TP as required for Market Orders in ProtoOANewOrderReq
+            execution_res = yield self.client.execute_market_order(
                 symbol_id, 
                 volume, 
                 side, 
-                sl_price=decision['sl'], 
-                tp_price=decision['tp']
+                relative_sl=decision.get('relative_sl'), 
+                relative_tp=decision.get('relative_tp')
             )
+            
+            self.logger.info(f"Order Execution Response for {decision['asset']}: {execution_res}")
             
             self.notifier.send_trade_event({
                 'symbol': decision['asset'],
@@ -253,28 +312,42 @@ class Orchestrator:
             risk_raw_scaled = (risk_raw - 0.20) / 0.80
             
             # 5. Calculate Sizing & SL/TP Prices
-            current_price = self.fm.history[asset_name].iloc[-1]['close']
+            digits = self.symbol_digits.get(asset_name, 5)
+            current_price = round(self.fm.history[asset_name].iloc[-1]['close'], digits)
             atr = self.fm.get_atr(asset_name)
             if atr <= 0: atr = current_price * 0.0001
             
             sl_dist = sl_mult * atr
             tp_dist = tp_mult * atr
             
-            sl_price = current_price - (direction * sl_dist)
-            tp_price = current_price + (direction * tp_dist)
+            sl_price = round(current_price - (direction * sl_dist), digits)
+            tp_price = round(current_price + (direction * tp_dist), digits)
+            
+            # Calculate Relative values for API (Price Distance * 100,000)
+            # This is the standard cTrader requirement for Market Orders
+            relative_sl = int(round(sl_dist * 100000))
+            relative_tp = int(round(tp_dist * 100000))
             
             # Lot Calculation (Match Backtest calculate_position_size)
             equity = self.portfolio_state.get('equity', 10.0)
-            MAX_RISK_PER_TRADE = 0.80
-            drawdown = 1.0 - (equity / max(self.portfolio_state.get('peak_equity', equity), 1e-9))
-            risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+            balance = self.portfolio_state.get('balance', 0)
             
-            actual_risk_pct = risk_raw_scaled * MAX_RISK_PER_TRADE * risk_cap_mult
-            risk_amount_cash = equity * actual_risk_pct
+            # USER OVERRIDE: 0.01 lots if balance < $100
+            if balance < 100:
+                lots = 0.01
+                self.logger.info(f"Balance ${balance:.2f} < $100. Using hardcoded lot size: 0.01")
+            else:
+                MAX_RISK_PER_TRADE = 0.80
+                drawdown = 1.0 - (equity / max(self.portfolio_state.get('peak_equity', equity), 1e-9))
+                risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+                
+                actual_risk_pct = risk_raw_scaled * MAX_RISK_PER_TRADE * risk_cap_mult
+                risk_amount_cash = equity * actual_risk_pct
+                
+                contract_size = 100 if asset_name == 'XAUUSD' else 100000
+                # Simplified for USD quote pairs (EURUSD, GBPUSD, XAUUSD)
+                lots = risk_amount_cash / (sl_dist * contract_size)
             
-            contract_size = 100 if asset_name == 'XAUUSD' else 100000
-            # Simplified for USD quote pairs (EURUSD, GBPUSD, XAUUSD)
-            lots = risk_amount_cash / (sl_dist * contract_size)
             lots = np.clip(lots, 0.01, 100.0)
             
             # 6. TradeGuard Prediction
@@ -303,6 +376,8 @@ class Orchestrator:
                 'lots': float(lots),
                 'sl': float(sl_price),
                 'tp': float(tp_price),
+                'relative_sl': relative_sl,
+                'relative_tp': relative_tp,
                 'allowed': allowed
             }
             

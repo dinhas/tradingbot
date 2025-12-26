@@ -52,8 +52,8 @@ def main():
         # Connect Client Events to Orchestrator
         client.on_authenticated = orchestrator.bootstrap
         client.on_candle_closed = orchestrator.on_m5_candle_close
-        client.on_order_execution = None # TODO: Add handler in orchestrator if needed
-        client.on_order_error = None # TODO: Add handler in orchestrator if needed
+        client.on_order_execution = orchestrator.on_order_execution
+        client.on_order_error = orchestrator.on_order_error
 
         # 5. Start Service
         client.start()
