@@ -86,7 +86,8 @@ class Orchestrator:
             # Reset active positions
             new_active = {}
             for pos in res.position:
-                new_active[pos.symbolId] = pos.positionId
+                if hasattr(pos, 'tradeData') and hasattr(pos.tradeData, 'symbolId'):
+                    new_active[pos.tradeData.symbolId] = pos.positionId
             
             self.active_positions = new_active
             self.logger.info(f"Synced {len(self.active_positions)} active positions from API.")
@@ -323,8 +324,13 @@ class Orchestrator:
             sl_price = round(current_price - (direction * sl_dist), digits)
             tp_price = round(current_price + (direction * tp_dist), digits)
             
+            # Round distances to symbol's precision to avoid 'invalid precision' errors
+            # This ensures the SL/TP price levels are mathematically valid for the broker
+            pip_unit = 10 ** -digits
+            sl_dist = round(sl_dist / pip_unit) * pip_unit
+            tp_dist = round(tp_dist / pip_unit) * pip_unit
+            
             # Calculate Relative values for API (Price Distance * 100,000)
-            # This is the standard cTrader requirement for Market Orders
             relative_sl = int(round(sl_dist * 100000))
             relative_tp = int(round(tp_dist * 100000))
             
@@ -332,10 +338,10 @@ class Orchestrator:
             equity = self.portfolio_state.get('equity', 10.0)
             balance = self.portfolio_state.get('balance', 0)
             
-            # USER OVERRIDE: 0.01 lots if balance < $100
-            if balance < 100:
+            # USER OVERRIDE: 0.01 lots if balance < $30
+            if balance < 30:
                 lots = 0.01
-                self.logger.info(f"Balance ${balance:.2f} < $100. Using hardcoded lot size: 0.01")
+                self.logger.info(f"Balance ${balance:.2f} < $30. Using hardcoded lot size: 0.01")
             else:
                 MAX_RISK_PER_TRADE = 0.80
                 drawdown = 1.0 - (equity / max(self.portfolio_state.get('peak_equity', equity), 1e-9))
