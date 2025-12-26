@@ -175,9 +175,9 @@ class CTraderClient:
         self._stop_heartbeat()
         self.client.stopService()
 
-    def send_request(self, request):
+    def send_request(self, request, timeout=10):
         """Sends a request and returns a Deferred."""
-        return self.client.send(request)
+        return self.client.send(request, timeout=timeout)
 
     @inlineCallbacks
     def fetch_ohlcv(self, symbol_id, count=150, period=ProtoOATrendbarPeriod.M5):

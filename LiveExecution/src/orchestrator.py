@@ -1,7 +1,9 @@
+from twisted.internet import reactor, task
+from twisted.internet.defer import inlineCallbacks, gatherResults, DeferredList
+from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATradeSide
+import time
 import logging
 import numpy as np
-from twisted.internet.defer import inlineCallbacks, gatherResults
-from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATradeSide
 
 class Orchestrator:
     """
@@ -18,6 +20,10 @@ class Orchestrator:
         self.portfolio_state = {asset: {} for asset in self.fm.assets} 
         self.active_positions = {} 
         self.pending_risk_actions = {} # Maps positionId to risk_actions
+        
+        # Account Cache to avoid redundant API calls
+        self._account_cache = None
+        self._account_time = 0
         
         # Price precision (digits) for each asset
         self.symbol_digits = {
@@ -202,15 +208,18 @@ class Orchestrator:
         """
         Main Event Handler: Triggered when an M5 candle closes.
         """
-        import time
+        # Small stagger to prevent all 5 assets from hitting API simultaneously
+        # Uses symbol_id to give each asset a unique offset (e.g. 0.1s, 0.2s...)
+        yield task.deferLater(reactor, (symbol_id % 10) * 0.15, lambda: None)
+        
         start_time = time.time()
         asset_name = self._get_symbol_name(symbol_id)
         self.logger.info(f"--- M5 Close Detected: {asset_name} ({symbol_id}) ---")
         
         # 0. Check Readiness
         if not self.fm.is_ready():
-             self.logger.info("FeatureManager not ready (insufficient history). Skipping.")
-             return
+            self.logger.info("FeatureManager not ready (insufficient history). Skipping.")
+            return
 
         # 1. Sync Positions and Check System/Asset Limits
         yield self.sync_active_positions()
@@ -226,21 +235,36 @@ class Orchestrator:
 
         try:
             # 2. Fetch Data (Parallel)
-            # Fetch OHLCV and Account Summary
+            # Fetch OHLCV and Account Summary (Cached)
             d_ohlcv = self.client.fetch_ohlcv(symbol_id)
-            d_account = self.client.fetch_account_summary()
             
-            results = yield gatherResults([d_ohlcv, d_account], consumeErrors=True)
-            
-            # Check for errors in results
-            for res in results:
-                if isinstance(res, Exception): # Or Failure
-                     self.logger.error(f"Data fetch failed: {res}")
-                     self.notifier.send_error(f"Data fetch failed for {asset_name}: {res}")
-                     return
-
-            ohlcv_res = results[0]
-            account_res = results[1]
+            # Use cached account summary if less than 3 seconds old
+            if self._account_cache and (time.time() - self._account_time) < 3.0:
+                account_res = self._account_cache
+                # Only need ohlcv
+                results_list = yield DeferredList([d_ohlcv], fireOnOneErrback=False, consumeErrors=True)
+                if results_list[0][0]:
+                    ohlcv_res = results_list[0][1]
+                else:
+                    self.logger.error(f"OHLCV fetch failed: {results_list[0][1]}")
+                    return
+            else:
+                d_account = self.client.fetch_account_summary()
+                results_list = yield DeferredList([d_ohlcv, d_account], fireOnOneErrback=False, consumeErrors=True)
+                
+                if results_list[0][0]:
+                    ohlcv_res = results_list[0][1]
+                else:
+                    self.logger.error(f"OHLCV fetch failed: {results_list[0][1]}")
+                    return
+                
+                if results_list[1][0]:
+                    account_res = results_list[1][1]
+                    self._account_cache = account_res
+                    self._account_time = time.time()
+                else:
+                    self.logger.error(f"Account fetch failed: {results_list[1][1]}")
+                    return
             
             # 3. Update State
             self.fm.update_data(symbol_id, ohlcv_res)
@@ -315,7 +339,7 @@ class Orchestrator:
                 pos_id = execution_res.position.positionId
                 self.pending_risk_actions[pos_id] = decision.get('risk_actions', np.zeros(3))
                 self.active_positions[symbol_id] = pos_id
-                self.logger.info(f"Recorded pending risk actions for {asset_name} position {pos_id}")
+                self.logger.info(f"Recorded pending risk actions for {decision['asset']} position {pos_id}")
             else:
                 # Optimistically lock asset if we don't have ID yet
                 self.active_positions[symbol_id] = "PENDING"
