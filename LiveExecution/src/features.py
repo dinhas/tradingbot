@@ -25,17 +25,25 @@ class FeatureManager:
     def push_candle(self, asset, candle_data):
         """
         Pushes a new candle to the history buffer.
-        candle_data: dict with [open, high, low, close, volume] and 'timestamp' index
+        If the timestamp exists, updates the row. If not, appends.
         """
-        # Create a single row DataFrame
         ts = candle_data.pop('timestamp')
         ts = pd.Timestamp(ts)
-        # Floor to minutes to ensure alignment across assets even if arrival varies by seconds
+        # Floor to minutes to ensure alignment across assets
         ts = ts.floor('min')
-        new_row = pd.DataFrame([candle_data], index=[ts])
         
-        # Append and trim
-        self.history[asset] = pd.concat([self.history[asset], new_row])
+        new_row = pd.Series(candle_data, name=ts)
+        
+        if ts in self.history[asset].index:
+            # Update existing row
+            self.history[asset].loc[ts] = new_row
+        else:
+            # Append new row
+            self.history[asset] = pd.concat([self.history[asset], pd.DataFrame([new_row])])
+            # Ensure index is sorted after append
+            self.history[asset] = self.history[asset].sort_index()
+
+        # Trim to max history
         if len(self.history[asset]) > self.max_history:
             self.history[asset] = self.history[asset].iloc[-self.max_history:]
             
