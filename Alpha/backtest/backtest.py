@@ -289,7 +289,7 @@ def run_backtest(args):
     data_dir_path = project_root / args.data_dir
     output_dir_path = project_root / args.output_dir
 
-    logger.info(f"Starting backtest for Stage {args.stage}")
+    logger.info("Starting Alpha Model Backtest")
     logger.info(f"Model: {model_path}")
     logger.info(f"Data directory: {data_dir_path}")
     
@@ -298,15 +298,19 @@ def run_backtest(args):
     
     # Load model
     logger.info("Loading model...")
-    env = DummyVecEnv([make_backtest_env(data_dir_path, args.stage)])
+    # Get temporary env to access metadata
+    temp_env = TradingEnv(data_dir=data_dir_path, is_training=False)
+    assets_to_test = temp_env.assets if args.asset == "all" else [args.asset]
+    
+    env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False)])
     
     # Load VecNormalize stats if available
     vecnorm_path = str(model_path).replace('.zip', '_vecnormalize.pkl')
     if os.path.exists(vecnorm_path):
         logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
         env = VecNormalize.load(vecnorm_path, env)
-        env.training = False  # Disable training mode for deterministic evaluation
-        env.norm_reward = False  # Don't normalize rewards during evaluation
+        env.training = False
+        env.norm_reward = False
     
     model = PPO.load(model_path, env=env)
     logger.info("Model loaded successfully")
@@ -314,40 +318,34 @@ def run_backtest(args):
     # Initialize metrics tracker
     metrics_tracker = BacktestMetrics()
     
-    # Run episodes
-    logger.info(f"Running {args.episodes} episodes...")
-    
-    for episode in range(args.episodes):
-        obs = env.reset()
-        done = False
-        episode_reward = 0
-        step_count = 0
+    # Run episodes for each asset
+    for asset in assets_to_test:
+        logger.info(f"\nTesting Asset: {asset}")
+        logger.info("-" * 20)
         
-        while not done:
-            # Get action from model (deterministic for backtesting)
-            action, _states = model.predict(obs, deterministic=True)
+        for episode in range(args.episodes):
+            # Force environment to use the specific asset
+            obs = env.reset(options={'asset': asset})
+            done = False
+            episode_reward = 0
+            step_count = 0
             
-            # Step environment
-            obs, reward, done, info = env.step(action)
-            episode_reward += reward[0]
-            step_count += 1
+            while not done:
+                action, _states = model.predict(obs, deterministic=True)
+                obs, reward, done, info = env.step(action)
+                episode_reward += reward[0]
+                step_count += 1
+                
+                if info and len(info) > 0:
+                    env_info = info[0]
+                    if 'trades' in env_info:
+                        for trade in env_info['trades']:
+                            metrics_tracker.add_trade(trade)
+                    if 'equity' in env_info and 'timestamp' in env_info:
+                        metrics_tracker.add_equity_point(env_info['timestamp'], env_info['equity'])
             
-            # Extract trade information if available
-            if info and len(info) > 0:
-                env_info = info[0]
-                
-                # Log completed trades
-                if 'trades' in env_info:
-                    for trade in env_info['trades']:
-                        metrics_tracker.add_trade(trade)
-                
-                # Log equity
-                if 'equity' in env_info and 'timestamp' in env_info:
-                    metrics_tracker.add_equity_point(env_info['timestamp'], env_info['equity'])
-        
-        # Get final equity from the last info
-        final_equity = env_info.get('equity', 0) if info and len(info) > 0 else 0
-        logger.info(f"Episode {episode + 1}/{args.episodes} complete. Reward: {episode_reward:.2f}, Steps: {step_count}, Final Equity: ${final_equity:.2f}")
+            final_equity = env_info.get('equity', 0) if info and len(info) > 0 else 0
+            logger.info(f"[{asset}] Episode {episode + 1}/{args.episodes} complete. Reward: {episode_reward:.2f}, Final Equity: ${final_equity:.2f}")
     
     env.close()
     
@@ -395,14 +393,14 @@ def run_backtest(args):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # 1. Save metrics JSON
-    metrics_file = output_dir_path / f"metrics_stage{args.stage}_{timestamp}.json"
+    metrics_file = output_dir_path / f"metrics_alpha_{timestamp}.json"
     with open(metrics_file, 'w') as f:
         json.dump(metrics, f, indent=2, cls=NumpyEncoder)
     logger.info(f"Saved metrics to {metrics_file}")
     
     # 2. Save trade log
     if metrics_tracker.trades:
-        trades_file = output_dir_path / f"trades_stage{args.stage}_{timestamp}.csv"
+        trades_file = output_dir_path / f"trades_alpha_{timestamp}.csv"
         pd.DataFrame(metrics_tracker.trades).to_csv(trades_file, index=False)
         logger.info(f"Saved trade log to {trades_file}")
     
@@ -783,14 +781,14 @@ def create_tradeguard_performance_charts(metrics_tracker, stage, output_dir, tim
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Backtest RL Trading Bot")
     parser.add_argument("--model", type=str, required=True, help="Path to trained model (.zip file) relative to project root")
-    parser.add_argument("--stage", type=int, required=True, choices=[1, 2, 3],
-                        help="Curriculum stage (1=Direction, 2=+Sizing, 3=Full)")
     parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data",
                         help="Path to backtest data directory relative to project root")
     parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results",
                         help="Path to save results relative to project root")
     parser.add_argument("--episodes", type=int, default=1,
-                        help="Number of episodes to run")
+                        help="Number of episodes to run per asset")
+    parser.add_argument("--asset", type=str, default="all",
+                        help="Specific asset to test (e.g., EURUSD) or 'all' to test the full basket")
     
     args = parser.parse_args()
     
