@@ -185,7 +185,7 @@ def train(args):
     )
     
     metrics_callback = MetricsCallback(
-        eval_freq=10000,
+        eval_freq=1000,
         plot_freq=10000,
         verbose=1
     )
