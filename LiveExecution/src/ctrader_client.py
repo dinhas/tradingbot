@@ -190,9 +190,9 @@ class CTraderClient:
         req.period = period
         
         to_timestamp = int(datetime.now().timestamp() * 1000)
-        # Increase lookback range significantly to account for weekends/holidays (e.g. 2x the count)
-        # 5 mins * count * 2
-        from_timestamp = to_timestamp - (count * 2 * 5 * 60 * 1000)
+        # Increase lookback range significantly to account for weekends/holidays (e.g. 5x the count)
+        # 5 mins * count * 5
+        from_timestamp = to_timestamp - (count * 5 * 5 * 60 * 1000)
         
         req.fromTimestamp = from_timestamp
         req.toTimestamp = to_timestamp
