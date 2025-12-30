@@ -20,11 +20,12 @@ class TradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, data_dir='data', is_training=True, data=None):
+    def __init__(self, data_dir='data', is_training=True, data=None, stage=1):
         super(TradingEnv, self).__init__()
         
         self.data_dir = data_dir
         self.is_training = is_training
+        self.stage = stage
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         
         # Configuration Constants
@@ -234,9 +235,10 @@ class TradingEnv(gym.Env):
         # Support forcing a specific asset via options (useful for backtesting/shuffling)
         if options and 'asset' in options:
             self.current_asset = options['asset']
-        else:
+        elif self.is_training:
             # Randomly select asset for this episode
             self.current_asset = np.random.choice(self.assets)
+        # In backtesting, if no option provided, keep the current_asset (set via set_asset or init)
         
         if self.is_training:
             # Training: Randomize for diversity
@@ -265,6 +267,12 @@ class TradingEnv(gym.Env):
         
         return self._get_observation(), {}
         
+    def set_asset(self, asset):
+        """Set the current asset for the environment."""
+        if asset not in self.assets:
+            raise ValueError(f"Asset {asset} not found in environment assets.")
+        self.current_asset = asset
+
     def _validate_observation(self, obs):
         """Ensure observation shape matches space definition."""
         if obs.shape != self.observation_space.shape:

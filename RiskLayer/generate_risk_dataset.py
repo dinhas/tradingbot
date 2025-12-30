@@ -6,6 +6,7 @@ import pandas as pd
 import torch
 from datetime import datetime
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from tqdm import tqdm
 import logging
 import gc
@@ -60,7 +61,8 @@ class TeeStderr:
         self.stderr.flush()
 
 # Defaults
-DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "checkpoints", "8.03.zip")
+DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "checkpoints", "ppo_final_model.zip")
+DEFAULT_VEC_NORM_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "checkpoints", "ppo_final_model_vecnormalize.pkl")
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DEFAULT_OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "risk_dataset.parquet")
 LOOKAHEAD_STEPS = 6 # 30 mins (5m candles)
@@ -149,7 +151,7 @@ def build_observation_matrix(df, assets, start_idx, end_idx):
         
     return obs_matrix
 
-def generate_dataset_batched(model_path, data_dir, output_file):
+def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=None):
     """Generates the risk dataset using optimized batched inference."""
     
     # 1. Load Model
@@ -163,6 +165,23 @@ def generate_dataset_batched(model_path, data_dir, output_file):
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         return
+
+    # 1b. Load Normalizer (VecNormalize)
+    norm_env = None
+    if vec_norm_path and os.path.exists(vec_norm_path):
+        logger.info(f"Loading VecNormalize stats from {vec_norm_path}...")
+        try:
+            # VecNormalize requires a venv to load, even if dummy
+            # We create a dummy lambda that returns None, as we only need the stats
+            dummy_venv = DummyVecEnv([lambda: None]) 
+            norm_env = VecNormalize.load(vec_norm_path, dummy_venv)
+            norm_env.training = False # Do not update stats during inference
+            norm_env.norm_reward = False
+        except Exception as e:
+            logger.error(f"Failed to load VecNormalize: {e}")
+            logger.warning("Proceeding WITHOUT normalization! (Results may be poor)")
+    else:
+        logger.warning(f"VecNormalize file not found at {vec_norm_path}. Proceeding unnormalized.")
 
     # 2. Load Data
     logger.info(f"Loading and preprocessing data from {data_dir}...")
@@ -246,15 +265,10 @@ def generate_dataset_batched(model_path, data_dir, output_file):
         b_end = min(b_start + BATCH_SIZE, num_rows)
         batch_indices = indices[b_start:b_end]
         
-        # Get observations for this batch
-        batch_obs = all_observations[b_start:b_end]
+        # Master observation (140 features)
+        master_batch_obs = all_observations[b_start:b_end]
         
-        # Inference
-        actions, _ = model.predict(batch_obs, deterministic=True)
-        
-        # Collect Signals
-        # Use column-oriented storage (dict of lists) instead of row-oriented (list of dicts)
-        # to save memory and avoid object overhead
+        # Prepare storage for results
         batch_results = {
             'timestamp': [],
             'asset': [],
@@ -269,9 +283,34 @@ def generate_dataset_batched(model_path, data_dir, output_file):
         
         has_data = False
         
+        # Iterating per asset to construct single-pair observations
         for i, asset in enumerate(assets):
-            asset_actions = actions[:, i]
+            # 1. Extract 40 features for this asset
+            # [25 asset-specific]
+            asset_col_start = i * 25
+            asset_col_end = asset_col_start + 25
+            asset_feats = master_batch_obs[:, asset_col_start:asset_col_end]
             
+            # [15 global features] - they are at indices 125-140
+            global_feats = master_batch_obs[:, 125:140]
+            
+            # Combine -> (Batch, 40)
+            single_pair_obs = np.concatenate([asset_feats, global_feats], axis=1)
+            
+            # Apply Normalization if available
+            if norm_env is not None:
+                # normalize_obs expects shape (n_envs, n_features)
+                # Our single_pair_obs is (Batch, 40), so it works like a vectorized env with 'Batch' environments
+                single_pair_obs = norm_env.normalize_obs(single_pair_obs)
+
+            # 2. Inference (Single Pair Model)
+            # Output shape: (Batch, 1)
+            actions, _ = model.predict(single_pair_obs, deterministic=True)
+            
+            # Flatten to (Batch,)
+            asset_actions = actions.flatten()
+            
+            # 3. Signal Processing
             # Vectorized finding of indices
             buy_mask = asset_actions > 0.33
             sell_mask = asset_actions < -0.33
@@ -315,13 +354,17 @@ def generate_dataset_batched(model_path, data_dir, output_file):
                     max_profit_pct = (entry_price - min_l) / entry_price
                     max_loss_pct = (entry_price - max_h) / entry_price
 
+                # --- Construct Reduced Feature Vector (40 dims) ---
+                # We already built this for inference: single_pair_obs[local_idx]
+                reduced_features = single_pair_obs[local_idx]
+
                 # Append to lists
                 batch_results['timestamp'].append(timestamps[b_start + local_idx])
                 batch_results['asset'].append(asset)
                 batch_results['direction'].append(direction)
                 batch_results['entry_price'].append(entry_price)
                 batch_results['atr'].append(atr)
-                batch_results['features'].append(batch_obs[local_idx].tolist()) # Convert only this one
+                batch_results['features'].append(reduced_features.tolist()) # Save 40 dims
                 batch_results['max_profit_pct'].append(max_profit_pct)
                 batch_results['max_loss_pct'].append(max_loss_pct)
                 batch_results['close_1000_price'].append(future_close)
@@ -351,6 +394,7 @@ def generate_dataset_batched(model_path, data_dir, output_file):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate Risk Dataset (Optimized)")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--vec_norm", type=str, default=DEFAULT_VEC_NORM_PATH)
     parser.add_argument("--data", type=str, default=DEFAULT_DATA_DIR)
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_FILE)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
@@ -368,7 +412,7 @@ if __name__ == "__main__":
     try:
         BATCH_SIZE = args.batch
         logger.info("Starting optimized generation...")
-        generate_dataset_batched(args.model, args.data, args.output)
+        generate_dataset_batched(args.model, args.data, args.output, args.vec_norm)
     except Exception as e:
         import traceback
         traceback.print_exc()

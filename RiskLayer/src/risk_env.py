@@ -12,11 +12,11 @@ class RiskManagementEnv(gym.Env):
     The agent learns a policy to manage risk over a sequence of 100 trades.
     It receives a trade signal (from Alpha model) and decides on SL, TP, and Position Size.
     
-    State Space (165):
-        [0..139]:   Alpha Features (Market State)
-        [140..144]: Account State (Equity, Drawdown, Leverage, RiskCap, Padding)
-        [145..149]: History (Last 5 PnL)
-        [150..164]: History (Last 5 Actions - flattened [SL_Mult, TP_Mult, Risk_Pct])
+    State Space (65):
+        [0..39]:    Alpha Features (25 Asset-Specific + 15 Global)
+        [40..44]:   Account State (Equity, Drawdown, Leverage, RiskCap, Padding)
+        [45..49]:   History (Last 5 PnL)
+        [50..64]:   History (Last 5 Actions - flattened [SL_Mult, TP_Mult, Risk_Pct])
         
     Action Space (3):
         0: SL Multiplier (0.2x - 2.0x ATR)
@@ -49,10 +49,9 @@ class RiskManagementEnv(gym.Env):
         self.SLIPPAGE_MAX_PIPS = 1.5    # Maximum slippage in pips
         self.ENABLE_SLIPPAGE = True     # Toggle for A/B testing
         
-        # BLOCKING REWARD PARAMS
-        self.BLOCK_REWARD_SCALE = 100.0  # Scale for avoided loss
-        self.BLOCK_PENALTY_SCALE = 50.0 # Scale for missed profit (Psychological Asymmetry)
-        self.CONSTANT_BLOCK_PENALTY = -0.02 # Small cost per block
+        # Spread Configuration (Realistic Market Simulation)
+        self.SPREAD_MIN_PIPS = 0.5      # Minimum spread in pips (e.g., 0.5 pips)
+        self.SPREAD_ATR_FACTOR = 0.05   # Spread expands by 5% of ATR (Volatility adjustment)
         
         # Tradeable Signal Definitions
         self.TARGET_PROFIT_PCT = 0.001   # 0.1% Target Gain (10 pips)
@@ -65,8 +64,8 @@ class RiskManagementEnv(gym.Env):
         # Actions: [SL_Mult, TP_Mult, Risk_Factor] (Normalized -1 to 1)
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
         
-        # Observation: 165 features
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(165,), dtype=np.float32)
+        # Observation: 65 features (25 Asset + 15 Global + 5 Account + 20 History)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(65,), dtype=np.float32)
         
         # --- State Variables ---
         self.current_step = 0
@@ -138,7 +137,7 @@ class RiskManagementEnv(gym.Env):
                         features_array = np.array(features_data).astype(np.float32)
                 else:
                     print("WARNING: Missing features column. Using zeros.")
-                    features_array = np.zeros((len(self.df), 140), dtype=np.float32)
+                    features_array = np.zeros((len(self.df), 40), dtype=np.float32)
 
                 # Metadata checking for non-USDs
                 if 'pair' in self.df.columns:
@@ -238,10 +237,10 @@ class RiskManagementEnv(gym.Env):
         return self._get_observation(), {}
 
     def _get_observation(self):
-        # 1. Market State (140)
+        # 1. Market State (40)
         global_idx = self.episode_start_idx + self.current_step
         if global_idx >= self.n_samples: global_idx = self.n_samples - 1
-        market_obs = self.features_array[global_idx]
+        market_obs = self.features_array[global_idx] # Now already 40 dims
         
         # 2. Account State (5)
         drawdown = 1.0 - (self.equity / self.peak_equity)
@@ -269,38 +268,6 @@ class RiskManagementEnv(gym.Env):
             obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
             
         return obs
-
-    def _evaluate_block_reward(self, max_favorable, max_adverse):
-        """
-        Helper to calculate reward for blocked/skipped trades using Oracle.
-        Implements Tiered Blocking Rewards (Loss Avoidance) vs Scaled Win-Miss Penalties.
-        """
-        # 1. Tiered Blocking Rewards (Loss Avoidance)
-        # Priority: Survival. Detect Catastrophic/Major losses first.
-        # User Instruction: "Catastrophic Loss (>3% loss)" -> max_adverse < -0.03
-        if max_adverse < -0.03:
-            return 200.0, "BLOCKED_CATASTROPHIC"
-        
-        if max_adverse < -0.015:
-             # Major Loss (1.5% - 3%)
-             return 50.0, "BLOCKED_MAJOR_LOSS"
-             
-        # 2. Scaled Win-Miss Penalties (Opportunity Cost)
-        # "Missed >2% profit"
-        if max_favorable > 0.02:
-             return -300.0, "MISSED_HUGE_WIN"
-             
-        # "Missed 1% - 2% profit"
-        if max_favorable > 0.01:
-             return -100.0, "MISSED_BIG_WIN"
-             
-        # "Missed <1% profit" (Assuming positive profit)
-        if max_favorable > 0.0:
-             return -30.0, "MISSED_SMALL_WIN"
-             
-        # 3. Minor Loss / Noise (<1.5% Loss and No Profit)
-        # "Minor Loss (<1.5%)" -> reward +5
-        return 5.0, "BLOCKED_MINOR_LOSS"
 
     def step(self, action):
         # --- 1. Parse Action ---
@@ -336,49 +303,22 @@ class RiskManagementEnv(gym.Env):
         else:
             entry_price = entry_price_raw
 
+        # --- Dynamic Spread Simulation (Bid/Ask Logic) ---
+        # Calculate Spread: Min + (Factor * ATR)
+        spread_val = (self.SPREAD_MIN_PIPS * 0.0001) + (self.SPREAD_ATR_FACTOR * atr)
+        spread_pct = spread_val / entry_price_raw
+        
+        # Adjust Entry for Spread
+        # LONG: Buy at Ask (Chart + Spread)
+        # SHORT: Sell at Bid (Chart) - No change to entry price
+        if direction == 1: 
+            entry_price += spread_val
+
         # Use pre-loaded Arrays for Shadow Simulation
         max_favorable = self.max_profit_pcts[global_idx] 
         max_adverse = self.max_loss_pcts[global_idx] # Always negative (e.g. -0.001)
 
-        # --- 3. Check for Block/Skip ---
-        # Implicit Block: Requesting very low risk (Threshold relaxed to 0.5% for learnability)
-        # USER REALIZATION FIX: Bottom 10% of action knob = Explicit BLOCK (Dead-zone)
-        # This makes finding "Block" much easier (action < -0.80) vs (action < -0.99)
-        BLOCK_THRESHOLD = 0.10
-        is_blocked = (risk_raw < BLOCK_THRESHOLD)
-        
-        if not is_blocked:
-             # Rescale risk to allow full range [0, 1] starting after the threshold
-             # This ensures we don't accidentally ban valid small trades (0.001% risk)
-             risk_raw = (risk_raw - BLOCK_THRESHOLD) / (1.0 - BLOCK_THRESHOLD)
-        
-        if is_blocked:
-             # SHADOW TRADE LOGIC (Oracle)
-             # Use Helper for consistent logic
-             reward, block_type = self._evaluate_block_reward(max_favorable, max_adverse)
-                 
-             # Record zero-risk action (Clean History)
-             self.history_actions.append(np.array([0.0, 0.0, 0.0], dtype=np.float32))
-             self.history_pnl.append(0.0)
-             
-             self.current_step += 1
-             terminated = False
-             truncated = (self.current_step >= self.EPISODE_LENGTH)
-             
-             info = {
-                 'pnl': 0.0, 
-                 'exit': 'BLOCKED', 
-                 'lots': 0.0, 
-                 'equity': self.equity,
-                 'block_type': block_type,
-                 'block_reward': reward,
-                 'is_blocked': True,
-                 'max_fav': max_favorable,
-                 'max_adv': max_adverse
-             }
-             return self._get_observation(), reward, terminated, truncated, info
-
-        # --- 4. Normal Trade Execution (If Not Blocked) ---
+        # --- 4. Normal Trade Execution ---
         
         # BUG FIX 5: Safer Drawdown Calc (Div by Zero Protection)
         peak_safe = max(self.peak_equity, 1e-9)
@@ -427,10 +367,8 @@ class RiskManagementEnv(gym.Env):
         # BUG FIX 2: Forced Position Size Check
         # If sensible risk calc results in lots < MIN_LOTS, we SKIP instead of forcing 0.01
         if lots < self.MIN_LOTS:
-            # Register as skipped/no-trade (Treated as BLOCK)
-            # Recursively apply Oracle Logic for SKIPPED_SMALL
-            reward, block_type = self._evaluate_block_reward(max_favorable, max_adverse)
-            block_type = "SKIPPED_SMALL_" + block_type
+            # Register as skipped/no-trade due to size limits
+            reward = -0.1 # Small penalty for invalid sizing
             
             # Record zero-risk action
             self.history_actions.append(np.array([0.0, 0.0, 0.0], dtype=np.float32))
@@ -438,7 +376,7 @@ class RiskManagementEnv(gym.Env):
             self.current_step += 1
             terminated = False
             truncated = (self.current_step >= self.EPISODE_LENGTH)
-            return self._get_observation(), reward, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED_SMALL', 'lots': 0.0, 'equity': self.equity, 'is_blocked': True, 'block_type': block_type}
+            return self._get_observation(), reward, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED_SMALL', 'lots': 0.0, 'equity': self.equity, 'max_fav': max_favorable, 'max_adv': max_adverse}
 
         # Safe to clip now
         lots = np.clip(lots, self.MIN_LOTS, 100.0)
@@ -473,16 +411,41 @@ class RiskManagementEnv(gym.Env):
         sl_price = entry_price - (direction * sl_dist_price)
         tp_price = entry_price + (direction * tp_dist_price)
         
+        # Calculate raw percentage distances relative to original entry for comparison with max_fav/adv
+        sl_pct_dist_raw = abs(sl_dist_price / entry_price_raw)
+        tp_pct_dist_raw = abs(tp_dist_price / entry_price_raw)
+
         if direction == 1: # LONG
-             sl_pct_dist = -abs(sl_dist_price / entry_price)
-             tp_pct_dist = abs(tp_dist_price / entry_price)
-             hit_sl = max_adverse <= sl_pct_dist 
-             hit_tp = max_favorable >= tp_pct_dist
+             # SL Check (Exit at Bid): Bid <= Entry_Ask - sl_dist
+             # Equivalent to: max_adverse <= (Spread - sl_dist)/EntryRaw
+             # Harder to survive: Spread makes SL effectively tighter relative to Bid
+             hit_sl = max_adverse <= (spread_pct - sl_pct_dist_raw)
+             
+             # TP Check (Exit at Bid): Bid >= Entry_Ask + tp_dist
+             # Equivalent to: max_favorable >= (Spread + tp_dist)/EntryRaw
+             # Harder to hit: Price must cover Spread + TP distance
+             hit_tp = max_favorable >= (spread_pct + tp_pct_dist_raw)
+             
+             sl_pct_dist = -sl_pct_dist_raw # For tie-breaker logic below
+             tp_pct_dist = tp_pct_dist_raw
+             
         else: # SHORT
-             sl_pct_dist = abs(sl_dist_price / entry_price)
-             tp_pct_dist = -abs(tp_dist_price / entry_price)
-             hit_sl = max_favorable >= sl_pct_dist
-             hit_tp = max_adverse <= tp_pct_dist 
+             # SL Check (Exit at Ask): Ask >= Entry_Bid + sl_dist
+             # Bid + Spread >= Entry_Bid + sl_dist
+             # Bid >= Entry_Bid + sl_dist - Spread
+             # Equivalent to: max_favorable >= (sl_dist - Spread)/EntryRaw
+             # Harder to survive: Spread effectively lowers the ceiling for SL
+             hit_sl = max_favorable >= (sl_pct_dist_raw - spread_pct)
+             
+             # TP Check (Exit at Ask): Ask <= Entry_Bid - tp_dist
+             # Bid + Spread <= Entry_Bid - tp_dist
+             # Bid <= Entry_Bid - tp_dist - Spread
+             # Equivalent to: max_adverse <= -(tp_dist + Spread)/EntryRaw
+             # Harder to hit: Price must drop extra to cover spread
+             hit_tp = max_adverse <= -(tp_pct_dist_raw + spread_pct)
+             
+             sl_pct_dist = sl_pct_dist_raw
+             tp_pct_dist = -tp_pct_dist_raw
 
         if hit_sl and hit_tp:
             if abs(sl_pct_dist) < abs(tp_pct_dist):

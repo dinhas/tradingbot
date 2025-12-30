@@ -29,7 +29,7 @@ vf_coef: 0.5
 max_grad_norm: 0.5
 
 # Training Budget: 3.5M steps for robust generalization across all 5 pairs
-total_timesteps: 3500000
+total_timesteps: 7500000
 
 # Network Architecture: Lighter weight architecture (192, 192, 96) 
 # appropriate for 40 features and a single output.

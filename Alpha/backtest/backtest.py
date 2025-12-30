@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from Alpha.src.trading_env import TradingEnv
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -296,13 +296,23 @@ def run_backtest(args):
     # Create output directory
     output_dir_path.mkdir(parents=True, exist_ok=True)
     
+    # Initialize metrics tracker
+    metrics_tracker = BacktestMetrics()
+    
+    # ---------------------------------------------------------
+    # PARALLEL BACKTESTING SETUP
+    # ---------------------------------------------------------
+    num_envs = args.workers if args.workers > 1 else 1
+    logger.info(f"Initializing {num_envs} environment worker(s)...")
+
+    # Create environments
+    if num_envs > 1:
+        env = SubprocVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage) for _ in range(num_envs)])
+    else:
+        env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)])
+
     # Load model
     logger.info("Loading model...")
-    # Get temporary env to access metadata
-    temp_env = TradingEnv(data_dir=data_dir_path, is_training=False)
-    assets_to_test = temp_env.assets if args.asset == "all" else [args.asset]
-    
-    env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False)])
     
     # Load VecNormalize stats if available
     vecnorm_path = str(model_path).replace('.zip', '_vecnormalize.pkl')
@@ -314,46 +324,98 @@ def run_backtest(args):
     
     model = PPO.load(model_path, env=env)
     logger.info("Model loaded successfully")
-    
-    # Initialize metrics tracker
-    metrics_tracker = BacktestMetrics()
-    
-    # Run episodes for each asset
+
+    # Get asset list
+    # Use a temp env to get assets list (avoiding overhead)
+    # Actually we can just hardcode or assume the list if avoiding instantiation
+    # But better to stay safe.
+    temp_env = TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)
+    available_assets = temp_env.assets
+    assets_to_test = available_assets if args.asset == "all" else [args.asset]
+
+    # Create Task Queue: list of (asset, episode_index)
+    tasks = []
     for asset in assets_to_test:
-        logger.info(f"\nTesting Asset: {asset}")
-        logger.info("-" * 20)
-        
         for episode in range(args.episodes):
-            # Force environment to use the specific asset
-            # Reach into the VecEnv to set the asset
-            if hasattr(env, 'venv'):
-                inner_env = env.venv.envs[0]
-            else:
-                inner_env = env.envs[0]
+            tasks.append({'asset': asset, 'episode': episode})
             
-            inner_env.current_asset = asset
-            obs = env.reset()
-            done = False
-            episode_reward = 0
-            step_count = 0
-            
-            while not done:
-                action, _states = model.predict(obs, deterministic=True)
-                obs, reward, done, info = env.step(action)
-                episode_reward += reward[0]
-                step_count += 1
-                
-                if info and len(info) > 0:
-                    env_info = info[0]
-                    if 'trades' in env_info:
-                        for trade in env_info['trades']:
-                            metrics_tracker.add_trade(trade)
-                    if 'equity' in env_info and 'timestamp' in env_info:
-                        metrics_tracker.add_equity_point(env_info['timestamp'], env_info['equity'])
-            
-            final_equity = env_info.get('equity', 0) if info and len(info) > 0 else 0
-            logger.info(f"[{asset}] Episode {episode + 1}/{args.episodes} complete. Reward: {episode_reward:.2f}, Final Equity: ${final_equity:.2f}")
+    total_tasks = len(tasks)
+    logger.info(f"Total tasks: {total_tasks} (Assets: {len(assets_to_test)}, Episodes per asset: {args.episodes})")
     
+    # Per-environment buffers
+    env_buffers = [BacktestMetrics() for _ in range(num_envs)]
+    
+    # Track which task is currently assigned to which env
+    # active_tasks[env_idx] = {'asset': ..., 'episode': ...}
+    active_tasks = [None] * num_envs
+    
+    # Initial Task Assignment
+    for i in range(num_envs):
+        if tasks:
+            task = tasks.pop(0)
+            active_tasks[i] = task
+            logger.info(f"Worker {i} starting: {task['asset']} (Ep {task['episode']+1})")
+            if num_envs > 1:
+                env.env_method('set_asset', task['asset'], indices=i)
+            else:
+                env.envs[0].set_asset(task['asset'])
+                
+    # Reset all environments to start
+    obs = env.reset()
+    dones = np.array([False] * num_envs)
+    
+    completed_tasks = 0
+    
+    # Main Loop
+    while completed_tasks < total_tasks or any(t is not None for t in active_tasks):
+        action, _ = model.predict(obs, deterministic=True)
+        obs, rewards, dones, infos = env.step(action)
+        
+        for i in range(num_envs):
+            # If this env has an active task
+            if active_tasks[i] is not None:
+                # Accumulate data
+                info = infos[i]
+                
+                # Capture trades from this step
+                if 'trades' in info:
+                    for trade in info['trades']:
+                        env_buffers[i].add_trade(trade)
+                        
+                # Capture equity from this step
+                if 'equity' in info and 'timestamp' in info:
+                    env_buffers[i].add_equity_point(info['timestamp'], info['equity'])
+                
+                # Check for completion
+                if dones[i]:
+                    task = active_tasks[i]
+                    final_equity = info.get('equity', 0)
+                    
+                    logger.info(f"[{task['asset']}] Worker {i} finished Ep {task['episode']+1}. Final Equity: ${final_equity:.2f}")
+                    
+                    # Merge buffer into main metrics
+                    metrics_tracker.trades.extend(env_buffers[i].trades)
+                    metrics_tracker.equity_curve.extend(env_buffers[i].equity_curve)
+                    metrics_tracker.timestamps.extend(env_buffers[i].timestamps)
+                    
+                    # Reset buffer
+                    env_buffers[i] = BacktestMetrics()
+                    
+                    completed_tasks += 1
+                    
+                    # Assign new task if available
+                    if tasks:
+                        new_task = tasks.pop(0)
+                        active_tasks[i] = new_task
+                        logger.info(f"Worker {i} starting: {new_task['asset']} (Ep {new_task['episode']+1})")
+                        if num_envs > 1:
+                            env.env_method('set_asset', new_task['asset'], indices=i)
+                        else:
+                            env.envs[0].set_asset(new_task['asset'])
+                    else:
+                        active_tasks[i] = None
+                        # Env will continue stepping but we ignore it
+                        
     env.close()
     
     # Calculate metrics
@@ -446,7 +508,7 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
     ax1.fill_between(times, equity[0], equity, where=(equity < equity[0]), alpha=0.2, color='red', label='Loss Zone')
     ax1.set_ylabel('Equity ($)', fontsize=11, fontweight='bold')
     # Determine year for title
-    year = times[0].year if times else "2025"
+    year = times[0].year if times else datetime.now().year
     ax1.set_title(f'Stage {stage} - Equity Curve & Drawdown ({year})', fontsize=13, fontweight='bold')
     ax1.legend(loc='upper left', fontsize=9)
     ax1.grid(True, alpha=0.3)
@@ -472,8 +534,10 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
     # Use net_pnl if available
     if 'net_pnl' in df_trades.columns:
         pnl_values = df_trades['net_pnl'].values
-    else:
+    elif 'fees' in df_trades.columns:
         pnl_values = (df_trades['pnl'] - df_trades['fees']).values
+    else:
+        pnl_values = df_trades['pnl'].values
     
     wins = pnl_values[pnl_values > 0]
     losses = pnl_values[pnl_values < 0]
@@ -491,7 +555,7 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
     ax3 = fig.add_subplot(gs[1, 2])
     if 'asset' in df_trades.columns:
         for asset in df_trades['asset'].unique():
-            asset_trades = df_trades[df_trades['asset'] == asset].sort_values('timestamp' if 'timestamp' in df_trades.columns else df_trades.index)
+            asset_trades = df_trades[df_trades['asset'] == asset].sort_values('timestamp')
             cumulative_pnl = asset_trades['pnl'].cumsum()
             ax3.plot(range(len(cumulative_pnl)), cumulative_pnl, marker='o', markersize=3, label=asset, linewidth=2)
         
@@ -631,14 +695,15 @@ def create_detailed_trade_chart(df_trades, stage, output_dir, timestamp):
     
     # Calculate streaks
     streaks = []
-    current_streak = 1
-    for i in range(1, len(win_loss)):
-        if win_loss[i] == win_loss[i-1]:
-            current_streak += 1
-        else:
-            streaks.append(current_streak * win_loss[i-1])
-            current_streak = 1
-    streaks.append(current_streak * win_loss[-1])
+    if len(win_loss) > 0:
+        current_streak = 1
+        for i in range(1, len(win_loss)):
+            if win_loss[i] == win_loss[i-1]:
+                current_streak += 1
+            else:
+                streaks.append(current_streak * win_loss[i-1])
+                current_streak = 1
+        streaks.append(current_streak * win_loss[-1])
     
     colors_streak = ['green' if s > 0 else 'red' for s in streaks]
     ax4.bar(range(len(streaks)), streaks, color=colors_streak, alpha=0.7, edgecolor='black')
@@ -798,6 +863,8 @@ if __name__ == "__main__":
                         help="Training stage (1, 2, or 3) for reporting")
     parser.add_argument("--asset", type=str, default="all",
                         help="Specific asset to test (e.g., EURUSD) or 'all' to test the full basket")
+    parser.add_argument("--workers", type=int, default=2,
+                        help="Number of parallel environment workers (default: 2)")
     
     args = parser.parse_args()
     
