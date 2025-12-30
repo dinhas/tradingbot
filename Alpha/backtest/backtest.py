@@ -325,7 +325,14 @@ def run_backtest(args):
         
         for episode in range(args.episodes):
             # Force environment to use the specific asset
-            obs = env.reset(options={'asset': asset})
+            # Reach into the VecEnv to set the asset
+            if hasattr(env, 'venv'):
+                inner_env = env.venv.envs[0]
+            else:
+                inner_env = env.envs[0]
+            
+            inner_env.current_asset = asset
+            obs = env.reset()
             done = False
             episode_reward = 0
             step_count = 0
@@ -787,6 +794,8 @@ if __name__ == "__main__":
                         help="Path to save results relative to project root")
     parser.add_argument("--episodes", type=int, default=1,
                         help="Number of episodes to run per asset")
+    parser.add_argument("--stage", type=int, default=1,
+                        help="Training stage (1, 2, or 3) for reporting")
     parser.add_argument("--asset", type=str, default="all",
                         help="Specific asset to test (e.g., EURUSD) or 'all' to test the full basket")
     

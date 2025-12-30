@@ -36,12 +36,14 @@ class TradeGuardTrainer:
         # Use SubprocVecEnv for parallel training
         import multiprocessing
         from stable_baselines3.common.vec_env import SubprocVecEnv
+        from stable_baselines3.common.monitor import Monitor
         
         n_cpu = multiprocessing.cpu_count()
         # Create a function that returns the environment
         def make_env(rank, seed=0):
             def _init():
                 env = TradeGuardEnv(env_config)
+                env = Monitor(env)
                 env.reset(seed=seed + rank)
                 return env
             return _init

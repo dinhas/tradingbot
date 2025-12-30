@@ -4,7 +4,10 @@ import numpy as np
 import pandas as pd
 import logging
 from pathlib import Path
-from .feature_engine import FeatureEngine
+try:
+    from .feature_engine import FeatureEngine
+except (ImportError, ValueError):
+    from feature_engine import FeatureEngine
 
 class TradingEnv(gym.Env):
     """
@@ -412,8 +415,12 @@ class TradingEnv(gym.Env):
         }
         
         # PEEK & LABEL: Simulate outcome and assign reward NOW
-        simulated_pnl = self._simulate_trade_outcome(asset)
+        simulated_pnl, fast_win = self._simulate_trade_outcome(asset)
         self.peeked_pnl_step += simulated_pnl
+        
+        # FAST WIN BONUS: Double reward if TP hit within 30 mins (6 candles)
+        if fast_win and simulated_pnl > 0:
+            self.peeked_pnl_step += simulated_pnl
         
         # Transaction costs (FIX: Use notional position size, not leveraged)
         # 0.00002 = 0.2 pips spread (entry cost only, exit cost applied on close)
@@ -495,9 +502,10 @@ class TradingEnv(gym.Env):
         """
         PEEK & LABEL: Look ahead to see if trade hits SL or TP.
         OPTIMIZED: Uses cached numpy arrays instead of pandas slicing.
+        Returns: (pnl, fast_win)
         """
         if self.positions[asset] is None:
-            return 0.0
+            return 0.0, False
         
         pos = self.positions[asset]
         direction = pos['direction']
@@ -509,7 +517,7 @@ class TradingEnv(gym.Env):
         end_idx = min(start_idx + 1000, len(self.raw_data))
         
         if start_idx >= end_idx:
-            return 0.0
+            return 0.0, False
             
         # OPTIMIZATION: Use pre-cached numpy arrays
         lows = self.low_arrays[asset][start_idx:end_idx]
@@ -525,16 +533,28 @@ class TradingEnv(gym.Env):
         sl_hit = sl_hit_mask.any()
         tp_hit = tp_hit_mask.any()
         
+        fast_win = False
+        
         # Determine outcome
         # FIX: When both hit on same candle, assume SL first (conservative)
         if sl_hit and tp_hit:
             first_sl_idx = np.argmax(sl_hit_mask)
             first_tp_idx = np.argmax(tp_hit_mask)
-            exit_price = sl if first_sl_idx <= first_tp_idx else tp
+            if first_sl_idx <= first_tp_idx:
+                exit_price = sl
+            else:
+                exit_price = tp
+                # Check for fast win (within 6 candles = 30 mins)
+                if first_tp_idx < 6:
+                    fast_win = True
         elif sl_hit:
             exit_price = sl
         elif tp_hit:
             exit_price = tp
+            # Check for fast win
+            first_tp_idx = np.argmax(tp_hit_mask)
+            if first_tp_idx < 6:
+                fast_win = True
         else:
             # Neither hit: use last available price from cached array
             exit_price = self.close_arrays[asset][end_idx - 1]
@@ -545,7 +565,7 @@ class TradingEnv(gym.Env):
         position_value = pos['size'] * self.leverage
         pnl = price_change_pct * position_value
         
-        return pnl
+        return pnl, fast_win
 
     def _simulate_trade_outcome_with_timing(self, asset):
         """
@@ -650,9 +670,9 @@ class TradingEnv(gym.Env):
             # Sum up actual P&L from completed trades this step
             step_pnl = sum(trade['net_pnl'] for trade in self.completed_trades)
             
-            # Normalize: 1% of starting equity = 0.1 reward
+            # Normalize: 1% of starting equity = 0.02 reward
             if step_pnl != 0:
-                normalized_pnl = (step_pnl / self.start_equity) * 10.0
+                normalized_pnl = (step_pnl / self.start_equity) * 2.0
                 reward += normalized_pnl
             
             return reward
@@ -663,14 +683,15 @@ class TradingEnv(gym.Env):
         
         # COMPONENT 1: Peeked P&L (Primary Signal)
         if self.peeked_pnl_step != 0:
-            # Normalize: 1% of starting equity = 0.1 reward
-            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 10.0
+            # Normalize: 1% of starting equity = 0.02 reward
+            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 2.0
             
-            # Loss Aversion (Prospect Theory): Losses hurt 1.5x more
+            # Loss Aversion (Prospect Theory): Losses hurt 2.25x more (1.5 * 1.5)
             if normalized_pnl < 0:
-                normalized_pnl = np.clip(normalized_pnl, -1.0, 0.0) * 1.5
+                normalized_pnl = np.clip(normalized_pnl, -5.0, 0.0) * 2.25
             else:
-                normalized_pnl = np.clip(normalized_pnl, 0.0, 1.0)
+                # Relaxed clipping to allow for Fast Win Bonus (up to 5.0)
+                normalized_pnl = np.clip(normalized_pnl, 0.0, 5.0)
             reward += normalized_pnl
         
         # COMPONENT 2: Progressive Drawdown Penalty

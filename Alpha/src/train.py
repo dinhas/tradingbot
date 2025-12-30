@@ -8,7 +8,14 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.logger import configure
-from .trading_env import TradingEnv
+from stable_baselines3.common.monitor import Monitor
+try:
+    from .trading_env import TradingEnv
+except (ImportError, ValueError):
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent))
+    from trading_env import TradingEnv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,6 +27,7 @@ def make_env(rank, seed=0, data_dir='data'):
     """
     def _init():
         env = TradingEnv(data_dir=data_dir, is_training=True)
+        env = Monitor(env)
         env.reset(seed=seed + rank)
         return env
     return _init
@@ -54,6 +62,9 @@ class MetricsCallback(BaseCallback):
                 
                 if self.verbose > 0:
                     logger.info(f"Step {self.num_timesteps}: Reward={ep_info.get('r', 0):.2f}, Length={ep_info.get('l', 0)}")
+            else:
+                if self.verbose > 0:
+                    logger.info(f"Step {self.num_timesteps}: No completed episodes yet...")
         
         # Create plots periodically
         if self.n_calls % self.plot_freq == 0 and len(self.episode_rewards) > 0:
@@ -96,7 +107,8 @@ class MetricsCallback(BaseCallback):
             ax2.grid(True, alpha=0.3)
             
             plt.tight_layout()
-            plot_path = plot_dir / f"training_progress_{self.num_timesteps}.png"
+            # Save to a fixed filename (no timestamp/steps) as requested
+            plot_path = plot_dir / "training_progress.png"
             plt.savefig(plot_path, dpi=100)
             plt.close()
             
@@ -172,10 +184,10 @@ def train(args):
     if args.load_model:
         load_model_path = project_root / args.load_model
         logger.info(f"Loading model from {load_model_path}")
-        model = PPO.load(load_model_path, env=env, **ppo_config)
+        model = PPO.load(load_model_path, env=env, verbose=1, **ppo_config)
     else:
         logger.info("Creating new model from scratch")
-        model = PPO("MlpPolicy", env, **ppo_config)
+        model = PPO("MlpPolicy", env, verbose=1, **ppo_config)
         
     # 3. Callbacks
     checkpoint_callback = CheckpointCallback(
@@ -196,12 +208,17 @@ def train(args):
     
     # Configure file logging
     from datetime import datetime
-    log_file = log_dir_path / f"train_alpha_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    # Log to a fixed filename (no timestamp) as requested
+    log_file = log_dir_path / "train_alpha.log"
     
-    file_handler = logging.FileHandler(log_file)
+    file_handler = logging.FileHandler(log_file, mode='w') # mode='w' to overwrite
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logging.getLogger().addHandler(file_handler)
     
+    # Configure SB3 logger
+    new_logger = configure(str(log_dir_path), ["stdout", "csv"])
+    model.set_logger(new_logger)
+
     logger.info(f"Logging to {log_file}")
     logger.info(f"Training for {total_timesteps} timesteps...")
     
