@@ -61,8 +61,42 @@ class TeeStderr:
         self.stderr.flush()
 
 # Defaults
-DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "checkpoints", "ppo_final_model.zip")
-DEFAULT_VEC_NORM_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "checkpoints", "ppo_final_model_vecnormalize.pkl")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+MODELS_DIR = os.path.join(PROJECT_ROOT, "models", "checkpoints")
+
+def get_latest_model_files(models_dir):
+    """Finds the latest zip model and its corresponding vecnormalize file."""
+    if not os.path.exists(models_dir):
+        return None, None
+        
+    files = [f for f in os.listdir(models_dir) if f.endswith(".zip")]
+    if not files:
+        return None, None
+        
+    # Sort by modification time (newest first)
+    files.sort(key=lambda x: os.path.getmtime(os.path.join(models_dir, x)), reverse=True)
+    latest_zip = files[0]
+    
+    model_path = os.path.join(models_dir, latest_zip)
+    
+    # Try to find matching normalizer
+    # Common patterns: name.zip -> name_vecnormalize.pkl
+    base_name = os.path.splitext(latest_zip)[0]
+    norm_name = f"{base_name}_vecnormalize.pkl"
+    norm_path = os.path.join(models_dir, norm_name)
+    
+    if not os.path.exists(norm_path):
+        norm_path = None
+        
+    return model_path, norm_path
+
+DEFAULT_MODEL_PATH, DEFAULT_VEC_NORM_PATH = get_latest_model_files(MODELS_DIR)
+
+# Fallback if no model found (prevents crash on import, fails on run)
+if DEFAULT_MODEL_PATH is None:
+    DEFAULT_MODEL_PATH = os.path.join(MODELS_DIR, "model_not_found.zip")
+    DEFAULT_VEC_NORM_PATH = None
+
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DEFAULT_OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "risk_dataset.parquet")
 LOOKAHEAD_STEPS = 6 # 30 mins (5m candles)

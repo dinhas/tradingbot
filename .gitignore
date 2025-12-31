@@ -48,8 +48,7 @@ data/*.parquet
 data/*.csv
 
 # Model Files
-models/checkpoints/*.zip
-models/*.zip
+
 *.pkl
 *.pickle
 

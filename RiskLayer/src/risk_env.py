@@ -512,10 +512,33 @@ class RiskManagementEnv(gym.Env):
         pnl_reward = np.clip(pnl_reward, -300.0, 300.0)
         
         tp_bonus = 0.0
+        sniper_reward = 0.0
+        
         if exited_on == 'TP':
             tp_bonus = 0.5 * (tp_mult / 8.0)  # Slightly increased TP bonus
+            
+            # --- Sniper Efficiency Bonuses ---
+            # 1. TP Efficiency (Did we capture the move?)
+            # max_favorable is the max potential gain % (e.g. 0.02)
+            if max_favorable > 1e-9:
+                # How much of the potential move did we capture?
+                tp_efficiency = tp_pct_dist_raw / max_favorable
+                tp_efficiency = np.clip(tp_efficiency, 0.0, 1.0)
+                sniper_reward += 1.0 * tp_efficiency
+            
+            # 2. SL Efficiency (Did we risk too much?)
+            # max_adverse is max drawdown % (negative, e.g. -0.005)
+            # sl_pct_dist_raw is our risk % (positive, e.g. 0.01)
+            mae_pct = abs(max_adverse)
+            if sl_pct_dist_raw > 1e-9:
+                # Ratio of Actual Drawdown / Max Allowed Drawdown (SL)
+                # If we risked 20 pips but only needed 5 pips, efficiency is low (0.25)
+                # If we risked 6 pips and needed 5 pips, efficiency is high (0.83)
+                sl_efficiency = mae_pct / sl_pct_dist_raw
+                sl_efficiency = np.clip(sl_efficiency, 0.0, 1.0) 
+                sniper_reward += 0.5 * sl_efficiency
         
-        reward = pnl_reward + tp_bonus + dd_penalty + risk_violation_penalty
+        reward = pnl_reward + tp_bonus + dd_penalty + risk_violation_penalty + sniper_reward
         
         # Final reward clipping to prevent extreme values that break value function
         reward = np.clip(reward, -100.0, 100.0)
