@@ -88,11 +88,14 @@ N_EPOCHS = 5              # ⬆️ INCREASED. Learn more from each batch.
 # 3. 5M Timesteps = Sufficient for a 2-dimensional action space.
 
 # Paths
-# Using relative paths to root directories as requested
-MODELS_DIR = os.path.join("..", "models")
-LOG_DIR = os.path.join("..", "logs")
+# Using absolute paths based on script location for robustness
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+
+MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
+LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
 CHECKPOINT_DIR = os.path.join(MODELS_DIR, "checkpoints")
-DATASET_PATH = os.path.join("..", "risk_dataset.parquet")
+DATASET_PATH = os.path.join(PROJECT_ROOT, "risk_dataset.parquet")
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
