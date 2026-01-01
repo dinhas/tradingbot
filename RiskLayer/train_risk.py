@@ -68,24 +68,24 @@ if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
 # PPO Hyperparameters (Expert Tuned for Financial Data)
-# HYPERPARAMETERS - "Precision Edition" 🎯
+# HYPERPARAMETERS - "Max Efficiency Edition" 🚀
 
-TOTAL_TIMESTEPS = 10_000_000 
-LEARNING_RATE = 5e-5      # 📉 Reduced for longer training stability.
-N_STEPS = 8192            # ⬆️ INCREASED. Capture more full episodes per update.
-BATCH_SIZE = 1024         # ⬆️ INCREASED. More stable gradient updates.
+TOTAL_TIMESTEPS = 5_000_000 
+LEARNING_RATE = 1.5e-4    # 📈 Increased for maximum learning in 5M steps.
+N_STEPS = 16384           # ⬆️ INCREASED. Large window for stable gradient updates.
+BATCH_SIZE = 2048         # ⬆️ INCREASED. Stability with higher Learning Rate.
 GAMMA = 0.98              # 📉 Slightly lower. Focus on high-quality trades, not infinite future.
 GAE_LAMBDA = 0.95         
-ENT_COEF = 0.03           # 📉 Reduced starting entropy (faster convergence on best SL/TP).
+ENT_COEF = 0.08           # ⬆️ Increased starting entropy for aggressive exploration.
 VF_COEF = 0.5
-MAX_GRAD_NORM = 0.5       # 🔓 Slightly looser for faster learning.
+MAX_GRAD_NORM = 0.5       
 CLIP_RANGE = 0.2          
-N_EPOCHS = 5              # ⬆️ INCREASED. Learn more from each batch.
+N_EPOCHS = 10             # ⬆️ INCREASED. Squeeze more learning from each batch.
 
 # Why this works:
-# 1. 5e-5 LR + 10M Steps = Steady convergence.
-# 2. 8192 Steps = With EPISODE_LENGTH=100, this is ~80 episodes per env per update.
-# 3. 10M Timesteps = Deep learning of complex reward dynamics.
+# 1. 1.5e-4 LR + 5M Steps = Aggressive but stable convergence.
+# 2. 16384 Steps = ~160 episodes per env per update (High sample efficiency).
+# 3. 5M Timesteps = Focused learning on core reward dynamics.
 
 # Paths
 # Using absolute paths based on script location for robustness
@@ -106,7 +106,7 @@ class EntropyDecayCallback(BaseCallback):
     Decays entropy coefficient linearly over time to encourage 
     exploration early (learning to block) and exploitation later.
     """
-    def __init__(self, initial_ent=0.05, final_ent=0.005, decay_steps=6_000_000):
+    def __init__(self, initial_ent=0.08, final_ent=0.005, decay_steps=4_000_000):
         super().__init__()
         self.initial_ent = initial_ent
         self.final_ent = final_ent

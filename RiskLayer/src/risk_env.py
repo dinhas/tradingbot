@@ -275,8 +275,8 @@ class RiskManagementEnv(gym.Env):
         sl_mult = np.clip((action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)   # 0.2 - 2.0 ATR
         tp_mult = np.clip((action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)   # 0.5 - 4.0 ATR
         
-        # FIXED RISK: 2.0% per trade (User Requirement)
-        risk_raw = 0.02 # 2% Base Risk
+        # FIXED RISK: 2.0% per trade (Reverted to Fixed)
+        risk_raw = 0.02 
 
         # --- 2. Get Trade Data (Moved Before Logic) ---
         global_idx = self.episode_start_idx + self.current_step
@@ -356,7 +356,7 @@ class RiskManagementEnv(gym.Env):
         # Check Min Lots
         if lots < self.MIN_LOTS:
             # Skipped/no-trade
-            reward = -0.1
+            reward = 0.0
             self.history_actions.append(np.array([0.0, 0.0], dtype=np.float32))
             self.history_pnl.append(0.0)
             self.current_step += 1
@@ -439,17 +439,6 @@ class RiskManagementEnv(gym.Env):
         prev_peak = self.peak_equity
         self.peak_equity = max(self.peak_equity, self.equity)
 
-        # Drawdown Penalty (Quadratic)
-        # Use stronger penalty (k=500) as requested
-        prev_peak_safe = max(prev_peak, 1e-9)
-        prev_dd = 1.0 - (prev_equity / prev_peak_safe)
-        new_dd  = 1.0 - (self.equity / prev_peak_safe)
-        dd_increase = max(0.0, new_dd - prev_dd)
-        
-        # 0.05 increase (5%) -> 0.0025 * 500 = 1.25 penalty
-        # 0.10 increase (10%) -> 0.01 * 500 = 5.0 penalty
-        dd_penalty = -(dd_increase ** 2) * 500.0
-        
         # --- NEW REWARD LOGIC ---
         
         # 1. PnL Efficiency: (Realized / Max_Available) * 10
@@ -473,17 +462,9 @@ class RiskManagementEnv(gym.Env):
         
         # 2. Bullet Dodger (Bonus for Saving Capital)
         bullet_bonus = 0.0
-        whipsaw_penalty = 0.0
+        # Whipsaw penalty removed as requested
         
         if exited_on == 'SL':
-            # Check 1: Whipsaw? (Price later hit TP)
-            # max_favorable is the highest price reached in lookahead window
-            # If highest price >= target TP, we were right but shaken out.
-            # Bug Fix 4: Account for Spread in Whipsaw
-            adjusted_tp_dist = tp_pct_dist_raw + (spread_val / entry_price_raw)
-            if max_favorable >= adjusted_tp_dist:
-                whipsaw_penalty = -5.0 # Penalty
-                
             # Check 2: Bullet Dodger? (Price crashed deep)
             # Bug Fix 6: Bullet Dodger Logic Split
             avoided_loss_dist = 0.0
@@ -499,7 +480,7 @@ class RiskManagementEnv(gym.Env):
                 bullet_bonus = min(saved_ratio, 3.0) * 2.0
         
         # Total Reward Summation
-        reward = pnl_efficiency + dd_penalty + bullet_bonus + whipsaw_penalty
+        reward = pnl_efficiency + bullet_bonus
         
         # Final Clip to [-20, 20] to stabilize training
         reward = np.clip(reward, -20.0, 20.0)
@@ -523,8 +504,7 @@ class RiskManagementEnv(gym.Env):
             'equity': self.equity,
             'efficiency': pnl_efficiency,
             'bullet': bullet_bonus,
-            'whipsaw': whipsaw_penalty,
-            'dd_pen': dd_penalty
+            'whipsaw': whipsaw_penalty
         }
         
         return self._get_observation(), reward, terminated, truncated, info
