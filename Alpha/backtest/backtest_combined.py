@@ -55,9 +55,10 @@ initial_equity=10
 class CombinedBacktest:
     """Combined backtest using Alpha model for direction and Risk model for SL/TP/sizing"""
     
-    def __init__(self, alpha_model, risk_model, data_dir, initial_equity=initial_equity, risk_norm_env=None):
+    def __init__(self, alpha_model, risk_model, data_dir, initial_equity=initial_equity, alpha_norm_env=None, risk_norm_env=None):
         self.alpha_model = alpha_model
         self.risk_model = risk_model
+        self.alpha_norm_env = alpha_norm_env
         self.risk_norm_env = risk_norm_env
         self.data_dir = data_dir
         self.initial_equity = initial_equity
@@ -69,7 +70,7 @@ class CombinedBacktest:
         self.env.peak_equity = initial_equity
         
         # Risk model constants (from RiskManagementEnv)
-        self.MAX_RISK_PER_TRADE = 0.40 # Not used for sizing anymore, but kept for ref
+        self.MAX_RISK_PER_TRADE = 0.40 
         self.MAX_MARGIN_PER_TRADE_PCT = 0.80
         self.MAX_LEVERAGE = 400.0
         self.MIN_LOTS = 0.01
@@ -80,7 +81,7 @@ class CombinedBacktest:
         self.SLIPPAGE_MIN_PIPS = 0.5
         self.SLIPPAGE_MAX_PIPS = 1.5
         
-        # Per-asset history tracking (Used for reporting, not for Risk Model obs anymore)
+        # Per-asset history tracking
         self.asset_histories = {
             asset: {
                 'pnl_history': deque([0.0] * 5, maxlen=5),
@@ -96,26 +97,11 @@ class CombinedBacktest:
         # Track blocked trades
         self.blocked_trades = []
         
-    def build_risk_observation(self, asset):
+    def build_risk_observation(self, asset, alpha_obs):
         """Build 45-feature observation for risk model"""
-        # 1. Market state (140 features) - From Alpha Environment
-        alpha_obs = self.env._get_observation()
-        market_obs = alpha_obs[:140]  # First 140 features are market state
+        # Alpha features are already the 40 features [25 asset + 15 global]
         
-        # Extract features for specific asset
-        # [0-124]: 5 assets * 25 features
-        # [125-139]: 15 global features
-        asset_idx = self.env.assets.index(asset)
-        asset_start = asset_idx * 25
-        asset_end = asset_start + 25
-        
-        asset_feats = market_obs[asset_start:asset_end]
-        global_feats = market_obs[125:140]
-        
-        # Combine to 40 features
-        risk_market_obs = np.concatenate([asset_feats, global_feats])
-        
-        # 2. Account state (5 features)
+        # Account state (5 features)
         drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
         equity_norm = self.equity / self.initial_equity
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
@@ -129,17 +115,14 @@ class CombinedBacktest:
         ], dtype=np.float32)
         
         # Combine all features (40 Market + 5 Account = 45)
-        # Note: History features removed in new Risk Model
-        obs = np.concatenate([risk_market_obs, account_obs])
+        obs = np.concatenate([alpha_obs, account_obs])
         
         # Safety check
         if np.any(np.isnan(obs)) or np.any(np.isinf(obs)):
             obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
             
-        # 3. Normalize if normalizer is available
+        # Normalize if normalizer is available
         if self.risk_norm_env is not None:
-            # normalize_obs expects (n_envs, n_features)
-            # We treat this single observation as a batch of 1
             obs_reshaped = obs.reshape(1, -1)
             obs_norm = self.risk_norm_env.normalize_obs(obs_reshaped)
             obs = obs_norm.flatten()
@@ -153,44 +136,31 @@ class CombinedBacktest:
         sl_mult = np.clip((action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)  # 0.2-2.0 ATR
         tp_mult = np.clip((action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)  # 0.5-4.0 ATR
         
-        # Fixed Risk (2%)
+        # Fixed Risk (2%) - matching training logic
         risk_raw = 0.02
         
         return sl_mult, tp_mult, risk_raw
     
     def calculate_position_size(self, asset, entry_price, atr, sl_mult, tp_mult, risk_raw, direction):
         """Calculate position size from risk percentage"""
-        # Check if trade should be skipped
         if risk_raw < 1e-3:
             return 0.0, None
         
-        # Calculate drawdown-based risk cap
         drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
-        
-        # Actual risk percentage (Fixed Risk * Cap)
-        # Removed MAX_RISK_PER_TRADE multiplier to match RiskEnv
         actual_risk_pct = risk_raw * risk_cap_mult
         
-        # Calculate SL distance
         sl_dist_price = sl_mult * atr
         min_sl_dist = max(0.0001 * entry_price, 0.2 * atr)
         if sl_dist_price < min_sl_dist:
             sl_dist_price = min_sl_dist
         
-        # Determine correct contract size
-        # Standard Forex Lot = 100,000 units
-        # Standard Gold Lot (XAUUSD) = 100 oz
         contract_size = 100 if asset == 'XAUUSD' else 100000
-        
-        # Determine currency pair type
         is_usd_quote = asset in ['EURUSD', 'GBPUSD', 'XAUUSD']
         is_usd_base = asset in ['USDJPY', 'USDCHF']
         
-        # Calculate risk amount in cash
         risk_amount_cash = self.equity * actual_risk_pct
         
-        # Calculate lots based on risk
         lots = 0.0
         if sl_dist_price > 0:
             if is_usd_quote:
@@ -200,8 +170,6 @@ class CombinedBacktest:
             else:
                 lots = risk_amount_cash / (sl_dist_price * contract_size)
         
-        # Apply leverage constraints
-        # Use appropriate contract size for value calculation
         if is_usd_quote:
             lot_value_usd = contract_size * entry_price
         elif is_usd_base:
@@ -210,53 +178,30 @@ class CombinedBacktest:
             lot_value_usd = contract_size * 1.0
         
         max_position_value = (self.equity * self.MAX_MARGIN_PER_TRADE_PCT) * self.MAX_LEVERAGE
-        max_lots_leverage = max_position_value / lot_value_usd
+        max_lots_leverage = max_position_value / (lot_value_usd + 1e-9)
         lots = min(lots, max_lots_leverage)
         
-        # Check minimum lots
         if lots < self.MIN_LOTS:
-            # User Feedback: "Everything under 1:400 leverage is tradeable." 
-            # If the calculated risk-based lots are too small, check if we can afford MIN_LOTS with leverage.
-            # 1. Calculate margin required for MIN_LOTS
-            min_lot_value_usd = 0.0
-            if is_usd_quote:
-                min_lot_value_usd = self.MIN_LOTS * contract_size * entry_price
-            else:
-                 min_lot_value_usd = self.MIN_LOTS * contract_size # Simplified for base/cross pairs
-            
+            min_lot_value_usd = self.MIN_LOTS * lot_value_usd / (entry_price if is_usd_quote else 1.0)
             margin_required_min = min_lot_value_usd / self.MAX_LEVERAGE
             
-            # 2. Check if we have enough equity for margin (plus a buffer)
-            if self.equity > (margin_required_min * 1.05): # Lowered buffer to 5% for tight $10 account
-                # We have leverage! Force MIN_LOTS.
+            if self.equity > (margin_required_min * 1.05):
                 lots = self.MIN_LOTS
-                if self.env.current_step % 1000 == 0:
-                     logger.info(f"DEBUG: [{asset}] Enforcing MIN_LOTS {self.MIN_LOTS}. Margin: ${margin_required_min:.2f} < Equity ${self.equity:.2f}")
             else:
-                if self.env.current_step % 1000 == 0:  
-                     logger.info(f"DEBUG: [{asset}] Trade skipped. Calc lots {lots:.6f} < MIN_LOTS. Margin for min: ${margin_required_min:.2f} > Equity ${self.equity:.2f}")
                 return 0.0, None
         
         lots = np.clip(lots, self.MIN_LOTS, 100.0)
         
-        # Convert lots to position size for Alpha environment
-        # Alpha environment expects size_pct in range [0, 1]
-        
-        # Calculate position value in USD (notional value before leverage)
+        # Convert to Alpha's size_pct
         if is_usd_quote:
             notional_value = lots * contract_size * entry_price
-        elif is_usd_base:
-            notional_value = lots * contract_size  # 1 lot = 100,000 base currency (or 100 oz gold)
         else:
             notional_value = lots * contract_size
-        
-        # Position size in equity units (margin required)
+            
         margin_required = notional_value / self.MAX_LEVERAGE
-        
-        # Convert to Alpha's size_pct format
-        MAX_POS_SIZE_PCT = 0.50  # From Alpha environment
-        size_pct = margin_required / (MAX_POS_SIZE_PCT * self.equity)
-        size_pct = np.clip(size_pct, 0.0, 1.0)  # Ensure in valid range
+        MAX_POS_SIZE_PCT = 0.50
+        size_pct = margin_required / (MAX_POS_SIZE_PCT * self.equity + 1e-9)
+        size_pct = np.clip(size_pct, 0.0, 1.0)
         
         position_size = size_pct * MAX_POS_SIZE_PCT * self.equity
         
@@ -271,197 +216,122 @@ class CombinedBacktest:
     def run_backtest(self, episodes=1):
         """Run combined backtest"""
         metrics_tracker = BacktestMetrics()
-        
         logger.info(f"Running {episodes} episodes...")
         
         for episode in range(episodes):
-            obs, _ = self.env.reset()
+            obs_dummy, _ = self.env.reset()
             done = False
             step_count = 0
             
-            # Reset state
             self.equity = self.initial_equity
             self.peak_equity = self.initial_equity
             self.env.equity = self.initial_equity
             self.env.peak_equity = self.initial_equity
             
-            # Reset histories
-            for asset in self.env.assets:
-                self.asset_histories[asset]['pnl_history'] = deque([0.0] * 5, maxlen=5)
-                self.asset_histories[asset]['action_history'] = deque([np.zeros(2, dtype=np.float32) for _ in range(5)], maxlen=5)
-            
             while not done:
-                # Get direction from Alpha model
-                alpha_action, _ = self.alpha_model.predict(obs, deterministic=True)
-                
-                # Parse Alpha action to get directions (Stage 1: 5 outputs)
-                directions = {}
-                for i, asset in enumerate(self.env.assets):
-                    direction_raw = alpha_action[i]
-                    direction = 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0)
-                    directions[asset] = direction
-                
-                # For each asset with direction != 0, get risk parameters
                 combined_actions = {}
                 
-                # Debug logging for Alpha outputs (occasional)
-                if step_count % 1000 == 0:
-                     logger.info(f"DEBUG Step {step_count}: Alpha raw outputs: {alpha_action}")
-                     logger.info(f"DEBUG Step {step_count}: Directions: {directions}")
-                
-                for asset, direction in directions.items():
-                    # REMOVE XAUUSD SKIP: Allow all assets to trade
-                    # if asset == 'XAUUSD':
-                    #     continue
+                # For each asset, get Alpha direction
+                for asset in self.env.assets:
+                    self.env.set_asset(asset)
+                    alpha_obs = self.env._get_observation()
+                    
+                    # Normalize alpha_obs if needed
+                    pred_obs = alpha_obs
+                    if self.alpha_norm_env is not None:
+                        pred_obs = self.alpha_norm_env.normalize_obs(alpha_obs.reshape(1, -1)).flatten()
                         
+                    alpha_action, _ = self.alpha_model.predict(pred_obs, deterministic=True)
+                    
+                    # Single-pair action to direction
+                    # -1 to 1 continuous to discrete
+                    direction = 1 if alpha_action[0] > 0.33 else (-1 if alpha_action[0] < -0.33 else 0)
+                    
                     if direction == 0:
                         continue
-                    
-                    # Build risk model observation (45 dims, normalized)
-                    risk_obs = self.build_risk_observation(asset)
-                    
-                    # Get risk model prediction
+                        
+                    # Build and predict with Risk model
+                    risk_obs = self.build_risk_observation(asset, alpha_obs)
                     risk_action, _ = self.risk_model.predict(risk_obs, deterministic=True)
-                    
-                    # Parse risk action
                     sl_mult, tp_mult, risk_raw = self.parse_risk_action(risk_action)
                     
-                    # --- NO BLOCKING LOGIC ---
-                    # The simplified Risk Model (2 actions) does not output a confidence/risk score for blocking.
-                    # It only outputs SL/TP for the direction given by Alpha.
-                    
-                    # Get current price and ATR
+                    # Calculate size
                     current_prices = self.env._get_current_prices()
                     atrs = self.env._get_current_atrs()
                     entry_price = current_prices[asset]
                     atr = atrs[asset]
                     
-                    # Calculate position size
                     size_pct, risk_info = self.calculate_position_size(
                         asset, entry_price, atr, sl_mult, tp_mult, risk_raw, direction
                     )
                     
-                    if size_pct > 0 and risk_info:
-                        # Store action in history
-                        self.asset_histories[asset]['action_history'].append(
-                            np.array([sl_mult, tp_mult], dtype=np.float32)
-                        )
-                        
-                        # Create combined action for Alpha environment
+                    if size_pct > 0:
                         combined_actions[asset] = {
                             'direction': direction,
                             'size': size_pct,
                             'sl_mult': sl_mult,
                             'tp_mult': tp_mult
                         }
-                    elif step_count % 1000 == 0:
-                         logger.info(f"DEBUG Step {step_count} [{asset}]: Trade skipped (Size 0). Size pct: {size_pct}")
                 
-                # Reset step trackers
-                self.env.peeked_pnl_step = 0.0
+                # Step 2: Execute all approved trades
                 self.env.completed_trades = []
-                
-                # Execute trades manually with combined parameters
                 current_prices = self.env._get_current_prices()
                 atrs = self.env._get_current_atrs()
                 
-                for asset, act in combined_actions.items():
-                    direction = act['direction']
+                for asset in self.env.assets:
+                    act = combined_actions.get(asset)
                     current_pos = self.env.positions[asset]
                     price_raw = current_prices[asset]
                     atr = atrs[asset]
                     
-                    # Apply Slippage to entry price
-                    if self.ENABLE_SLIPPAGE:
-                        slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-                        slippage_price = slippage_pips * 0.0001 * price_raw
-                        price = price_raw + (direction * -1 * slippage_price)
+                    if act:
+                        direction = act['direction']
+                        # Slippage
+                        if self.ENABLE_SLIPPAGE:
+                            slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
+                            slippage_price = slippage_pips * 0.0001 * price_raw
+                            price = price_raw + (direction * -1 * slippage_price)
+                        else:
+                            price = price_raw
+                            
+                        if current_pos is None:
+                            self.env._open_position(asset, direction, act, price, atr)
+                        elif current_pos['direction'] != direction:
+                            self.env._close_position(asset, price)
+                            self.env._open_position(asset, direction, act, price, atr)
                     else:
-                        price = price_raw
-                    
-                    # Execute trade manually
-                    if current_pos is None:
-                        # No position: open if direction != 0
-                        if direction != 0:
-                            position_act = {
-                                'direction': direction,
-                                'size': act['size'],
-                                'sl_mult': act['sl_mult'],
-                                'tp_mult': act['tp_mult']
-                            }
-                            self.env._open_position(asset, direction, position_act, price, atr)
-                    elif current_pos['direction'] == direction:
-                        # Same direction: hold
-                        pass
-                    elif direction != 0 and current_pos['direction'] != direction:
-                        # Opposite direction: close and reverse
-                        self.env._close_position(asset, price)
-                        position_act = {
-                            'direction': direction,
-                            'size': act['size'],
-                            'sl_mult': act['sl_mult'],
-                            'tp_mult': act['tp_mult']
-                        }
-                        self.env._open_position(asset, direction, position_act, price, atr)
-                    elif direction == 0 and current_pos is not None:
-                        # Flat signal: close position
-                        self.env._close_position(asset, price)
+                        # No action for this asset: close existing position if any
+                        if current_pos is not None:
+                            self.env._close_position(asset, price_raw)
                 
-                # Also close positions for assets with direction == 0 that aren't in combined_actions
-                for asset in self.env.assets:
-                    if asset not in combined_actions and self.env.positions[asset] is not None:
-                        self.env._close_position(asset, current_prices[asset])
-                
-                # Advance time and check SL/TP (manually call internal methods)
+                # Advance time and update
                 self.env.current_step += 1
                 self.env._update_positions()
                 
-                # Calculate reward
-                reward = self.env._calculate_reward()
-                
-                # Termination checks
-                terminated = False
-                truncated = self.env.current_step >= self.env.max_steps
-                
-                # Update peak equity
+                # Update peak equity and check termination
                 self.env.peak_equity = max(self.env.peak_equity, self.env.equity)
-                drawdown = 1.0 - (self.env.equity / self.env.peak_equity)
+                self.equity = self.env.equity
+                self.peak_equity = self.env.peak_equity
                 
-                # Build info dict
                 info = {
                     'trades': self.env.completed_trades,
                     'equity': self.env.equity,
-                    'drawdown': drawdown,
                     'timestamp': self.env._get_current_timestamp()
                 }
                 
-                # Get next observation
-                obs = self.env._validate_observation(self.env._get_observation())
-                done = terminated or truncated
-                
-                # Update equity tracking
-                self.equity = self.env.equity
-                self.peak_equity = max(self.peak_equity, self.equity)
-                
-                # Update histories with completed trades
-                if info and 'trades' in info:
+                # Log metrics
+                if info['trades']:
                     for trade in info['trades']:
-                        asset = trade['asset']
-                        pnl_ratio = trade.get('net_pnl', 0) / max(self.initial_equity, 1e-6)
-                        self.asset_histories[asset]['pnl_history'].append(pnl_ratio)
                         metrics_tracker.add_trade(trade)
-                
-                # Log equity
-                if 'equity' in info and 'timestamp' in info:
-                    metrics_tracker.add_equity_point(info['timestamp'], info['equity'])
+                metrics_tracker.add_equity_point(info['timestamp'], info['equity'])
                 
                 step_count += 1
+                done = self.env.current_step >= self.env.max_steps
                 
                 if step_count % 1000 == 0:
                     logger.info(f"Step {step_count}, Equity: ${self.equity:.2f}")
             
-            final_equity = self.env.equity
-            logger.info(f"Episode {episode + 1}/{episodes} complete. Steps: {step_count}, Final Equity: ${final_equity:.2f}")
+            logger.info(f"Episode {episode + 1} complete. Final Equity: ${self.env.equity:.2f}")
         
         return metrics_tracker
 
@@ -491,87 +361,74 @@ def run_combined_backtest(args):
         logger.error(f"Risk model file not found: {risk_model_path}")
         sys.exit(1)
     
+    # Load Alpha normalizer
+    alpha_norm_path = str(alpha_model_path).replace('.zip', '_vecnormalize.pkl')
+    alpha_norm_env = None
+    if os.path.exists(alpha_norm_path):
+        logger.info(f"Loading Alpha Normalizer from {alpha_norm_path}")
+        # Use a dummy env to load
+        dummy_env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, stage=1, is_training=False)])
+        alpha_norm_env = VecNormalize.load(alpha_norm_path, dummy_env)
+        alpha_norm_env.training = False
+        alpha_norm_env.norm_reward = False
+    
     # Load Alpha model
     logger.info("Loading Alpha model...")
+    # Use dummy env for loading model
     env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, stage=1, is_training=False)])
-    
     alpha_model = PPO.load(alpha_model_path, env=env)
     logger.info("Alpha model loaded successfully")
     
-    # Load Risk model
-    logger.info("Loading Risk model...")
-    
-    # Attempt to load VecNormalize stats
-    # Expected: risk_model.zip -> vec_normalize.pkl (in same dir)
+    # Load Risk normalizer
+    # Support both 'vec_normalize.pkl' in same dir and '_vecnormalize.pkl' suffix
     risk_norm_path = risk_model_path.parent / "vec_normalize.pkl"
+    if not risk_norm_path.exists():
+        risk_norm_path = Path(str(risk_model_path).replace('.zip', '_vecnormalize.pkl'))
+        
     risk_norm_env = None
-    
     if risk_norm_path.exists():
-        logger.info(f"Loading Risk Normalizer from {risk_norm_path}...")
+        logger.info(f"Loading Risk Normalizer from {risk_norm_path}")
         try:
-             # Create dummy venv for loading stats
-             dummy_venv = DummyVecEnv([lambda: None]) 
-             risk_norm_env = VecNormalize.load(str(risk_norm_path), dummy_venv)
-             risk_norm_env.training = False 
-             risk_norm_env.norm_reward = False
+             # Create dummy Risk env for loading stats
+             # We need to bypass the dataset loading in RiskManagementEnv if possible or use a small dummy
+             import tempfile
+             import pandas as pd
+             with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as tmp:
+                 dummy_df = pd.DataFrame({'a': [0]})
+                 dummy_df.to_parquet(tmp.name)
+                 dummy_risk_env = RiskManagementEnv(dataset_path=tmp.name)
+                 risk_norm_env = VecNormalize.load(str(risk_norm_path), DummyVecEnv([lambda: dummy_risk_env]))
+                 risk_norm_env.training = False 
+                 risk_norm_env.norm_reward = False
+             os.unlink(tmp.name)
              logger.info("Risk Normalizer loaded.")
         except Exception as e:
              logger.error(f"Failed to load Risk Normalizer: {e}")
-    else:
-        logger.warning(f"No VecNormalize stats found at {risk_norm_path}. Model may perform poorly if trained with normalization.")
     
-    # FORCE DUMMY DATASET to avoid OSError and speed up loading
-    import tempfile
+    # Load Risk model
+    logger.info("Loading Risk model...")
+    # Bypass full dataset for loading
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as tmp:
+        dummy_df = pd.DataFrame({'a': [0]})
+        dummy_df.to_parquet(tmp.name)
+        risk_env_dummy = DummyVecEnv([lambda: RiskManagementEnv(dataset_path=tmp.name)])
+        risk_model = PPO.load(risk_model_path, env=risk_env_dummy)
+    os.unlink(tmp.name)
+    logger.info("Risk model loaded successfully")
     
-    logger.info("Creating dummy dataset for Risk Model loading (bypassing full dataset cache)...")
-    dummy_data = pd.DataFrame({
-        'direction': [1] * 100,
-        'entry_price': [1.0] * 100,
-        'atr': [0.001] * 100, 
-        'atr_14': [0.001] * 100, 
-        'max_profit_pct': [0.01] * 100,
-        'max_loss_pct': [-0.01] * 100,
-        'close_1000_price': [1.0] * 100,
-        'features': [np.zeros(140, dtype=np.float32)] * 100,
-        'pair': ['EURUSD'] * 100
-    })
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as temp_file:
-        dummy_data.to_parquet(temp_file.name)
-        dummy_risk_dataset_path = Path(temp_file.name)
-    
-    try:
-        risk_env = RiskManagementEnv(
-            dataset_path=str(dummy_risk_dataset_path),
-            initial_equity=initial_equity,
-            is_training=False
-        )
-        
-        # Wrap in DummyVecEnv for consistency
-        risk_env = DummyVecEnv([lambda: risk_env])
-
-        risk_model = PPO.load(risk_model_path, env=risk_env)
-        logger.info("Risk model loaded successfully")
-        
-    finally:
-        # Cleanup dummy file
-        try:
-            os.remove(dummy_risk_dataset_path)
-        except:
-            pass
-    
-    # Create combined backtest with Norm Env
+    # Create combined backtest
     backtest = CombinedBacktest(
         alpha_model, 
         risk_model, 
         data_dir_path, 
         initial_equity=initial_equity,
+        alpha_norm_env=alpha_norm_env,
         risk_norm_env=risk_norm_env
     )
 
-    
     # Run backtest
     metrics_tracker = backtest.run_backtest(episodes=args.episodes)
+
     
     # Calculate metrics
     logger.info("\n" + "="*60)

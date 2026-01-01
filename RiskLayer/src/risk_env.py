@@ -503,8 +503,7 @@ class RiskManagementEnv(gym.Env):
             'lots': lots,
             'equity': self.equity,
             'efficiency': pnl_efficiency,
-            'bullet': bullet_bonus,
-            'whipsaw': whipsaw_penalty
+            'bullet': bullet_bonus
         }
         
         return self._get_observation(), reward, terminated, truncated, info
