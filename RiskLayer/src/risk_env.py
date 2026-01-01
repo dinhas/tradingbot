@@ -305,8 +305,9 @@ class RiskManagementEnv(gym.Env):
         spread_pct = spread_val / entry_price_raw
         
         # Adjust Entry for Spread
-        if direction == 1: 
-            entry_price += spread_val
+        # For LONG: buy at ask (higher), for SHORT: sell at bid (lower)
+        # Bug Fix 1: Directional Spread Application
+        entry_price += direction * spread_val
 
         # Use pre-loaded Arrays for Shadow Simulation
         max_favorable = self.max_profit_pcts[global_idx] 
@@ -381,16 +382,17 @@ class RiskManagementEnv(gym.Env):
         sl_pct_dist_raw = abs(sl_dist_price / entry_price_raw)
         tp_pct_dist_raw = abs(tp_dist_price / entry_price_raw)
 
+        # Bug Fix 2: Remove double-counting spread in hit logic
         if direction == 1: # LONG
-             hit_sl = max_adverse <= (spread_pct - sl_pct_dist_raw)
-             hit_tp = max_favorable >= (spread_pct + tp_pct_dist_raw)
+             hit_sl = max_adverse <= -sl_pct_dist_raw
+             hit_tp = max_favorable >= tp_pct_dist_raw
              
              sl_pct_dist = -sl_pct_dist_raw
              tp_pct_dist = tp_pct_dist_raw
              
         else: # SHORT
-             hit_sl = max_favorable >= (sl_pct_dist_raw - spread_pct)
-             hit_tp = max_adverse <= -(tp_pct_dist_raw + spread_pct)
+             hit_sl = max_favorable >= sl_pct_dist_raw
+             hit_tp = max_adverse <= -tp_pct_dist_raw
              
              sl_pct_dist = sl_pct_dist_raw
              tp_pct_dist = -tp_pct_dist_raw
@@ -425,7 +427,8 @@ class RiskManagementEnv(gym.Env):
         elif is_usd_base:
              gross_pnl_usd = gross_pnl_quote / exit_price 
         else:
-             gross_pnl_usd = gross_pnl_quote
+             # Non-USD pairs need cross rate - not implemented
+             gross_pnl_usd = gross_pnl_quote # INCORRECT - needs fixing
 
         costs = position_val * self.TRADING_COST_PCT
         net_pnl = gross_pnl_usd - costs
@@ -461,7 +464,8 @@ class RiskManagementEnv(gym.Env):
         # Calculate Realized Ratio (PnL / Entry Price equivalent)
         # Approximate: Net PnL / Position Value approx equals Price Change Pct
         # But easier: (exit - entry) / entry * direction
-        realized_pct = (price_change / entry_price_raw) * direction
+        # Bug Fix 3: Use execution entry price
+        realized_pct = (price_change / entry_price) * direction
         
         # Base Efficiency Score
         # Range: -10 to +10 roughly
@@ -475,15 +479,22 @@ class RiskManagementEnv(gym.Env):
             # Check 1: Whipsaw? (Price later hit TP)
             # max_favorable is the highest price reached in lookahead window
             # If highest price >= target TP, we were right but shaken out.
-            if max_favorable >= tp_pct_dist_raw:
+            # Bug Fix 4: Account for Spread in Whipsaw
+            adjusted_tp_dist = tp_pct_dist_raw + (spread_val / entry_price_raw)
+            if max_favorable >= adjusted_tp_dist:
                 whipsaw_penalty = -5.0 # Penalty
                 
             # Check 2: Bullet Dodger? (Price crashed deep)
-            # max_adverse is negative (e.g. -0.01). sl_pct_dist_raw is positive (0.002).
-            # If max_adverse is MUCH deeper than SL, we saved money.
-            elif abs(max_adverse) > (sl_pct_dist_raw * 1.5):
+            # Bug Fix 6: Bullet Dodger Logic Split
+            avoided_loss_dist = 0.0
+            if direction == 1: # LONG - Stopped out at Low, check if went Lower
+                 avoided_loss_dist = abs(max_adverse) 
+            else: # SHORT - Stopped out at High, check if went Higher
+                 avoided_loss_dist = abs(max_favorable)
+                 
+            if avoided_loss_dist > (sl_pct_dist_raw * 1.5):
                 # How much did we save?
-                saved_ratio = abs(max_adverse) / max(sl_pct_dist_raw, 1e-9)
+                saved_ratio = avoided_loss_dist / max(sl_pct_dist_raw, 1e-9)
                 # Cap at 3.0, Scale by 2.0 -> Max +6.0
                 bullet_bonus = min(saved_ratio, 3.0) * 2.0
         

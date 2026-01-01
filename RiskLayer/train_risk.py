@@ -70,8 +70,8 @@ if torch.cuda.is_available():
 # PPO Hyperparameters (Expert Tuned for Financial Data)
 # HYPERPARAMETERS - "Precision Edition" 🎯
 
-TOTAL_TIMESTEPS = 5_000_000 
-LEARNING_RATE = 1e-4      # 📈 Faster initial learning for simplified 2-action space.
+TOTAL_TIMESTEPS = 10_000_000 
+LEARNING_RATE = 5e-5      # 📉 Reduced for longer training stability.
 N_STEPS = 8192            # ⬆️ INCREASED. Capture more full episodes per update.
 BATCH_SIZE = 1024         # ⬆️ INCREASED. More stable gradient updates.
 GAMMA = 0.98              # 📉 Slightly lower. Focus on high-quality trades, not infinite future.
@@ -83,9 +83,9 @@ CLIP_RANGE = 0.2
 N_EPOCHS = 5              # ⬆️ INCREASED. Learn more from each batch.
 
 # Why this works:
-# 1. 1e-4 LR + 5 Epochs = Faster convergence on the "sweet spot" for SL/TP.
+# 1. 5e-5 LR + 10M Steps = Steady convergence.
 # 2. 8192 Steps = With EPISODE_LENGTH=100, this is ~80 episodes per env per update.
-# 3. 5M Timesteps = Sufficient for a 2-dimensional action space.
+# 3. 10M Timesteps = Deep learning of complex reward dynamics.
 
 # Paths
 # Using absolute paths based on script location for robustness
@@ -106,7 +106,7 @@ class EntropyDecayCallback(BaseCallback):
     Decays entropy coefficient linearly over time to encourage 
     exploration early (learning to block) and exploitation later.
     """
-    def __init__(self, initial_ent=0.05, final_ent=0.005, decay_steps=3_000_000):
+    def __init__(self, initial_ent=0.05, final_ent=0.005, decay_steps=6_000_000):
         super().__init__()
         self.initial_ent = initial_ent
         self.final_ent = final_ent
