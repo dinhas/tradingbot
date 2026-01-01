@@ -68,51 +68,30 @@ if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
 # PPO Hyperparameters (Expert Tuned for Financial Data)
-# HYPERPARAMETERS - "Anti-Collapse" Edition 🛡️
+# HYPERPARAMETERS - "Precision Edition" 🎯
 
-TOTAL_TIMESTEPS = 10_000_000 
-LEARNING_RATE = 5e-5      # 📉 HALVED. Slower learning = more stable updates.
-N_STEPS = 4096            # ✂️ REDUCED. Update more frequently so policy doesn't get stale.
-BATCH_SIZE = 512          # 📉 SMALLER. More updates per epoch, better gradient estimation.
-GAMMA = 0.99              # ⬆️ INCREASED. Care a bit more about future rewards (trends).
-GAE_LAMBDA = 0.95         # ⬆️ STANDARD. Smoothes out variance better.
-ENT_COEF = 0.05           # 🚀 DOUBLED+. Force it to explore. "Don't get cocky."
+TOTAL_TIMESTEPS = 5_000_000 
+LEARNING_RATE = 1e-4      # 📈 Faster initial learning for simplified 2-action space.
+N_STEPS = 8192            # ⬆️ INCREASED. Capture more full episodes per update.
+BATCH_SIZE = 1024         # ⬆️ INCREASED. More stable gradient updates.
+GAMMA = 0.98              # 📉 Slightly lower. Focus on high-quality trades, not infinite future.
+GAE_LAMBDA = 0.95         
+ENT_COEF = 0.03           # 📉 Reduced starting entropy (faster convergence on best SL/TP).
 VF_COEF = 0.5
-MAX_GRAD_NORM = 0.3       # 🔒 TIGHTER. Cap those violent gradients.
-CLIP_RANGE = 0.2          # 🔓 LOOSER. Gives the new LR room to work without clipping instantly.
-N_EPOCHS = 3              # 📉 REDUCED. Stop memorizing the batch! 3 passes is enough.
+MAX_GRAD_NORM = 0.5       # 🔓 Slightly looser for faster learning.
+CLIP_RANGE = 0.2          
+N_EPOCHS = 5              # ⬆️ INCREASED. Learn more from each batch.
 
 # Why this works:
-# 1. Lower LR + Fewer Epochs = The model stops overfitting on a single batch of data.
-# 2. Higher Ent_Coef = It stops spamming the same "buy" button and actually thinks.
-# 3. Higher Gamma = It looks for the bigger bag 💰, not just the next tick.
+# 1. 1e-4 LR + 5 Epochs = Faster convergence on the "sweet spot" for SL/TP.
+# 2. 8192 Steps = With EPISODE_LENGTH=100, this is ~80 episodes per env per update.
+# 3. 5M Timesteps = Sufficient for a 2-dimensional action space.
 
 # Paths
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Fallback logic for finding dataset
-POSSIBLE_PATHS = [
-    os.path.join(BASE_DIR, 'risk_dataset.parquet'),
-    os.path.join(os.getcwd(), 'risk_dataset.parquet'),
-    os.path.join(os.getcwd(), 'RiskLayer', 'risk_dataset.parquet'),
-    'risk_dataset.parquet'
-]
-
-DATASET_PATH = None
-for p in POSSIBLE_PATHS:
-    if os.path.exists(p):
-        DATASET_PATH = p
-        break
-
-if DATASET_PATH is None:
-    # Default to standard path but warn
-    DATASET_PATH = os.path.join(BASE_DIR, 'risk_dataset.parquet')
-    print(f"WARNING: risk_dataset.parquet not found in common locations. Defaulting to {DATASET_PATH}")
-else:
-    print(f"Found Dataset at: {DATASET_PATH}")
-
-MODELS_DIR = os.path.join(BASE_DIR, 'models')
-LOG_DIR = os.path.join(BASE_DIR, 'logs')
-CHECKPOINT_DIR = os.path.join(MODELS_DIR, 'checkpoints')
+# Using relative paths to root directories as requested
+MODELS_DIR = os.path.join("..", "models")
+LOG_DIR = os.path.join("..", "logs")
+CHECKPOINT_DIR = os.path.join(MODELS_DIR, "checkpoints")
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -226,14 +205,17 @@ def train():
     )
 
     # 3. Callbacks
-    # 3. Callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=500_000 // N_ENVS, # Roughly 500k steps (adjusted for parallel envs)
         save_path=CHECKPOINT_DIR,
         name_prefix="risk_model_ppo"
     )
     
-    entropy_callback = EntropyDecayCallback(initial_ent=0.05, final_ent=0.005)
+    entropy_callback = EntropyDecayCallback(
+        initial_ent=ENT_COEF, 
+        final_ent=0.001, 
+        decay_steps=TOTAL_TIMESTEPS // 2
+    )
     tb_callback = TensorboardCallback()
 
     # 4. Train

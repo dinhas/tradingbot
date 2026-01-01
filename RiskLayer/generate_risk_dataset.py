@@ -97,16 +97,19 @@ if DEFAULT_MODEL_PATH is None:
     DEFAULT_MODEL_PATH = os.path.join(MODELS_DIR, "model_not_found.zip")
     DEFAULT_VEC_NORM_PATH = None
 
-DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-DEFAULT_OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "risk_dataset.parquet")
+DEFAULT_DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+DEFAULT_OUTPUT_FILE = os.path.join(PROJECT_ROOT, "risk_dataset.parquet")
 LOOKAHEAD_STEPS = 6 # 30 mins (5m candles)
 BATCH_SIZE = 50000  # Increased batch size as we use less memory now
 
-def build_observation_matrix(df, assets, start_idx, end_idx):
+def build_master_feature_cache(df, assets, start_idx, end_idx):
     """
-    Constructs the full observation matrix (N x 140) efficiently using vectorized operations.
+    Constructs the master feature cache (N x 140) efficiently using vectorized operations.
+    This cache contains features for ALL pairs (5 pairs * 25 features) + 15 Global Features.
+    It is used to efficiently slice single-pair observations (40 features) during batch processing.
+    
     Returns:
-        np.ndarray: The observation matrix of shape (end_idx - start_idx, 140)
+        np.ndarray: The master feature matrix of shape (end_idx - start_idx, 140)
     """
     num_rows = end_idx - start_idx
     # Pre-allocate matrix with float32
@@ -271,13 +274,14 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
     atr_arrays = {a: env.atr_arrays[a] for a in assets}
     
     # 3. Build Observation Matrix (Vectorized)
-    logger.info("Constructing feature matrix...")
+    logger.info("Constructing MASTER feature cache (140 cols) for efficient slicing...")
     # This might take a moment but is much faster than doing it in a loop
-    all_observations = build_observation_matrix(df, assets, start_idx, end_idx)
-    logger.info(f"Feature matrix built. Shape: {all_observations.shape}. Size: {all_observations.nbytes / 1024**2:.2f} MB")
+    all_observations = build_master_feature_cache(df, assets, start_idx, end_idx)
+    logger.info(f"Master cache built. Shape: {all_observations.shape}. Size: {all_observations.nbytes / 1024**2:.2f} MB")
     
     # 4. Batch Processing Loop
     logger.info(f"Starting batched inference (Batch Size: {BATCH_SIZE})...")
+    logger.info("Generating samples with 40 features (25 Asset + 15 Global) per row.")
     
     os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
     
@@ -294,6 +298,9 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
     
     total_signals = 0
     timestamps = df.index[start_idx:end_idx]
+    
+    # Store all batch dataframes to concat at the end
+    all_batch_dfs = []
     
     for b_start in tqdm(batch_starts, desc="Processing Batches"):
         b_end = min(b_start + BATCH_SIZE, num_rows)
@@ -407,23 +414,22 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
 
         if has_data:
             batch_df = pd.DataFrame(batch_results)
+            all_batch_dfs.append(batch_df)
             total_signals += len(batch_df)
-            
-            if os.path.exists(output_file):
-                # Append to existing
-                existing_df = pd.read_parquet(output_file)
-                combined = pd.concat([existing_df, batch_df], ignore_index=True)
-                combined.to_parquet(output_file, index=False)
-                del existing_df, combined
-            else:
-                batch_df.to_parquet(output_file, index=False)
-            
             del batch_df
         
         del batch_results
         gc.collect()
 
     logger.info(f"Processing complete. Total signals: {total_signals}")
+    
+    if all_batch_dfs:
+        logger.info(f"Concatenating {len(all_batch_dfs)} batches and saving to {output_file}...")
+        final_df = pd.concat(all_batch_dfs, ignore_index=True)
+        final_df.to_parquet(output_file, index=False)
+        logger.info(f"Saved dataset to {output_file} ({len(final_df)} rows).")
+    else:
+        logger.warning("No signals generated. No output file created.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate Risk Dataset (Optimized)")
