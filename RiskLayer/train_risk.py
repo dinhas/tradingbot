@@ -92,6 +92,7 @@ N_EPOCHS = 5              # ⬆️ INCREASED. Learn more from each batch.
 MODELS_DIR = os.path.join("..", "models")
 LOG_DIR = os.path.join("..", "logs")
 CHECKPOINT_DIR = os.path.join(MODELS_DIR, "checkpoints")
+DATASET_PATH = os.path.join("..", "risk_dataset.parquet")
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
