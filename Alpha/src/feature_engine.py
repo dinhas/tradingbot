@@ -47,10 +47,18 @@ class FeatureEngine:
         logger.info("Aligning data for all assets...")
         aligned_df = self._align_data(data_dict)
         
+        # Convert to float32 immediately to save 50% RAM
+        for col in aligned_df.columns:
+            aligned_df[col] = aligned_df[col].astype(np.float32)
+        
         # 2. Calculate Technical Indicators per Asset
         for asset in self.assets:
             logger.info(f"Calculating technical indicators for {asset}...")
             aligned_df = self._add_technical_indicators(aligned_df, asset)
+            # Ensure new columns are also float32
+            for col in aligned_df.columns:
+                if aligned_df[col].dtype == np.float64:
+                    aligned_df[col] = aligned_df[col].astype(np.float32)
             
         # 3. Calculate Cross-Asset Features
         logger.info("Calculating cross-asset features...")
@@ -62,13 +70,20 @@ class FeatureEngine:
         
         # 5. Normalize Features (Robust Scaling)
         logger.info("Normalizing features (this may take a minute)...")
-        # Create a copy for normalization to preserve raw values
-        normalized_df = aligned_df.copy()
+        # Do NOT copy, just pass the reference and modify if needed or create small temp arrays
+        # We'll create a normalized version for the agent, and keep raw for env simulation if needed.
+        # But usually TradingEnv wants the processed_data for observation.
+        
+        normalized_df = aligned_df.copy() # One copy is likely needed for the normalized observation set
+        # But ensure it's float32
+        for col in normalized_df.columns:
+            normalized_df[col] = normalized_df[col].astype(np.float32)
+            
         normalized_df = self._normalize_features(normalized_df)
         
         # 6. Handle Missing Values
-        normalized_df = normalized_df.ffill().fillna(0)
-        aligned_df = aligned_df.ffill().fillna(0)
+        normalized_df = normalized_df.ffill().fillna(0).astype(np.float32)
+        aligned_df = aligned_df.ffill().fillna(0).astype(np.float32)
         
         logger.info(f"Preprocessing complete. Total features: {len(normalized_df.columns)}")
         return aligned_df, normalized_df

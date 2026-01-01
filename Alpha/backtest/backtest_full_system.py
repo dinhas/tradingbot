@@ -30,29 +30,81 @@ class FullSystemBacktest(CombinedBacktest):
     """
     Extends CombinedBacktest to include TradeGuard filtering (RL Version).
     """
-    def __init__(self, alpha_model_path, risk_model_path, guard_model_path, data_dir, initial_equity=10):
-        # Load models
-        alpha_model = PPO.load(alpha_model_path)
-        risk_model = PPO.load(risk_model_path)
+    def __init__(self, alpha_model_path, risk_model_path, guard_model_path, data_dir, initial_equity=10000.0):
+        # 1. Initialize Shared Trading Environment
+        shared_env = TradingEnv(data_dir=data_dir, stage=1, is_training=False)
+        dummy_vec_env = DummyVecEnv([lambda: shared_env])
+
+        # 2. Load Alpha Model & Normalizer
+        alpha_norm_path = str(alpha_model_path).replace('.zip', '_vecnormalize.pkl')
+        if not os.path.exists(alpha_norm_path):
+            alpha_norm_path = str(alpha_model_path).replace('_model.zip', '_vecnormalize.pkl')
+            
+        alpha_norm_env = None
+        if os.path.exists(alpha_norm_path):
+            logger.info(f"Loading Alpha Normalizer from {alpha_norm_path}")
+            alpha_norm_env = VecNormalize.load(alpha_norm_path, dummy_vec_env)
+            alpha_norm_env.training = False
+            alpha_norm_env.norm_reward = False
         
-        # Load TradeGuard Model (PPO)
+        alpha_model = PPO.load(alpha_model_path, env=dummy_vec_env)
+
+        # 3. Load Risk Model & Normalizer
+        risk_norm_path = Path(risk_model_path).parent / "vec_normalize.pkl"
+        if not risk_norm_path.exists():
+            risk_norm_path = Path(str(risk_model_path).replace('.zip', '_vecnormalize.pkl'))
+            
+        risk_norm_env = None
+        
+        # Helper to create dummy risk env for loading normalizer/model
+        def create_dummy_risk_env():
+            from RiskLayer.src.risk_env import RiskManagementEnv
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.parquet')
+            dummy_data = pd.DataFrame({
+                'direction': [1.0] * 10, 'entry_price': [1.0] * 10, 'atr': [0.01] * 10,
+                'max_profit_pct': [0.02] * 10, 'max_loss_pct': [-0.01] * 10, 'close_1000_price': [1.01] * 10,
+                'features': [np.zeros(40, dtype=np.float32) for _ in range(10)], 'pair': ['EURUSD'] * 10
+            })
+            dummy_data.to_parquet(tmp.name)
+            env = RiskManagementEnv(dataset_path=tmp.name)
+            return env, tmp.name
+
+        if risk_norm_path.exists():
+            logger.info(f"Loading Risk Normalizer from {risk_norm_path}")
+            r_env, tmp_path = create_dummy_risk_env()
+            risk_norm_env = VecNormalize.load(str(risk_norm_path), DummyVecEnv([lambda: r_env]))
+            risk_norm_env.training = False
+            risk_norm_env.norm_reward = False
+            os.unlink(tmp_path)
+
+        r_env, tmp_path = create_dummy_risk_env()
+        risk_model = PPO.load(risk_model_path, env=DummyVecEnv([lambda: r_env]))
+        os.unlink(tmp_path)
+        
+        # 4. Load TradeGuard Model (PPO)
         if not os.path.exists(guard_model_path):
              raise FileNotFoundError(f"TradeGuard model not found at {guard_model_path}")
         
-        # We need to construct a dummy env for PPO load if using custom features, 
-        # but usually PPO.load works fine without env for inference if observation space matches.
-        # However, to be safe, we can wrap it.
         try:
              guard_model = PPO.load(guard_model_path)
         except Exception as e:
              raise ValueError(f"Failed to load TradeGuard PPO model: {e}")
 
-        super().__init__(alpha_model, risk_model, data_dir, initial_equity)
+        # Initialize base class
+        super().__init__(
+            alpha_model=alpha_model, 
+            risk_model=risk_model, 
+            data_dir=data_dir, 
+            initial_equity=initial_equity,
+            alpha_norm_env=alpha_norm_env,
+            risk_norm_env=risk_norm_env,
+            env=shared_env
+        )
         
         self.guard_model = guard_model
         
         # Initialize feature builder (requires data from env)
-        # TradingEnv stores the dictionary of dataframes in self.env.data
         self.feature_builder = TradeGuardFeatureBuilder(self.env.data)
         
         # Tracking for Shadow Portfolio and blocked trades
@@ -174,22 +226,15 @@ class FullSystemBacktest(CombinedBacktest):
                     # Parse risk action
                     sl_mult, tp_mult, risk_raw = self.parse_risk_action(risk_action)
                     
-                    # Risk-level Blocking Logic (Threshold: 0.20)
-                    if risk_raw < 0.20:
-                        continue
-
-                    # If NOT blocked by Risk, Rescale Risk
-                    risk_raw_scaled = (risk_raw - 0.20) / 0.80
-                    
                     # Get market data for position sizing
                     current_prices = self.env._get_current_prices()
                     atrs = self.env._get_current_atrs()
                     entry_price = current_prices[asset]
                     atr = atrs[asset]
                     
-                    # Calculate position size
+                    # Calculate position size (using fixed 2% risk)
                     size_pct, risk_info = self.calculate_position_size(
-                        asset, entry_price, atr, sl_mult, tp_mult, risk_raw_scaled, direction
+                        asset, entry_price, atr, sl_mult, tp_mult, risk_raw, direction
                     )
                     
                     # Check for valid trade
@@ -517,7 +562,7 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data")
     parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results/full_system")
     parser.add_argument("--episodes", type=int, default=1)
-    parser.add_argument("--initial-equity", type=float, default=10.0)
+    parser.add_argument("--initial-equity", type=float, default=10000.0)
     
     args = parser.parse_args()
     run_full_system_backtest(args)

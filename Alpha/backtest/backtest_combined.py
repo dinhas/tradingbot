@@ -50,12 +50,12 @@ from RiskLayer.src.risk_env import RiskManagementEnv
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-initial_equity=10
+initial_equity=10000.0
 
 class CombinedBacktest:
     """Combined backtest using Alpha model for direction and Risk model for SL/TP/sizing"""
     
-    def __init__(self, alpha_model, risk_model, data_dir, initial_equity=initial_equity, alpha_norm_env=None, risk_norm_env=None):
+    def __init__(self, alpha_model, risk_model, data_dir, initial_equity=initial_equity, alpha_norm_env=None, risk_norm_env=None, env=None):
         self.alpha_model = alpha_model
         self.risk_model = risk_model
         self.alpha_norm_env = alpha_norm_env
@@ -63,8 +63,12 @@ class CombinedBacktest:
         self.data_dir = data_dir
         self.initial_equity = initial_equity
         
-        # Create Alpha environment for data access
-        self.env = TradingEnv(data_dir=data_dir, stage=1, is_training=False)
+        # Create Alpha environment for data access (or reuse existing)
+        if env is not None:
+            self.env = env
+        else:
+            self.env = TradingEnv(data_dir=data_dir, stage=1, is_training=False)
+            
         self.env.equity = initial_equity
         self.env.start_equity = initial_equity
         self.env.peak_equity = initial_equity
@@ -228,6 +232,9 @@ class CombinedBacktest:
             self.env.equity = self.initial_equity
             self.env.peak_equity = self.initial_equity
             
+            alpha_actions_sum = 0
+            alpha_non_zero = 0
+            
             while not done:
                 combined_actions = {}
                 
@@ -242,6 +249,11 @@ class CombinedBacktest:
                         pred_obs = self.alpha_norm_env.normalize_obs(alpha_obs.reshape(1, -1)).flatten()
                         
                     alpha_action, _ = self.alpha_model.predict(pred_obs, deterministic=True)
+                    
+                    # Debug stats
+                    alpha_actions_sum += abs(alpha_action[0])
+                    if abs(alpha_action[0]) > 0.33:
+                        alpha_non_zero += 1
                     
                     # Single-pair action to direction
                     # -1 to 1 continuous to discrete
@@ -329,9 +341,11 @@ class CombinedBacktest:
                 done = self.env.current_step >= self.env.max_steps
                 
                 if step_count % 1000 == 0:
-                    logger.info(f"Step {step_count}, Equity: ${self.equity:.2f}")
+                    avg_alpha = alpha_actions_sum / (step_count * len(self.env.assets) + 1e-9)
+                    logger.info(f"Step {step_count}, Equity: ${self.equity:.2f}, Avg Alpha Action: {avg_alpha:.4f}, Trades Triggered: {alpha_non_zero}")
             
-            logger.info(f"Episode {episode + 1} complete. Final Equity: ${self.env.equity:.2f}")
+            avg_alpha = alpha_actions_sum / (step_count * len(self.env.assets) + 1e-9)
+            logger.info(f"Episode {episode + 1} complete. Final Equity: ${self.env.equity:.2f}, Avg Alpha: {avg_alpha:.4f}, Non-Zero Actions: {alpha_non_zero}")
         
         return metrics_tracker
 
@@ -361,73 +375,96 @@ def run_combined_backtest(args):
         logger.error(f"Risk model file not found: {risk_model_path}")
         sys.exit(1)
     
+    # Create a SINGLE TradingEnv instance to be shared
+    logger.info("Initializing shared Trading Environment and preprocessing data...")
+    shared_env = TradingEnv(data_dir=data_dir_path, stage=1, is_training=False)
+    dummy_vec_env = DummyVecEnv([lambda: shared_env])
+
     # Load Alpha normalizer
     alpha_norm_path = str(alpha_model_path).replace('.zip', '_vecnormalize.pkl')
+    # FALLBACK: Handle ppo_final_model.zip -> ppo_final_vecnormalize.pkl
+    if not os.path.exists(alpha_norm_path):
+        alpha_norm_path = str(alpha_model_path).replace('_model.zip', '_vecnormalize.pkl')
+        
     alpha_norm_env = None
     if os.path.exists(alpha_norm_path):
         logger.info(f"Loading Alpha Normalizer from {alpha_norm_path}")
-        # Use a dummy env to load
-        dummy_env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, stage=1, is_training=False)])
-        alpha_norm_env = VecNormalize.load(alpha_norm_path, dummy_env)
+        # Reuse the already preprocessed dummy_vec_env
+        alpha_norm_env = VecNormalize.load(alpha_norm_path, dummy_vec_env)
         alpha_norm_env.training = False
         alpha_norm_env.norm_reward = False
+    else:
+        logger.warning(f"Alpha Normalizer NOT found at {alpha_norm_path}. Model predictions may be inaccurate.")
     
     # Load Alpha model
     logger.info("Loading Alpha model...")
-    # Use dummy env for loading model
-    env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, stage=1, is_training=False)])
-    alpha_model = PPO.load(alpha_model_path, env=env)
+    alpha_model = PPO.load(alpha_model_path, env=dummy_vec_env)
     logger.info("Alpha model loaded successfully")
     
     # Load Risk normalizer
-    # Support both 'vec_normalize.pkl' in same dir and '_vecnormalize.pkl' suffix
     risk_norm_path = risk_model_path.parent / "vec_normalize.pkl"
     if not risk_norm_path.exists():
         risk_norm_path = Path(str(risk_model_path).replace('.zip', '_vecnormalize.pkl'))
         
     risk_norm_env = None
+    
+    # Function to create a valid dummy Risk dataset (small, for loading only)
+    def create_dummy_risk_dataset():
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.parquet')
+        dummy_data = pd.DataFrame({
+            'direction': [1.0] * 10,
+            'entry_price': [1.0] * 10,
+            'atr': [0.01] * 10,
+            'max_profit_pct': [0.02] * 10,
+            'max_loss_pct': [-0.01] * 10,
+            'close_1000_price': [1.01] * 10,
+            'features': [np.zeros(40, dtype=np.float32) for _ in range(10)],
+            'pair': ['EURUSD'] * 10
+        })
+        dummy_data.to_parquet(tmp.name)
+        return tmp.name
+
     if risk_norm_path.exists():
         logger.info(f"Loading Risk Normalizer from {risk_norm_path}")
         try:
-             # Create dummy Risk env for loading stats
-             # We need to bypass the dataset loading in RiskManagementEnv if possible or use a small dummy
-             import tempfile
-             import pandas as pd
-             with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as tmp:
-                 dummy_df = pd.DataFrame({'a': [0]})
-                 dummy_df.to_parquet(tmp.name)
-                 dummy_risk_env = RiskManagementEnv(dataset_path=tmp.name)
-                 risk_norm_env = VecNormalize.load(str(risk_norm_path), DummyVecEnv([lambda: dummy_risk_env]))
-                 risk_norm_env.training = False 
-                 risk_norm_env.norm_reward = False
-             os.unlink(tmp.name)
+             dummy_path = create_dummy_risk_dataset()
+             dummy_risk_env = RiskManagementEnv(dataset_path=dummy_path)
+             risk_norm_env = VecNormalize.load(str(risk_norm_path), DummyVecEnv([lambda: dummy_risk_env]))
+             risk_norm_env.training = False 
+             risk_norm_env.norm_reward = False
+             os.unlink(dummy_path)
              logger.info("Risk Normalizer loaded.")
         except Exception as e:
              logger.error(f"Failed to load Risk Normalizer: {e}")
     
     # Load Risk model
     logger.info("Loading Risk model...")
-    # Bypass full dataset for loading
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as tmp:
-        dummy_df = pd.DataFrame({'a': [0]})
-        dummy_df.to_parquet(tmp.name)
-        risk_env_dummy = DummyVecEnv([lambda: RiskManagementEnv(dataset_path=tmp.name)])
+    try:
+        dummy_path = create_dummy_risk_dataset()
+        risk_env_dummy = DummyVecEnv([lambda: RiskManagementEnv(dataset_path=dummy_path)])
         risk_model = PPO.load(risk_model_path, env=risk_env_dummy)
-    os.unlink(tmp.name)
-    logger.info("Risk model loaded successfully")
+        os.unlink(dummy_path)
+        logger.info("Risk model loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load Risk model: {e}")
+        sys.exit(1)
     
-    # Create combined backtest
+    # Create combined backtest using the SHARED environment
     backtest = CombinedBacktest(
         alpha_model, 
         risk_model, 
         data_dir_path, 
         initial_equity=initial_equity,
         alpha_norm_env=alpha_norm_env,
-        risk_norm_env=risk_norm_env
+        risk_norm_env=risk_norm_env,
+        env=shared_env
     )
 
     # Run backtest
     metrics_tracker = backtest.run_backtest(episodes=args.episodes)
+
+
 
     
     # Calculate metrics
@@ -530,9 +567,9 @@ def run_combined_backtest(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Combined Alpha-Risk Model Backtest")
-    parser.add_argument("--alpha-model", type=str, required=True,
+    parser.add_argument("--alpha-model", type=str, default="models/checkpoints/ppo_final_model.zip",
                         help="Path to Alpha model (.zip file) relative to project root")
-    parser.add_argument("--risk-model", type=str, required=True,
+    parser.add_argument("--risk-model", type=str, default="models/risk/risk_model_final.zip",
                         help="Path to Risk model (.zip file) relative to project root")
     parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data",
                         help="Path to backtest data directory relative to project root")

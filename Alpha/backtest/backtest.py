@@ -31,6 +31,7 @@ import pandas as pd
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+plt.switch_backend('Agg')
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
@@ -316,6 +317,10 @@ def run_backtest(args):
     
     # Load VecNormalize stats if available
     vecnorm_path = str(model_path).replace('.zip', '_vecnormalize.pkl')
+    # FALLBACK: Handle ppo_final_model.zip -> ppo_final_vecnormalize.pkl
+    if not os.path.exists(vecnorm_path):
+        vecnorm_path = str(model_path).replace('_model.zip', '_vecnormalize.pkl')
+
     if os.path.exists(vecnorm_path):
         logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
         env = VecNormalize.load(vecnorm_path, env)
