@@ -49,7 +49,7 @@ data/*.csv
 
 # Model Files
 
-*.pkl
+
 *.pickle
 
 # Logs
