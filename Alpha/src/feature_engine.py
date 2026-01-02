@@ -108,122 +108,137 @@ class FeatureEngine:
         return aligned_df
 
     def _add_technical_indicators(self, df, asset):
+        new_features = {}
+        
         close = df[f"{asset}_close"]
         high = df[f"{asset}_high"]
         low = df[f"{asset}_low"]
         volume = df[f"{asset}_volume"]
         
         # Returns
-        df[f"{asset}_return_1"] = close.pct_change(1)
-        df[f"{asset}_return_12"] = close.pct_change(12)
+        new_features[f"{asset}_return_1"] = close.pct_change(1)
+        new_features[f"{asset}_return_12"] = close.pct_change(12)
         
         # Volatility
         atr = AverageTrueRange(high, low, close, window=14).average_true_range()
         atr_ma = atr.rolling(window=20).mean()
-        df[f"{asset}_atr_14"] = atr
-        df[f"{asset}_atr_ratio"] = atr / atr_ma
+        new_features[f"{asset}_atr_14"] = atr
+        new_features[f"{asset}_atr_ratio"] = atr / atr_ma
         
         bb = BollingerBands(close, window=20, window_dev=2)
-        df[f"{asset}_bb_position"] = (close - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband())
+        new_features[f"{asset}_bb_position"] = (close - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband())
         
         # Trend
         ema9 = EMAIndicator(close, window=9).ema_indicator()
         ema21 = EMAIndicator(close, window=21).ema_indicator()
-        df[f"{asset}_ema_9"] = ema9
-        df[f"{asset}_ema_21"] = ema21
-        df[f"{asset}_price_vs_ema9"] = (close - ema9) / ema9
-        df[f"{asset}_ema9_vs_ema21"] = (ema9 - ema21) / ema21
+        new_features[f"{asset}_ema_9"] = ema9
+        new_features[f"{asset}_ema_21"] = ema21
+        new_features[f"{asset}_price_vs_ema9"] = (close - ema9) / ema9
+        new_features[f"{asset}_ema9_vs_ema21"] = (ema9 - ema21) / ema21
         
         # Momentum
-        df[f"{asset}_rsi_14"] = RSIIndicator(close, window=14).rsi()
+        new_features[f"{asset}_rsi_14"] = RSIIndicator(close, window=14).rsi()
         macd = MACD(close)
-        df[f"{asset}_macd_hist"] = macd.macd_diff()
+        new_features[f"{asset}_macd_hist"] = macd.macd_diff()
         
         # Volume
         vol_ma = volume.rolling(window=20).mean()
-        df[f"{asset}_volume_ratio"] = volume / vol_ma
+        new_features[f"{asset}_volume_ratio"] = volume / vol_ma
         
-        return df
+        new_features_df = pd.DataFrame(new_features, index=df.index).astype(np.float32)
+        return pd.concat([df, new_features_df], axis=1)
 
     def _add_cross_asset_features(self, df):
+        new_features = {}
+        
         # Calculate basket return (average of all assets)
-        returns = df[[f"{a}_return_1" for a in self.assets]]
-        basket_return = returns.mean(axis=1)
+        # We need to access return_1 which might have just been added
+        returns_cols = [f"{a}_return_1" for a in self.assets if f"{a}_return_1" in df.columns]
+        if not returns_cols:
+             return df
+             
+        basket_return = df[returns_cols].mean(axis=1)
         
         for asset in self.assets:
+            if f"{asset}_return_1" not in df.columns: continue
+            
             asset_ret = df[f"{asset}_return_1"]
             
             # Correlation to basket (50 period)
-            df[f"{asset}_corr_basket"] = asset_ret.rolling(50).corr(basket_return)
+            new_features[f"{asset}_corr_basket"] = asset_ret.rolling(50).corr(basket_return)
             
             # Relative Strength
-            df[f"{asset}_rel_strength"] = asset_ret - basket_return
+            new_features[f"{asset}_rel_strength"] = asset_ret - basket_return
             
             # Correlation to XAUUSD
             if f"XAUUSD_return_1" in df.columns:
-                df[f"{asset}_corr_xauusd"] = asset_ret.rolling(50).corr(df["XAUUSD_return_1"])
+                new_features[f"{asset}_corr_xauusd"] = asset_ret.rolling(50).corr(df["XAUUSD_return_1"])
             else:
-                df[f"{asset}_corr_xauusd"] = 0
+                new_features[f"{asset}_corr_xauusd"] = pd.Series(0, index=df.index)
                 
             # Correlation to EURUSD
             if f"EURUSD_return_1" in df.columns:
-                df[f"{asset}_corr_eurusd"] = asset_ret.rolling(50).corr(df["EURUSD_return_1"])
+                new_features[f"{asset}_corr_eurusd"] = asset_ret.rolling(50).corr(df["EURUSD_return_1"])
             else:
-                df[f"{asset}_corr_eurusd"] = 0
+                new_features[f"{asset}_corr_eurusd"] = pd.Series(0, index=df.index)
                 
         # Asset Rank (1-5 based on return_12)
-        ret12_cols = [f"{a}_return_12" for a in self.assets]
-        ranks = df[ret12_cols].rank(axis=1, ascending=False)
-        for asset, col in zip(self.assets, ret12_cols):
-            df[f"{asset}_rank"] = ranks[col]
+        ret12_cols = [f"{a}_return_12" for a in self.assets if f"{a}_return_12" in df.columns]
+        if ret12_cols:
+            ranks = df[ret12_cols].rank(axis=1, ascending=False)
+            for asset, col in zip(self.assets, ret12_cols):
+                 # ranks columns match ret12_cols order
+                 # ranks is a DF, so ranks[col] gives the rank series for that asset
+                 new_features[f"{asset}_rank"] = ranks[col]
             
-        return df
+        new_features_df = pd.DataFrame(new_features, index=df.index).astype(np.float32)
+        return pd.concat([df, new_features_df], axis=1)
 
     def _add_session_features(self, df):
+        new_features = {}
+        
         # Time features
-        df['hour_sin'] = np.sin(2 * np.pi * df.index.hour / 24)
-        df['hour_cos'] = np.cos(2 * np.pi * df.index.hour / 24)
-        df['day_sin'] = np.sin(2 * np.pi * df.index.dayofweek / 7)
-        df['day_cos'] = np.cos(2 * np.pi * df.index.dayofweek / 7)
+        new_features['hour_sin'] = np.sin(2 * np.pi * df.index.hour / 24)
+        new_features['hour_cos'] = np.cos(2 * np.pi * df.index.hour / 24)
+        new_features['day_sin'] = np.sin(2 * np.pi * df.index.dayofweek / 7)
+        new_features['day_cos'] = np.cos(2 * np.pi * df.index.dayofweek / 7)
         
         # Sessions (UTC)
-        # Asian: 00:00 - 09:00
-        # London: 08:00 - 17:00
-        # NY: 13:00 - 22:00
-        # Overlap: 13:00 - 17:00
-        
         hours = df.index.hour
-        df['session_asian'] = ((hours >= 0) & (hours < 9)).astype(int)
-        df['session_london'] = ((hours >= 8) & (hours < 17)).astype(int)
-        df['session_ny'] = ((hours >= 13) & (hours < 22)).astype(int)
-        df['session_overlap'] = ((hours >= 13) & (hours < 17)).astype(int)
+        new_features['session_asian'] = ((hours >= 0) & (hours < 9)).astype(int)
+        new_features['session_london'] = ((hours >= 8) & (hours < 17)).astype(int)
+        new_features['session_ny'] = ((hours >= 13) & (hours < 22)).astype(int)
+        new_features['session_overlap'] = ((hours >= 13) & (hours < 17)).astype(int)
         
-        # Global Market Regime Features (Pre-calculated)
-        # Risk on score: (GBPUSD_return + XAUUSD_return) / 2
-        # Handle missing columns gracefully if assets are different
-        gbp_ret = df["GBPUSD_return_1"] if "GBPUSD_return_1" in df.columns else 0
-        xau_ret = df["XAUUSD_return_1"] if "XAUUSD_return_1" in df.columns else 0
-        df['risk_on_score'] = (gbp_ret + xau_ret) / 2
+        # Global Market Regime Features
+        gbp_ret = df["GBPUSD_return_1"] if "GBPUSD_return_1" in df.columns else pd.Series(0, index=df.index)
+        xau_ret = df["XAUUSD_return_1"] if "XAUUSD_return_1" in df.columns else pd.Series(0, index=df.index)
+        new_features['risk_on_score'] = (gbp_ret + xau_ret) / 2
         
-        # Asset dispersion: std of returns across all assets
+        # Asset dispersion
         ret_cols = [f"{a}_return_1" for a in self.assets if f"{a}_return_1" in df.columns]
         if ret_cols:
-            df['asset_dispersion'] = df[ret_cols].std(axis=1)
+            new_features['asset_dispersion'] = df[ret_cols].std(axis=1)
         else:
-            df['asset_dispersion'] = 0
+            new_features['asset_dispersion'] = pd.Series(0, index=df.index)
             
-        # Market volatility: mean ATR ratio
+        # Market volatility
         atr_ratio_cols = [f"{a}_atr_ratio" for a in self.assets if f"{a}_atr_ratio" in df.columns]
         if atr_ratio_cols:
-            df['market_volatility'] = df[atr_ratio_cols].mean(axis=1)
+            new_features['market_volatility'] = df[atr_ratio_cols].mean(axis=1)
         else:
-            df['market_volatility'] = 0
+            new_features['market_volatility'] = pd.Series(0, index=df.index)
         
-        return df
+        new_features_df = pd.DataFrame(new_features, index=df.index).astype(np.float32)
+        return pd.concat([df, new_features_df], axis=1)
 
     def _normalize_features(self, df):
         # Robust Scaling: (value - median) / IQR
-        # We use rolling statistics to avoid lookahead bias
+        # To avoid fragmentation here, we can calculate all normalized series and then 
+        # replace the columns or create a new dataframe. 
+        # However, modifying columns in place IS NOT fragmentation if columns already exist.
+        # Fragmentation happens when INSERTING new columns repeatedly.
+        # Here we are updating existing columns.
         
         cols_to_normalize = []
         for asset in self.assets:
@@ -235,28 +250,36 @@ class FeatureEngine:
                 f"{asset}_volume_ratio"
             ])
             
-        # Add Global Features to normalization
         cols_to_normalize.extend(['risk_on_score', 'asset_dispersion', 'market_volatility'])
-            
+        
+        # We can do this in a vectorized way if we select the subset
+        # But rolling operations are per-series usually or per-dataframe.
+        # Let's check if we can optimize. 
+        # Ideally, we calculate all rolling stats at once if possible, but they are different per column.
+        
+        # Since we are modifying existing columns, fragmentation warning shouldn't trigger 
+        # UNLESS we are doing Copy-on-Write which pandas 2.0+ might do or if memory layout is weird.
+        # But the warning specifically mentions "frame.insert". 
+        # So in-place updates should be fine.
+        
+        # However, to be safe and cleaner, we can iterate.
+        # If the warning persists here, we'd need to reconstruct the DF.
+        
+        # Let's keep loop but ensure we are not adding new columns, just updating.
+        
         for col in cols_to_normalize:
             if col in df.columns:
-                rolling_median = df[col].rolling(window=50).median()
-                rolling_q75 = df[col].rolling(window=50).quantile(0.75)
-                rolling_q25 = df[col].rolling(window=50).quantile(0.25)
+                series = df[col]
+                rolling_median = series.rolling(window=50).median()
+                rolling_q75 = series.rolling(window=50).quantile(0.75)
+                rolling_q25 = series.rolling(window=50).quantile(0.25)
                 iqr = rolling_q75 - rolling_q25
                 
-                # Avoid division by zero
                 iqr = iqr.replace(0, 1e-6)
                 
-                df[col] = (df[col] - rolling_median) / iqr
+                # In-place update
+                df[col] = ((series - rolling_median) / iqr).clip(-5, 5)
                 
-                # Clip outliers
-                df[col] = df[col].clip(-5, 5)
-                
-        # Bounded features (0-1 or similar) don't need robust scaling, 
-        # but we can center them or scale them to [-1, 1] if needed.
-        # For now, we leave them as is or apply simple scaling.
-        
         return df
 
     def get_observation(self, current_step_data, portfolio_state, asset):
