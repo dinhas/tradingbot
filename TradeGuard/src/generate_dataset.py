@@ -308,10 +308,10 @@ class TrainingDatasetGenerator:
             logger.info(f"✅ Success! Saved {len(df)} samples to {output_file}")
 
 if __name__ == "__main__":
-    ALPHA_MODEL = "models/checkpoints/ppo_final_model.zip"
-    ALPHA_NORM = "models/checkpoints/ppo_final_vecnormalize.pkl"
-    RISK_MODEL = "models/risk/model10M.zip"
-    RISK_NORM = "models/risk/model10M.pkl"
+    ALPHA_MODEL = "models/checkpoints/alpha/ppo_final_model.zip"
+    ALPHA_NORM = "models/checkpoints/alpha/ppo_final_vecnormalize.pkl"
+    RISK_MODEL = "models/checkpoints/risk/model10M.zip"
+    RISK_NORM = "models/checkpoints/risk/model10M.pkl"
     
     # Use the 'data' directory which contains the full 600k row dataset
     generator = TrainingDatasetGenerator(ALPHA_MODEL, ALPHA_NORM, RISK_MODEL, RISK_NORM, data_dir='data')

@@ -45,5 +45,11 @@ def load_config(override_env=None):
     config["CT_HOST_TYPE"] = env.get("CT_HOST_TYPE", "demo").lower()
     if config["CT_HOST_TYPE"] not in ["demo", "live"]:
         raise ConfigError("CT_HOST_TYPE must be either 'demo' or 'live'.")
+
+    # Leverage (Default to 400)
+    try:
+        config["LEVERAGE"] = float(env.get("LEVERAGE", 400.0))
+    except ValueError:
+        config["LEVERAGE"] = 400.0
         
     return config
