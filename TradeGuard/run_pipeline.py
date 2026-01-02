@@ -44,10 +44,10 @@ def run_pipeline(force_download=False, force_generate=False, config_path="TradeG
         logger.info(f"✅ Dataset file {dataset_file} already exists. Skipping generation.")
     else:
         # We need models and normalizers for generation
-        alpha_model_path = "models/checkpoints/ppo_final_model.zip"
-        alpha_norm_path = "models/checkpoints/ppo_final_vecnormalize.pkl"
-        risk_model_path = "models/risk/model10M.zip"
-        risk_norm_path = "models/risk/model10M.pkl"
+        alpha_model_path = "models/checkpoints/alpha/ppo_final_model.zip"
+        alpha_norm_path = "models/checkpoints/alpha/ppo_final_vecnormalize.pkl"
+        risk_model_path = "models/checkpoints/risk/model10M.zip"
+        risk_norm_path = "models/checkpoints/risk/model10M.pkl"
         
         # Verify paths
         paths_to_check = [alpha_model_path, alpha_norm_path, risk_model_path, risk_norm_path]
