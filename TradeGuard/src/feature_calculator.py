@@ -61,7 +61,8 @@ class TradeGuardFeatureCalculator:
             dm_m[1:] = np.maximum(l[:-1] - l[1:], 0)
             di_p = pd.Series(dm_p).rolling(14).mean() / (atr + 1e-6) * 100
             di_m = pd.Series(dm_m).rolling(14).mean() / (atr + 1e-6) * 100
-            f3 = abs(di_p - di_m) / (di_p + di_m + 1e-6) * 100 # ADX
+            # ADX: scale to [0, 1] instead of [0, 100]
+            f3 = abs(di_p - di_m) / (di_p + di_m + 1e-6)  # ADX in [0, 1]
             
             # Efficiency / Hurst
             net_chg = np.abs(pd.Series(c).diff(20))
@@ -76,10 +77,14 @@ class TradeGuardFeatureCalculator:
             
             # 3. Candle / Momentum (10 Features)
             c_series = pd.Series(c)
-            f7 = ta.momentum.RSIIndicator(c_series, window=14).rsi().values
+            # RSI: scale from [0, 100] to [-1, 1]
+            rsi_raw = ta.momentum.RSIIndicator(c_series, window=14).rsi().values
+            f7 = (rsi_raw - 50) / 50  # Now in [-1, 1]
             bb = ta.volatility.BollingerBands(c_series)
             f8 = (c - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-6) # BB Pos
-            f9 = ta.trend.MACD(c_series).macd_diff().values
+            # MACD: normalize by ATR to make scale-invariant
+            macd_raw = ta.trend.MACD(c_series).macd_diff().values
+            f9 = macd_raw / (atr + 1e-6)  # Normalized MACD
             
             ema9 = pd.Series(c).ewm(span=9).mean()
             ema21 = pd.Series(c).ewm(span=21).mean()
@@ -87,11 +92,14 @@ class TradeGuardFeatureCalculator:
             
             body = np.abs(c - o)
             range_val = h - l
-            f11 = body / (range_val + 1e-6) # Body Ratio
-            f12 = (h - np.maximum(o, c)) / (body + 1e-6) # Upper Wick
-            f13 = (np.minimum(o, c) - l) / (body + 1e-6) # Lower Wick
-            f14 = np.zeros(n); f14[5:] = (c[5:] - c[:-5]) / (atr[5:] + 1e-6) # Velocity
-            f15 = (h - l) / (c + 1e-6) # Spread/Cost Proxy
+            f11 = body / (range_val + 1e-6)  # Body Ratio [0, 1]
+            # Clip wick ratios to prevent explosion when body is tiny
+            f12 = np.clip((h - np.maximum(o, c)) / (body + 1e-6), 0, 5)  # Upper Wick
+            f13 = np.clip((np.minimum(o, c) - l) / (body + 1e-6), 0, 5)  # Lower Wick
+            # Velocity: clip to reasonable range
+            f14 = np.zeros(n)
+            f14[5:] = np.clip((c[5:] - c[:-5]) / (atr[5:] + 1e-6), -5, 5)  # Velocity
+            f15 = (h - l) / (c + 1e-6)  # Spread/Cost Proxy
             
             # We combine 15 market features here. 
             # The other 5 (Alpha Context + Execution) are added in real-time.
@@ -112,10 +120,12 @@ class TradeGuardFeatureCalculator:
         f_market = self.precomputed_features[asset][step].tolist()
 
         # 2. Alpha Context (3 features)
+        # Normalize signal_persistence to [0, 1] (max ~20 steps)
+        persistence = asset_portfolio_state.get('signal_persistence', 0)
         f_alpha = [
-            asset_portfolio_state.get('action_raw', 0),
-            asset_portfolio_state.get('signal_persistence', 0),
-            asset_portfolio_state.get('signal_reversal', 0)
+            asset_portfolio_state.get('action_raw', 0),  # Already in {-1, 0, 1}
+            min(persistence / 10.0, 1.0),  # Normalize to [0, 1]
+            asset_portfolio_state.get('signal_reversal', 0)  # Already binary
         ]
 
         # 3. Execution & Risk Context (3 features)
@@ -123,10 +133,11 @@ class TradeGuardFeatureCalculator:
         tp_dist = abs(trade_info['entry'] - trade_info['tp'])
         atr_val = (self.ohlcv_arrays[asset]['high'][step] - self.ohlcv_arrays[asset]['low'][step]) + 1e-6
 
+        # Clip risk features to reasonable ranges
         f_risk = [
-            sl_dist / atr_val,
-            tp_dist / (sl_dist + 1e-6), # Risk Reward
-            trade_info.get('risk_val', 0.5) # Risk Model Conviction
+            np.clip(sl_dist / atr_val, 0, 5),  # SL distance in ATR units
+            np.clip(tp_dist / (sl_dist + 1e-6), 0, 10),  # Risk Reward ratio
+            trade_info.get('risk_val', 0.5)  # Risk Model Conviction [0, 1]
         ]
 
         # 4. Global State (4 features)

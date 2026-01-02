@@ -1,6 +1,7 @@
 import os
 import yaml
 import logging
+import pickle
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from TradeGuard.src.trade_guard_env import TradeGuardEnv
@@ -69,10 +70,12 @@ class TradeGuardTrainer:
             learning_rate=ppo_params['learning_rate'],
             n_steps=ppo_params['n_steps'],
             batch_size=ppo_params['batch_size'],
+            n_epochs=ppo_params.get('n_epochs', 10),
             gamma=ppo_params['gamma'],
             gae_lambda=ppo_params['gae_lambda'],
             ent_coef=ppo_params['ent_coef'],
             vf_coef=ppo_params['vf_coef'],
+            clip_range=ppo_params.get('clip_range', 0.2),
             max_grad_norm=ppo_params['max_grad_norm'],
             target_kl=ppo_params['target_kl'],
             tensorboard_log=tensorboard_log
@@ -87,6 +90,17 @@ class TradeGuardTrainer:
     def save(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.model.save(path)
+        
+        # Save normalization stats from the first environment worker
+        try:
+            stats = self.env.env_method('get_normalization_stats')[0]
+            stats_path = path + "_norm_stats.pkl"
+            with open(stats_path, 'wb') as f:
+                pickle.dump(stats, f)
+            logger.info(f"Normalization stats saved to {stats_path}")
+        except Exception as e:
+            logger.error(f"Failed to save normalization stats: {e}")
+            
         logger.info(f"Model saved to {path}")
 
 if __name__ == "__main__":
