@@ -17,10 +17,6 @@ class FeatureManager:
         # History buffers for each asset
         self.history = {asset: pd.DataFrame() for asset in self.assets}
         self.max_history = 300 
-        
-        # Risk-specific history (Last 5 trades per asset)
-        self.risk_pnl_history = {asset: deque([0.0]*5, maxlen=5) for asset in self.assets}
-        self.risk_action_history = {asset: deque([np.zeros(3) for _ in range(5)], maxlen=5) for asset in self.assets}
 
     def push_candle(self, asset, candle_data):
         """
@@ -104,26 +100,30 @@ class FeatureManager:
         atr = AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
         return float(atr.iloc[-1])
 
-    def record_risk_trade(self, asset, pnl_pct, actions):
+    def get_alpha_observation(self, asset, portfolio_state):
         """
-        Records trade outcome for Risk model's historical features.
-        actions: [SL_Mult, TP_Mult, Risk_Pct]
+        Calculates the 40-feature vector for Alpha model for a specific asset.
         """
-        self.risk_pnl_history[asset].append(pnl_pct)
-        self.risk_action_history[asset].append(actions)
-
-    def get_alpha_observation(self, portfolio_state):
-        """Calculates the 140-feature vector for Alpha model."""
-        data_dict = {asset: df for asset, df in self.history.items() if not df.empty}
+        data_dict = {a: df for a, df in self.history.items() if not df.empty}
+        # Preprocess creates normalized dataframe with features for ALL assets
         _, normalized_df = self.alpha_fe.preprocess_data(data_dict)
+        
+        # Get latest row
+        if normalized_df.empty:
+             return np.zeros(40, dtype=np.float32)
+             
         latest_features = normalized_df.iloc[-1].to_dict()
-        return self.alpha_fe.get_observation(latest_features, portfolio_state)
+        
+        # Extract features for specific asset
+        return self.alpha_fe.get_observation(latest_features, portfolio_state, asset)
 
-    def get_risk_observation(self, asset, alpha_obs, portfolio_state):
+    def get_risk_observation(self, alpha_obs, portfolio_state):
         """
-        Constructs the 165-feature vector for Risk model.
+        Constructs the 45-feature vector for Risk model.
+        [0..39] Alpha Features
+        [40..44] Account State
         """
-        # 1. Market State (140) - alpha_obs passed in
+        # 1. Market State (40) - alpha_obs passed in
         
         # 2. Account State (5)
         equity = portfolio_state.get('equity', 10.0)
@@ -142,11 +142,7 @@ class FeatureManager:
             0.0  # Padding
         ], dtype=np.float32)
         
-        # 3. History (25)
-        hist_pnl = np.array(self.risk_pnl_history[asset], dtype=np.float32)
-        hist_acts = np.array(self.risk_action_history[asset], dtype=np.float32).flatten()
-        
-        return np.concatenate([alpha_obs, account_obs, hist_pnl, hist_acts])
+        return np.concatenate([alpha_obs, account_obs])
 
     def get_tradeguard_observation(self, trade_infos, portfolio_state):
         """Calculates the 105-feature vector for the TradeGuard model."""

@@ -1,7 +1,9 @@
 import logging
 import numpy as np
+import time
 from twisted.internet.defer import inlineCallbacks, gatherResults
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATradeSide
+from .sizing import PositionSizer
 
 class Orchestrator:
     """
@@ -13,6 +15,7 @@ class Orchestrator:
         self.fm = feature_manager
         self.ml = model_loader
         self.notifier = notifier
+        self.sizer = PositionSizer()
         
         # Internal state
         self.portfolio_state = {asset: {} for asset in self.fm.assets} 
@@ -65,26 +68,6 @@ class Orchestrator:
                     from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAPositionStatus
                     if pos.positionStatus in [ProtoOAPositionStatus.POSITION_STATUS_CLOSED, 6]: # 6 is often used for DELETED/GONE
                          self.logger.info(f"Position {pos_id} CLOSED for {asset_name}")
-                         
-                         # Calculate PnL % for Risk Model
-                         # Note: In a real bot, we'd pull the actual realized PnL from the broker
-                         # For now, we'll derive it if possible or use balance change
-                         # But since we have the price, we can calculate it:
-                         if pos_id in self.pending_risk_actions:
-                             entry_price = pos.price
-                             # Realized PnL is usually in pos.swap + pos.commission + pnl
-                             # However, Risk Model features expect PnL % relative to entry
-                             # This is how it was trained in the backtest.
-                             
-                             # We'll use a simplified PnL % for now or wait for account balance sync
-                             # But better to record something close to what the model expects.
-                             # Let's assume we can calculate it relative to entry price.
-                             # (ClosePrice - EntryPrice) / EntryPrice * side
-                             # But we might not have the closure price directly in this event if it just says 'closed'
-                             
-                             # Actually, let's keep it simple: fetch account summary after closure 
-                             # and use balance delta? No, the risk model wants PnL per trade.
-                             pass
                          
                          if symbol_id in self.active_positions:
                              del self.active_positions[symbol_id]
@@ -202,7 +185,6 @@ class Orchestrator:
         """
         Main Event Handler: Triggered when an M5 candle closes.
         """
-        import time
         start_time = time.time()
         asset_name = self._get_symbol_name(symbol_id)
         self.logger.info(f"--- M5 Close Detected: {asset_name} ({symbol_id}) ---")
@@ -313,9 +295,9 @@ class Orchestrator:
             # Record risk actions for this position to use when it closes
             if hasattr(execution_res, 'position') and execution_res.position:
                 pos_id = execution_res.position.positionId
-                self.pending_risk_actions[pos_id] = decision.get('risk_actions', np.zeros(3))
+                self.pending_risk_actions[pos_id] = decision.get('risk_actions', np.zeros(2))
                 self.active_positions[symbol_id] = pos_id
-                self.logger.info(f"Recorded pending risk actions for {asset_name} position {pos_id}")
+                self.logger.info(f"Recorded pending risk actions for {decision['asset']} position {pos_id}")
             else:
                 # Optimistically lock asset if we don't have ID yet
                 self.active_positions[symbol_id] = "PENDING"
@@ -331,15 +313,20 @@ class Orchestrator:
         """
         try:
             asset_name = self._get_symbol_name(symbol_id)
-            # 1. Get Alpha Observation (140)
-            alpha_obs = self.fm.get_alpha_observation(self.portfolio_state)
             
-            # 2. Alpha Prediction
-            all_alpha_actions = self.ml.get_alpha_action(alpha_obs)
-            asset_index = self.fm.assets.index(asset_name)
-            alpha_val = all_alpha_actions[asset_index]
+            # 1. Get Alpha Observation (40)
+            alpha_obs = self.fm.get_alpha_observation(asset_name, self.portfolio_state)
             
-            # Parse Alpha Direction (Match Backtest: > 0.33 Buy, < -0.33 Sell)
+            # 2. Alpha Prediction (Single-Pair)
+            alpha_action = self.ml.get_alpha_action(alpha_obs)
+            
+            # Handle array output
+            if isinstance(alpha_action, np.ndarray):
+                alpha_val = float(alpha_action.flatten()[0])
+            else:
+                alpha_val = float(alpha_action)
+                
+            # Parse Alpha Direction (> 0.33 Buy, < -0.33 Sell)
             direction = 1 if alpha_val > 0.33 else (-1 if alpha_val < -0.33 else 0)
             
             self.logger.info(f"Alpha predicted direction for {asset_name}: {direction} (raw: {alpha_val:.4f})")
@@ -347,25 +334,17 @@ class Orchestrator:
             if direction == 0:
                 return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold'}
             
-            # 3. Get Risk Observation (165)
-            risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs, self.portfolio_state)
+            # 3. Get Risk Observation (45)
+            # Alpha Obs + Account Stats
+            risk_obs = self.fm.get_risk_observation(alpha_obs, self.portfolio_state)
             
             # 4. Risk Prediction
             risk_action = self.ml.get_risk_action(risk_obs)
             
-            # Parse Risk Action (Match Backtest)
-            # sl_mult: 0.2-2.0, tp_mult: 0.5-4.0, risk_raw: 0.0-1.0
+            # Parse Risk Action (2 Outputs)
+            # sl_mult: 0.2-2.0, tp_mult: 0.5-4.0
             sl_mult = np.clip((risk_action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)
             tp_mult = np.clip((risk_action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
-            risk_raw = np.clip((risk_action[2] + 1) / 2, 0.0, 1.0)
-            
-            # Blocking Logic (Threshold: 0.20)
-            if risk_raw < 0.20:
-                self.logger.info(f"Risk Block for {asset_name}: raw risk {risk_raw:.4f} < 0.20")
-                return {'action': 0, 'allowed': False, 'reason': f'Risk Block ({risk_raw:.2f})'}
-
-            # Rescale Risk (Match Backtest)
-            risk_raw_scaled = (risk_raw - 0.20) / 0.80
             
             # 5. Calculate Sizing & SL/TP Prices
             digits = self.symbol_digits.get(asset_name, 5)
@@ -379,8 +358,7 @@ class Orchestrator:
             sl_price = round(current_price - (direction * sl_dist), digits)
             tp_price = round(current_price + (direction * tp_dist), digits)
             
-            # Round distances to symbol's precision to avoid 'invalid precision' errors
-            # This ensures the SL/TP price levels are mathematically valid for the broker
+            # Round distances to symbol's precision
             pip_unit = 10 ** -digits
             sl_dist = round(sl_dist / pip_unit) * pip_unit
             tp_dist = round(tp_dist / pip_unit) * pip_unit
@@ -389,27 +367,20 @@ class Orchestrator:
             relative_sl = int(round(sl_dist * 100000))
             relative_tp = int(round(tp_dist * 100000))
             
-            # Lot Calculation (Match Backtest calculate_position_size)
-            equity = self.portfolio_state.get('equity', 10.0)
-            balance = self.portfolio_state.get('balance', 0)
+            # Lot Calculation using PositionSizer
+            lots = self.sizer.calculate_risk_lots(
+                self.portfolio_state,
+                asset_name,
+                current_price,
+                sl_price,
+                atr
+            )
             
-            # USER OVERRIDE: 0.01 lots if balance < $30
-            if balance < 30:
-                lots = 0.01
-                self.logger.info(f"Balance ${balance:.2f} < $30. Using hardcoded lot size: 0.01")
-            else:
-                MAX_RISK_PER_TRADE = 0.80
-                drawdown = 1.0 - (equity / max(self.portfolio_state.get('peak_equity', equity), 1e-9))
-                risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
-                
-                actual_risk_pct = risk_raw_scaled * MAX_RISK_PER_TRADE * risk_cap_mult
-                risk_amount_cash = equity * actual_risk_pct
-                
-                contract_size = 100 if asset_name == 'XAUUSD' else 100000
-                # Simplified for USD quote pairs (EURUSD, GBPUSD, XAUUSD)
-                lots = risk_amount_cash / (sl_dist * contract_size)
+            self.logger.info(f"Risk Output: SL_Mult={sl_mult:.2f}, TP_Mult={tp_mult:.2f}, Lots={lots}")
             
-            lots = np.clip(lots, 0.01, 100.0)
+            if lots < 0.01:
+                self.logger.info(f"Lot size calculated as {lots}. Too small. Blocking.")
+                return {'action': 0, 'allowed': False, 'reason': f'Risk Sizing Zero ({lots})'}
             
             # 6. TradeGuard Prediction
             trade_infos = {
@@ -433,7 +404,7 @@ class Orchestrator:
             return {
                 'symbol_id': symbol_id,
                 'asset': asset_name,
-                'action': 1 if direction == 1 else 2, # 1=Buy, 2=Sell in protocol? Actually logic uses side.
+                'action': 1 if direction == 1 else 2, # 1=Buy, 2=Sell
                 'lots': float(lots),
                 'sl': float(sl_price),
                 'tp': float(tp_price),
@@ -442,10 +413,6 @@ class Orchestrator:
                 'risk_actions': risk_action,
                 'allowed': allowed
             }
-            
-        except Exception as e:
-            self.logger.error(f"Error in inference chain for symbol {symbol_id}: {e}")
-            return None
             
         except Exception as e:
             self.logger.error(f"Error in inference chain for symbol {symbol_id}: {e}")

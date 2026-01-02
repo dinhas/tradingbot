@@ -297,7 +297,7 @@ class TradingEnv(gym.Env):
             return (
                 self._validate_observation(self._get_observation()),
                 -1.0,  # Strong terminal penalty
-                True, False,
+                False, False,
                 {'trades': [], 'equity': 0.01, 'termination_reason': 'margin_call'}
             )
         
