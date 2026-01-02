@@ -100,11 +100,51 @@ class TradeGuardFeatureCalculator:
             
         return precomputed
 
+    def get_single_asset_obs(self, asset, step, trade_info, asset_portfolio_state, global_state):
+        """
+        Constructs a single vector for ONE asset decision.
+        15 market + 3 alpha + 7 global/risk = 25 features.
+        """
+        if asset not in self.precomputed_features:
+            return np.zeros(25, dtype=np.float32)
+
+        # 1. Market Precomputed (15 features)
+        f_market = self.precomputed_features[asset][step].tolist()
+
+        # 2. Alpha Context (3 features)
+        f_alpha = [
+            asset_portfolio_state.get('action_raw', 0),
+            asset_portfolio_state.get('signal_persistence', 0),
+            asset_portfolio_state.get('signal_reversal', 0)
+        ]
+
+        # 3. Execution & Risk Context (3 features)
+        sl_dist = abs(trade_info['entry'] - trade_info['sl'])
+        tp_dist = abs(trade_info['entry'] - trade_info['tp'])
+        atr_val = (self.ohlcv_arrays[asset]['high'][step] - self.ohlcv_arrays[asset]['low'][step]) + 1e-6
+
+        f_risk = [
+            sl_dist / atr_val,
+            tp_dist / (sl_dist + 1e-6), # Risk Reward
+            trade_info.get('risk_val', 0.5) # Risk Model Conviction
+        ]
+
+        # 4. Global State (4 features)
+        # We derive time from the index of the first available asset
+        dt = self.df_dict[self.assets[0]].index[step]
+        f_global = [
+            np.sin(2 * np.pi * dt.hour / 24),
+            np.cos(2 * np.pi * dt.hour / 24),
+            global_state.get('total_drawdown', 0),
+            global_state.get('total_exposure', 0)
+        ]
+
+        return np.array(f_market + f_alpha + f_risk + f_global, dtype=np.float32)
+
     def get_multi_asset_obs(self, step, trade_infos, portfolio_state):
         """
-        Constructs a single large vector for ALL 5 assets.
-        Each asset: 20 features. Global: 5 features.
-        Total: 105 features.
+        [DEPRECATED] Constructs a single large vector for ALL 5 assets.
+        Each asset: 20 features. Global: 5 features. Total: 105 features.
         """
         full_obs = []
         
@@ -113,29 +153,14 @@ class TradeGuardFeatureCalculator:
                 full_obs.extend([0] * 20)
                 continue
                 
-            # 1. Market Precomputed (15 features)
-            f_market = self.precomputed_features[asset][step].tolist()
-            
-            # 2. Alpha Context (3 features)
-            f_alpha = [
-                portfolio_state[asset].get('action_raw', 0),
-                portfolio_state[asset].get('signal_persistence', 0),
-                portfolio_state[asset].get('signal_reversal', 0)
-            ]
-            
-            # 3. Execution (2 features)
-            t_info = trade_infos.get(asset, {'entry':0, 'sl':0, 'tp':0})
-            sl_dist = abs(t_info['entry'] - t_info['sl'])
-            tp_dist = abs(t_info['entry'] - t_info['tp'])
-            atr_val = (self.ohlcv_arrays[asset]['high'][step] - self.ohlcv_arrays[asset]['low'][step]) + 1e-6
-            
-            f_exec = [
-                sl_dist / atr_val,
-                tp_dist / (sl_dist + 1e-6) # Risk Reward
-            ]
-            
-            # Total 15 + 3 + 2 = 20 per asset
-            full_obs.extend(f_market + f_alpha + f_exec)
+            # Use the new single asset logic
+            f_asset = self.get_single_asset_obs(
+                asset, 
+                step, 
+                trade_infos.get(asset, {'entry':0, 'sl':0, 'tp':0}), 
+                portfolio_state.get(asset, {})
+            )
+            full_obs.extend(f_asset.tolist())
             
         # 4. Global Features (5 features)
         dt = self.df_dict[self.assets[0]].index[step]
