@@ -43,13 +43,27 @@ def run_pipeline(force_download=False, force_generate=False, config_path="TradeG
     if os.path.exists(dataset_file) and not force_generate:
         logger.info(f"✅ Dataset file {dataset_file} already exists. Skipping generation.")
     else:
-        # We need the Alpha model for generation
-        alpha_model_path = "Alpha/models/checkpoints/8.03.zip"
-        if not os.path.exists(alpha_model_path):
-            logger.error(f"Alpha model not found at {alpha_model_path}. Cannot generate dataset.")
+        # We need models and normalizers for generation
+        alpha_model_path = "models/checkpoints/ppo_final_model.zip"
+        alpha_norm_path = "models/checkpoints/ppo_final_vecnormalize.pkl"
+        risk_model_path = "models/risk/model10M.zip"
+        risk_norm_path = "models/risk/model10M.pkl"
+        
+        # Verify paths
+        paths_to_check = [alpha_model_path, alpha_norm_path, risk_model_path, risk_norm_path]
+        missing_paths = [p for p in paths_to_check if not os.path.exists(p)]
+        
+        if missing_paths:
+            logger.error(f"Missing required models/normalizers: {missing_paths}")
             return
             
-        generator = TrainingDatasetGenerator(alpha_model_path, data_dir=market_data_dir)
+        generator = TrainingDatasetGenerator(
+            alpha_model_path=alpha_model_path,
+            alpha_norm_path=alpha_norm_path,
+            risk_model_path=risk_model_path,
+            risk_norm_path=risk_norm_path,
+            data_dir=market_data_dir
+        )
         # Note: generator.generate saves to its own default or takes an argument
         generator.generate(output_file=dataset_file, chunk_size=50000)
 
