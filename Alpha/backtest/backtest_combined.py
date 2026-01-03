@@ -50,7 +50,7 @@ from RiskLayer.src.risk_env import RiskManagementEnv
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-initial_equity=10000.0
+initial_equity=10.0
 
 class CombinedBacktest:
     """Combined backtest using Alpha model for direction and Risk model for SL/TP/sizing"""
@@ -84,6 +84,11 @@ class CombinedBacktest:
         self.ENABLE_SLIPPAGE = True
         self.SLIPPAGE_MIN_PIPS = 0.5
         self.SLIPPAGE_MAX_PIPS = 1.5
+        
+        # Spread Configuration (Match RiskLayer logic)
+        self.ENABLE_SPREAD = True
+        self.SPREAD_MIN_PIPS = 0.5
+        self.SPREAD_ATR_FACTOR = 0.05
         
         # Per-asset history tracking
         self.asset_histories = {
@@ -135,85 +140,38 @@ class CombinedBacktest:
     
     def parse_risk_action(self, action):
         """Parse risk model action to SL/TP/sizing"""
-        # Parse action (2 values in [-1, 1])
-        # [SL_Mult, TP_Mult]
-        sl_mult = np.clip((action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)  # 0.2-2.0 ATR
-        tp_mult = np.clip((action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)  # 0.5-4.0 ATR
+        # Handle different output shapes gracefully
+        sl_mult = np.clip((action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)
+        tp_mult = np.clip((action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
         
-        # Fixed Risk (2%) - matching training logic
+        # Risk factor (unused due to fixed $25 rule)
         risk_raw = 0.02
-        
+        if len(action) > 2:
+            risk_raw = np.clip((action[2] + 1) / 2 * 0.1, 0.01, 0.1) # Up to 10% max
+            
         return sl_mult, tp_mult, risk_raw
     
     def calculate_position_size(self, asset, entry_price, atr, sl_mult, tp_mult, risk_raw, direction):
-        """Calculate position size from risk percentage"""
-        if risk_raw < 1e-3:
-            return 0.0, None
-        
-        drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
-        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
-        actual_risk_pct = risk_raw * risk_cap_mult
-        
-        sl_dist_price = sl_mult * atr
-        min_sl_dist = max(0.0001 * entry_price, 0.2 * atr)
-        if sl_dist_price < min_sl_dist:
-            sl_dist_price = min_sl_dist
+        """Calculate position size - Enforcing 5% of account rule"""
+        position_size = self.equity * 0.07
         
         contract_size = 100 if asset == 'XAUUSD' else 100000
         is_usd_quote = asset in ['EURUSD', 'GBPUSD', 'XAUUSD']
-        is_usd_base = asset in ['USDJPY', 'USDCHF']
-        
-        risk_amount_cash = self.equity * actual_risk_pct
-        
-        lots = 0.0
-        if sl_dist_price > 0:
-            if is_usd_quote:
-                lots = risk_amount_cash / (sl_dist_price * contract_size)
-            elif is_usd_base:
-                lots = (risk_amount_cash * entry_price) / (sl_dist_price * contract_size)
-            else:
-                lots = risk_amount_cash / (sl_dist_price * contract_size)
         
         if is_usd_quote:
-            lot_value_usd = contract_size * entry_price
-        elif is_usd_base:
-            lot_value_usd = contract_size * 1.0
+            lot_value = contract_size * entry_price
         else:
-            lot_value_usd = contract_size * 1.0
-        
-        max_position_value = (self.equity * self.MAX_MARGIN_PER_TRADE_PCT) * self.MAX_LEVERAGE
-        max_lots_leverage = max_position_value / (lot_value_usd + 1e-9)
-        lots = min(lots, max_lots_leverage)
-        
-        if lots < self.MIN_LOTS:
-            min_lot_value_usd = self.MIN_LOTS * lot_value_usd / (entry_price if is_usd_quote else 1.0)
-            margin_required_min = min_lot_value_usd / self.MAX_LEVERAGE
+            lot_value = contract_size
             
-            if self.equity > (margin_required_min * 1.05):
-                lots = self.MIN_LOTS
-            else:
-                return 0.0, None
-        
-        lots = np.clip(lots, self.MIN_LOTS, 100.0)
-        
-        # Convert to Alpha's size_pct
-        if is_usd_quote:
-            notional_value = lots * contract_size * entry_price
-        else:
-            notional_value = lots * contract_size
-            
-        margin_required = notional_value / self.MAX_LEVERAGE
         MAX_POS_SIZE_PCT = 0.50
-        size_pct = margin_required / (MAX_POS_SIZE_PCT * self.equity + 1e-9)
+        size_pct = position_size / (MAX_POS_SIZE_PCT * self.equity + 1e-9)
         size_pct = np.clip(size_pct, 0.0, 1.0)
-        
-        position_size = size_pct * MAX_POS_SIZE_PCT * self.equity
         
         return size_pct, {
             'sl_mult': sl_mult,
             'tp_mult': tp_mult,
             'risk_raw': risk_raw,
-            'lots': lots,
+            'lots': position_size / (lot_value / self.MAX_LEVERAGE + 1e-9),
             'position_size': position_size
         }
     
@@ -305,6 +263,11 @@ class CombinedBacktest:
                             price = price_raw + (direction * -1 * slippage_price)
                         else:
                             price = price_raw
+
+                        # Spread Simulation (Bid/Ask Logic)
+                        if self.ENABLE_SPREAD:
+                            spread_val = (self.SPREAD_MIN_PIPS * 0.0001) + (self.SPREAD_ATR_FACTOR * atr)
+                            price += direction * spread_val
                             
                         if current_pos is None:
                             self.env._open_position(asset, direction, act, price, atr)
@@ -334,6 +297,15 @@ class CombinedBacktest:
                 # Log metrics
                 if info['trades']:
                     for trade in info['trades']:
+                        # Add spread info for metrics
+                        if self.ENABLE_SPREAD:
+                            # Re-calculate or use stored spread if we had it. 
+                            # Since we apply it at open, let's just use the current ATR.
+                            atr = self.env._get_current_atrs()[trade['asset']]
+                            spread_val = (self.SPREAD_MIN_PIPS * 0.0001) + (self.SPREAD_ATR_FACTOR * atr)
+                            trade['spread_pips'] = spread_val / 0.0001
+                        else:
+                            trade['spread_pips'] = 0.0
                         metrics_tracker.add_trade(trade)
                 metrics_tracker.add_equity_point(info['timestamp'], info['equity'])
                 
@@ -567,11 +539,11 @@ def run_combined_backtest(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Combined Alpha-Risk Model Backtest")
-    parser.add_argument("--alpha-model", type=str, default="models/checkpoints/ppo_final_model.zip",
+    parser.add_argument("--alpha-model", type=str, default="models/checkpoints/alpha/ppo_final_model.zip",
                         help="Path to Alpha model (.zip file) relative to project root")
-    parser.add_argument("--risk-model", type=str, default="models/risk/risk_model_final.zip",
+    parser.add_argument("--risk-model", type=str, default="models/checkpoints/risk/model10M.zip",
                         help="Path to Risk model (.zip file) relative to project root")
-    parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data",
+    parser.add_argument("--data-dir", type=str, default="backtest/data",
                         help="Path to backtest data directory relative to project root")
     parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results",
                         help="Path to save results relative to project root")

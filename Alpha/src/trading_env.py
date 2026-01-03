@@ -247,7 +247,7 @@ class TradingEnv(gym.Env):
             self.current_step = np.random.randint(500, self.max_steps - 288)
         else:
             # Backtesting: Fixed equity, randomize start point
-            self.equity = 10000.0
+            self.equity = 10.0
             self.leverage = 100
             # Backtesting: Start from beginning to cover full dataset
             self.current_step = 500
@@ -344,7 +344,7 @@ class TradingEnv(gym.Env):
                 
         return {
             'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
-            'size': 0.5,     # Fixed: 25% of equity (0.5 * MAX_POS_SIZE_PCT)
+            'size': 0.1,     # Fixed: 5% of equity (0.1 * MAX_POS_SIZE_PCT)
             'sl_mult': 2.0,  # Fixed: 2.0x ATR
             'tp_mult': 4.0   # Fixed: 4.0x ATR
         }

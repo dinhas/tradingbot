@@ -144,11 +144,36 @@ class FeatureManager:
         
         return np.concatenate([alpha_obs, account_obs])
 
-    def get_tradeguard_observation(self, trade_infos, portfolio_state):
-        """Calculates the 105-feature vector for the TradeGuard model."""
-        data_dict = {asset: df for asset, df in self.history.items() if not df.empty}
+    def get_tradeguard_observation(self, asset, trade_info, portfolio_state, norm_stats=None):
+        """
+        Calculates the normalized 25-feature vector for the TradeGuard model for a specific asset.
+        """
+        data_dict = {a: df for a, df in self.history.items() if not df.empty}
         calculator = TradeGuardFeatureCalculator(data_dict)
-        return calculator.get_multi_asset_obs(-1, trade_infos, portfolio_state)
+        
+        # asset_portfolio_state should contain action_raw, signal_persistence, etc.
+        # global_state should contain total_drawdown, total_exposure.
+        asset_state = portfolio_state.get(asset, {})
+        
+        # Get raw 25-feature vector
+        obs = calculator.get_single_asset_obs(
+            asset, 
+            -1, # Latest step
+            trade_info, 
+            asset_state, 
+            portfolio_state
+        )
+        
+        # Apply normalization if stats are provided
+        if norm_stats:
+            mean = norm_stats.get('feature_mean')
+            std = norm_stats.get('feature_std')
+            if mean is not None and std is not None:
+                obs = (obs - mean) / std
+                obs = np.clip(obs, -10, 10) # Clip extreme values as in environment
+                obs = np.nan_to_num(obs, nan=0.0)
+                
+        return obs.astype(np.float32)
 
     def is_ready(self):
         """Checks if enough history is collected for all assets."""

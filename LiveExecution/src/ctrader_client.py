@@ -1,5 +1,6 @@
 from twisted.internet import reactor, defer
 from twisted.internet.defer import inlineCallbacks
+from twisted.internet.task import deferLater
 from ctrader_open_api import Client, Protobuf, TcpProtocol, EndPoints
 from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiMessages_pb2 import *
@@ -175,9 +176,33 @@ class CTraderClient:
         self._stop_heartbeat()
         self.client.stopService()
 
-    def send_request(self, request):
-        """Sends a request and returns a Deferred."""
-        return self.client.send(request)
+    @inlineCallbacks
+    def send_request(self, request, retries=2, timeout=10.0):
+        """Sends a request and returns a Deferred with retry logic."""
+        last_error = None
+        current_delay = 1.0
+        
+        for attempt in range(retries + 1):
+            try:
+                # Note: If the underlying library has a 5s timeout, 
+                # we can't easily override it without knowing its API.
+                # But we can catch the error and retry.
+                d = self.client.send(request)
+                # If we want to enforce OUR OWN timeout in addition:
+                # d.addTimeout(timeout, reactor) 
+                
+                res_msg = yield d
+                return res_msg
+            except Exception as e:
+                last_error = e
+                if attempt < retries:
+                    self.logger.warning(f"Request failed: {e}. Retrying in {current_delay}s (Attempt {attempt+1}/{retries})...")
+                    yield deferLater(reactor, current_delay, lambda: None)
+                    current_delay *= 2
+                else:
+                    self.logger.error(f"Request failed after {retries+1} attempts: {e}")
+        
+        raise last_error
 
     @inlineCallbacks
     def fetch_ohlcv(self, symbol_id, count=150, period=ProtoOATrendbarPeriod.M5):
@@ -276,5 +301,5 @@ class CTraderClient:
         if relative_tp is not None:
             req.relativeTakeProfit = int(relative_tp)
             
-        res_msg = yield self.send_request(req)
+        res_msg = yield self.send_request(req, retries=0)
         return Protobuf.extract(res_msg)

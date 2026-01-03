@@ -30,7 +30,15 @@ class ModelLoader:
             
             if alpha_norm_path.exists():
                 self.logger.info(f"Loading Alpha normalizer from {alpha_norm_path}...")
-                self.alpha_norm = VecNormalize.load(alpha_norm_path, venv=None)
+                # Create a dummy environment to satisfy SB3 loading requirements
+                from stable_baselines3.common.vec_env import DummyVecEnv
+                import gymnasium as gym
+                class AlphaDummy(gym.Env):
+                    def __init__(self):
+                        self.observation_space = gym.spaces.Box(low=-1, high=1, shape=(40,))
+                        self.action_space = gym.spaces.Box(low=-1, high=1, shape=(1,))
+                
+                self.alpha_norm = VecNormalize.load(alpha_norm_path, venv=DummyVecEnv([lambda: AlphaDummy()]))
                 self.alpha_norm.training = False # Ensure we don't update stats
                 self.alpha_norm.norm_reward = False
             else:
@@ -45,16 +53,34 @@ class ModelLoader:
             
             if risk_norm_path.exists():
                 self.logger.info(f"Loading Risk normalizer from {risk_norm_path}...")
-                self.risk_norm = VecNormalize.load(risk_norm_path, venv=None)
+                from stable_baselines3.common.vec_env import DummyVecEnv
+                import gymnasium as gym
+                class RiskDummy(gym.Env):
+                    def __init__(self):
+                        self.observation_space = gym.spaces.Box(low=-1, high=1, shape=(45,))
+                        self.action_space = gym.spaces.Box(low=-1, high=1, shape=(2,))
+                
+                self.risk_norm = VecNormalize.load(risk_norm_path, venv=DummyVecEnv([lambda: RiskDummy()]))
                 self.risk_norm.training = False
                 self.risk_norm.norm_reward = False
             else:
                 self.logger.warning("Risk normalizer not found!")
             
             # TradeGuard Model
-            tg_path = self.project_root / "TradeGuard" / "models" / "manual_test_model.zip"
+            tg_path = self.project_root / "models" / "checkpoints" / "tradegurd" / "tradeguard_ppo.zip"
+            tg_norm_path = self.project_root / "models" / "checkpoints" / "tradegurd" / "tradeguard_ppo.pkl"
+            
             self.logger.info(f"Loading TradeGuard model from {tg_path}...")
             self.tradeguard_model = PPO.load(tg_path)
+            
+            if tg_norm_path.exists():
+                self.logger.info(f"Loading TradeGuard normalization stats from {tg_norm_path}...")
+                with open(tg_norm_path, 'rb') as f:
+                    import pickle
+                    self.tg_norm_stats = pickle.load(f)
+            else:
+                self.logger.warning("TradeGuard normalization stats not found!")
+                self.tg_norm_stats = None
             
             self.logger.info("All models loaded successfully.")
             return True

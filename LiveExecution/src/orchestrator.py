@@ -1,7 +1,9 @@
 import logging
 import numpy as np
 import time
+from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, gatherResults
+from twisted.internet.task import deferLater
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATradeSide
 from .sizing import PositionSizer
 
@@ -21,6 +23,8 @@ class Orchestrator:
         self.portfolio_state = {asset: {} for asset in self.fm.assets} 
         self.active_positions = {} 
         self.pending_risk_actions = {} # Maps positionId to risk_actions
+        self.last_global_sync = 0 # Timestamp of last account/position sync
+        self.sync_lock = False # Primitive lock to prevent concurrent syncs
         
         # Price precision (digits) for each asset
         self.symbol_digits = {
@@ -32,14 +36,20 @@ class Orchestrator:
         }
     def update_account_state(self, account_res):
         """Updates internal portfolio state from cTrader response."""
-        # ProtoOATrader provides balance, and usually we can derive equity
         self.portfolio_state['balance'] = account_res.trader.balance / 100.0
-        # For simplicity, if we don't have real-time equity from ProtoOATrader, use balance
-        # Usually ProtoOATrader doesn't have live Equity, you need ProtoOAAssetReq or similar for margins
-        # But we'll use balance as a proxy or assume equity=balance for sizing if not provided.
         self.portfolio_state['equity'] = self.portfolio_state.get('equity', self.portfolio_state['balance'])
         self.portfolio_state['initial_equity'] = self.portfolio_state.get('initial_equity', self.portfolio_state['equity'])
         self.portfolio_state['peak_equity'] = max(self.portfolio_state.get('peak_equity', 0), self.portfolio_state['equity'])
+        
+        # Calculate Global TradeGuard features
+        equity = self.portfolio_state['equity']
+        peak = self.portfolio_state['peak_equity']
+        self.portfolio_state['total_drawdown'] = 1.0 - (equity / peak) if peak > 0 else 0
+        
+        # Total exposure placeholder - would need to sum position values in real time
+        # For now we'll use number of positions as proxy or just 0 if not easily calculated
+        # Actually we have self.active_positions, but not their sizes here.
+        self.portfolio_state['total_exposure'] = len(self.active_positions) * 0.25 # Assumption 25% each
 
     def on_order_execution(self, event):
         """Handles order execution events from cTrader."""
@@ -110,8 +120,19 @@ class Orchestrator:
         return locked
     
     @inlineCallbacks
-    def sync_active_positions(self):
+    def sync_active_positions(self, force=False):
         """Fetches open positions from API and updates internal state."""
+        if not force and (time.time() - self.last_global_sync < 10):
+            return
+
+        # Simple lock to prevent multiple concurrent sync requests
+        if self.sync_lock:
+            # Wait a bit if a sync is already in progress
+            yield deferLater(reactor, 0.5, lambda: None)
+            if time.time() - self.last_global_sync < 10:
+                return
+
+        self.sync_lock = True
         try:
             res = yield self.client.fetch_open_positions()
             # Reset active positions
@@ -125,10 +146,13 @@ class Orchestrator:
             
             # Update portfolio state for features
             self.portfolio_state['num_open_positions'] = len(self.active_positions)
-            # You could add more detail here (PnL, etc) if needed by features
             
+            # This doesn't update last_global_sync yet, 
+            # we'll do it after account summary too if called from bootstrap
         except Exception as e:
             self.logger.error(f"Failed to sync active positions: {e}")
+        finally:
+            self.sync_lock = False
 
     @inlineCallbacks
     def bootstrap(self):
@@ -136,9 +160,10 @@ class Orchestrator:
         self.logger.info("Bootstrapping history for all assets...")
         try:
             # 1. Sync Positions and Account State
-            yield self.sync_active_positions()
+            yield self.sync_active_positions(force=True)
             acc_res = yield self.client.fetch_account_summary()
             self.update_account_state(acc_res)
+            self.last_global_sync = time.time()
             
             # 2. Fetch History
             tasks = []
@@ -208,25 +233,33 @@ class Orchestrator:
 
         try:
             # 2. Fetch Data (Parallel)
-            # Fetch OHLCV and Account Summary
-            d_ohlcv = self.client.fetch_ohlcv(symbol_id)
-            d_account = self.client.fetch_account_summary()
-            
-            results = yield gatherResults([d_ohlcv, d_account], consumeErrors=True)
-            
-            # Check for errors in results
-            for res in results:
-                if isinstance(res, Exception): # Or Failure
-                     self.logger.error(f"Data fetch failed: {res}")
-                     self.notifier.send_error(f"Data fetch failed for {asset_name}: {res}")
-                     return
+            # Use cached account data if available and fresh (< 10s)
+            now = time.time()
+            if now - self.last_global_sync < 10:
+                self.logger.debug(f"Using cached account data for {asset_name}")
+                ohlcv_res = yield self.client.fetch_ohlcv(symbol_id)
+            else:
+                # Fetch both if cache expired
+                d_ohlcv = self.client.fetch_ohlcv(symbol_id)
+                d_account = self.client.fetch_account_summary()
+                
+                results = yield gatherResults([d_ohlcv, d_account], consumeErrors=True)
+                
+                # Check for errors in results
+                for res in results:
+                    if isinstance(res, Exception): # Or Failure
+                         self.logger.error(f"Data fetch failed: {res}")
+                         self.notifier.send_error(f"Data fetch failed for {asset_name}: {res}")
+                         return
 
-            ohlcv_res = results[0]
-            account_res = results[1]
+                ohlcv_res = results[0]
+                account_res = results[1]
+                self.update_account_state(account_res)
+                self.last_global_sync = time.time()
             
             # 3. Update State
             self.fm.update_data(symbol_id, ohlcv_res)
-            self.update_account_state(account_res)
+            # account_state already updated if we fetched it, or it's from cache
             
             # 4. Run Inference
             inference_start = time.time()
@@ -383,19 +416,28 @@ class Orchestrator:
                 return {'action': 0, 'allowed': False, 'reason': f'Risk Sizing Zero ({lots})'}
             
             # 6. TradeGuard Prediction
-            trade_infos = {
-                asset_name: {
-                    'entry': current_price,
-                    'sl': sl_price,
-                    'tp': tp_price
-                }
+            trade_info = {
+                'entry': current_price,
+                'sl': sl_price,
+                'tp': tp_price,
+                'risk_val': 0.5 # Default Risk Model conviction
             }
             
-            # Prepare TradeGuard context
+            # Prepare TradeGuard context (Single-Pair)
             self.portfolio_state[asset_name] = self.portfolio_state.get(asset_name, {})
             self.portfolio_state[asset_name]['action_raw'] = direction
             
-            tg_obs = self.fm.get_tradeguard_observation(trade_infos, self.portfolio_state)
+            # Get signal persistence if possible
+            # (In live this would need a history tracker, but we'll use dummy for now)
+            self.portfolio_state[asset_name]['signal_persistence'] = 0
+            self.portfolio_state[asset_name]['signal_reversal'] = 0
+            
+            tg_obs = self.fm.get_tradeguard_observation(
+                asset_name, 
+                trade_info, 
+                self.portfolio_state,
+                norm_stats=getattr(self.ml, 'tg_norm_stats', None)
+            )
             tg_action = self.ml.get_tradeguard_action(tg_obs)
             
             allowed = (tg_action == 1)

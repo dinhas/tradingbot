@@ -99,10 +99,12 @@ class TradeGuardEnv(gym.Env):
         if self.pnl_std < 1e-6:
             self.pnl_std = 1.0
         
-        # Normalize PnL to roughly unit variance
-        self.pnl_normalized = (self.pnl_array - self.pnl_mean) / self.pnl_std
+        # Normalize PnL to roughly unit variance BUT DO NOT CENTER
+        # We want to preserve the sign of PnL (Profit vs Loss).
+        # Centering would make an average winning trade look like 0 return.
+        self.pnl_normalized = self.pnl_array / self.pnl_std
         
-        logger.info(f"PnL normalized. Mean: {self.pnl_mean:.4f}, Std: {self.pnl_std:.4f}")
+        logger.info(f"PnL normalized (Scaled Only). Mean: {self.pnl_mean:.4f}, Std: {self.pnl_std:.4f}")
         logger.info(f"TradeGuardEnv initialized with {self.total_steps} samples (Normalized, 25 Features).")
 
         # Track episode statistics

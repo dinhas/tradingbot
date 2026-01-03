@@ -156,7 +156,8 @@ class BacktestMetrics:
             'gross_profit': gross_profit,
             'gross_loss': gross_loss,
             'final_equity': final_equity,
-            'initial_equity': initial_equity
+            'initial_equity': initial_equity,
+            'avg_spread_pips': df_trades['spread_pips'].mean() if 'spread_pips' in df_trades.columns else 0
         }
         
         return metrics
@@ -239,7 +240,8 @@ class FullSystemMetrics(BacktestMetrics):
             'good_blocks': good_blocks,
             'bad_blocks': bad_blocks,
             'avoided_losses_pct': avoided_losses,
-            'missed_profits_pct': missed_profits
+            'missed_profits_pct': missed_profits,
+            'avg_blocked_spread_pips': sum(t.get('spread_pips', 0) for t in self.blocked_trades) / len(self.blocked_trades) if self.blocked_trades else 0
         }
 
     def calculate_metrics(self):
@@ -858,7 +860,7 @@ def create_tradeguard_performance_charts(metrics_tracker, stage, output_dir, tim
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Backtest RL Trading Bot")
     parser.add_argument("--model", type=str, required=True, help="Path to trained model (.zip file) relative to project root")
-    parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data",
+    parser.add_argument("--data-dir", type=str, default="backtest/data",
                         help="Path to backtest data directory relative to project root")
     parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results",
                         help="Path to save results relative to project root")

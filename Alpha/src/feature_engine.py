@@ -55,10 +55,9 @@ class FeatureEngine:
         for asset in self.assets:
             logger.info(f"Calculating technical indicators for {asset}...")
             aligned_df = self._add_technical_indicators(aligned_df, asset)
-            # Ensure new columns are also float32
-            for col in aligned_df.columns:
-                if aligned_df[col].dtype == np.float64:
-                    aligned_df[col] = aligned_df[col].astype(np.float32)
+            
+        # Ensure all columns are float32 (single pass, vectorized)
+        aligned_df = aligned_df.astype(np.float32)
             
         # 3. Calculate Cross-Asset Features
         logger.info("Calculating cross-asset features...")
@@ -146,7 +145,20 @@ class FeatureEngine:
         new_features[f"{asset}_volume_ratio"] = volume / vol_ma
         
         new_features_df = pd.DataFrame(new_features, index=df.index).astype(np.float32)
-        return pd.concat([df, new_features_df], axis=1)
+        
+        # Use update to avoid duplicates if columns exist, or concat if they don't
+        # To be safest and avoid the duplicate issue:
+        existing_cols = set(df.columns)
+        new_cols_df = new_features_df[[c for c in new_features_df.columns if c not in existing_cols]]
+        update_cols_df = new_features_df[[c for c in new_features_df.columns if c in existing_cols]]
+        
+        if not update_cols_df.empty:
+            df.update(update_cols_df)
+            
+        if not new_cols_df.empty:
+            df = pd.concat([df, new_cols_df], axis=1)
+            
+        return df
 
     def _add_cross_asset_features(self, df):
         new_features = {}
