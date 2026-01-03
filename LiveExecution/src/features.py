@@ -3,6 +3,7 @@ import numpy as np
 import logging
 from collections import deque
 from Alpha.src.feature_engine import FeatureEngine as AlphaFeatureEngine
+from Alpha.src.feature_normalizer import FrozenFeatureNormalizer
 from TradeGuard.src.feature_calculator import TradeGuardFeatureCalculator
 
 class FeatureManager:
@@ -13,6 +14,18 @@ class FeatureManager:
         self.logger = logging.getLogger("LiveExecution")
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         self.alpha_fe = AlphaFeatureEngine()
+        
+        # Load Frozen Normalizer for Alpha/Risk models
+        from pathlib import Path
+        project_root = Path(__file__).resolve().parent.parent.parent
+        norm_path = project_root / "models" / "checkpoints" / "alpha" / "feature_normalizer.pkl"
+        
+        self.normalizer = FrozenFeatureNormalizer()
+        if norm_path.exists():
+            self.logger.info(f"Loading frozen feature normalizer from {norm_path}")
+            self.normalizer.load(str(norm_path))
+        else:
+            self.logger.warning(f"Frozen feature normalizer NOT found at {norm_path}. Predictions may be unreliable.")
         
         # History buffers for each asset
         self.history = {asset: pd.DataFrame() for asset in self.assets}
@@ -105,14 +118,18 @@ class FeatureManager:
         Calculates the 40-feature vector for Alpha model for a specific asset.
         """
         data_dict = {a: df for a, df in self.history.items() if not df.empty}
-        # Preprocess creates normalized dataframe with features for ALL assets
-        _, normalized_df = self.alpha_fe.preprocess_data(data_dict)
+        # Get RAW (aligned but not rolling-normalized) dataframe
+        raw_df, _ = self.alpha_fe.preprocess_data(data_dict)
         
-        # Get latest row
-        if normalized_df.empty:
+        if raw_df.empty:
              return np.zeros(40, dtype=np.float32)
              
-        latest_features = normalized_df.iloc[-1].to_dict()
+        # Apply frozen normalization to the latest row
+        latest_row = raw_df.iloc[-1:].copy()
+        if self.normalizer.is_fitted:
+            latest_row = self.normalizer.transform_df(latest_row)
+        
+        latest_features = latest_row.iloc[0].to_dict()
         
         # Extract features for specific asset
         return self.alpha_fe.get_observation(latest_features, portfolio_state, asset)

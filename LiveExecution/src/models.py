@@ -97,8 +97,11 @@ class ModelLoader:
             
         # Normalize observation if normalizer exists
         if self.alpha_norm is not None:
-            observation = self.alpha_norm.normalize_obs(observation)
+            # VecNormalize expects 2D array
+            obs_reshaped = observation.reshape(1, -1)
+            observation = self.alpha_norm.normalize_obs(obs_reshaped).flatten()
             
+        self.logger.debug(f"Alpha Observation Range: [{observation.min():.4f}, {observation.max():.4f}]")
         action, _ = self.alpha_model.predict(observation, deterministic=True)
         return action
 
@@ -109,8 +112,11 @@ class ModelLoader:
             
         # Normalize observation if normalizer exists
         if self.risk_norm is not None:
-            observation = self.risk_norm.normalize_obs(observation)
+            # VecNormalize expects 2D array
+            obs_reshaped = observation.reshape(1, -1)
+            observation = self.risk_norm.normalize_obs(obs_reshaped).flatten()
             
+        self.logger.debug(f"Risk Observation Range: [{observation.min():.4f}, {observation.max():.4f}]")
         action, _ = self.risk_model.predict(observation, deterministic=True)
         return action
 
