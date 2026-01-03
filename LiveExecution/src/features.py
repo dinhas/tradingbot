@@ -119,7 +119,7 @@ class FeatureManager:
         """
         data_dict = {a: df for a, df in self.history.items() if not df.empty}
         # Get RAW (aligned but not rolling-normalized) dataframe
-        raw_df, _ = self.alpha_fe.preprocess_data(data_dict)
+        raw_df, _ = self.alpha_fe.preprocess_data(data_dict, normalize=False)
         
         if raw_df.empty:
              return np.zeros(40, dtype=np.float32)

@@ -33,11 +33,12 @@ class FeatureEngine:
             "session_asian", "session_london", "session_ny", "session_overlap"
         ])
 
-    def preprocess_data(self, data_dict):
+    def preprocess_data(self, data_dict, normalize=True):
         """
         Preprocesses raw OHLCV data for all assets.
         Args:
             data_dict: Dictionary {asset_name: pd.DataFrame} with columns [open, high, low, close, volume]
+            normalize: Whether to apply rolling normalization (False for live use with FrozenNormalizer)
         Returns:
             pd.DataFrame: Aligned DataFrame with all features calculated.
         """
@@ -78,7 +79,8 @@ class FeatureEngine:
         for col in normalized_df.columns:
             normalized_df[col] = normalized_df[col].astype(np.float32)
             
-        normalized_df = self._normalize_features(normalized_df)
+        if normalize:
+            normalized_df = self._normalize_features(normalized_df)
         
         # 6. Handle Missing Values
         normalized_df = normalized_df.ffill().fillna(0).astype(np.float32)

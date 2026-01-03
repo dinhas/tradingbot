@@ -303,3 +303,13 @@ class CTraderClient:
             
         res_msg = yield self.send_request(req, retries=0)
         return Protobuf.extract(res_msg)
+    @inlineCallbacks
+    def close_position(self, position_id, volume):
+        """Closes an open position."""
+        req = ProtoOAClosePositionReq()
+        req.ctidTraderAccountId = self.account_id
+        req.positionId = position_id
+        req.volume = int(volume)
+        
+        res_msg = yield self.send_request(req, retries=1)
+        return Protobuf.extract(res_msg)

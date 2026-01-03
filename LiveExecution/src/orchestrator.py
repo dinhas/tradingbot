@@ -41,15 +41,16 @@ class Orchestrator:
         self.portfolio_state['initial_equity'] = self.portfolio_state.get('initial_equity', self.portfolio_state['equity'])
         self.portfolio_state['peak_equity'] = max(self.portfolio_state.get('peak_equity', 0), self.portfolio_state['equity'])
         
-        # Calculate Global TradeGuard features
+        # Calculate Global features matching model expectations
         equity = self.portfolio_state['equity']
         peak = self.portfolio_state['peak_equity']
-        self.portfolio_state['total_drawdown'] = 1.0 - (equity / peak) if peak > 0 else 0
+        self.portfolio_state['drawdown'] = 1.0 - (equity / peak) if peak > 0 else 0
         
-        # Total exposure placeholder - would need to sum position values in real time
-        # For now we'll use number of positions as proxy or just 0 if not easily calculated
-        # Actually we have self.active_positions, but not their sizes here.
-        self.portfolio_state['total_exposure'] = len(self.active_positions) * 0.25 # Assumption 25% each
+        # Calculate Margin Usage % (Total exposure / Equity)
+        total_notional = 0
+        # In a real system, you'd fetch symbol price and calculate notional.
+        # For RL simplification, we'll use a proxy or refined sum in sync_active_positions.
+        self.portfolio_state['margin_usage_pct'] = 0.0 
 
     def on_order_execution(self, event):
         """Handles order execution events from cTrader."""
@@ -81,11 +82,12 @@ class Orchestrator:
                          
                          if symbol_id in self.active_positions:
                              del self.active_positions[symbol_id]
+                             self.logger.info(f"Removed {asset_name} from active_positions.")
 
                     elif pos.positionStatus == ProtoOAPositionStatus.POSITION_STATUS_OPEN:
                         # Position just opened or updated
-                        self.active_positions[symbol_id] = pos_id
-                        self.logger.info(f"Position {pos_id} is now OPEN for {asset_name}")
+                        self.active_positions[symbol_id] = {'id': pos_id, 'volume': pos.tradeData.volume}
+                        self.logger.info(f"Position {pos_id} is now OPEN for {asset_name} (Vol: {pos.tradeData.volume})")
 
             # If it's a trade closure, let's log the detail
             if hasattr(event, 'order') and event.order:
@@ -135,17 +137,61 @@ class Orchestrator:
         self.sync_lock = True
         try:
             res = yield self.client.fetch_open_positions()
-            # Reset active positions
+            # Reset active positions and per-asset states
             new_active = {}
+            for asset in self.fm.assets:
+                self.portfolio_state[asset] = {
+                    'has_position': 0.0,
+                    'position_size': 0.0,
+                    'unrealized_pnl': 0.0,
+                    'position_age': 0.0,
+                    'entry_price': 0.0,
+                    'current_sl': 0.0,
+                    'current_tp': 0.0
+                }
+
+            total_notional = 0
+            now_ms = time.time() * 1000
+            
             for pos in res.position:
                 if hasattr(pos, 'tradeData') and hasattr(pos.tradeData, 'symbolId'):
-                    new_active[pos.tradeData.symbolId] = pos.positionId
+                    symbol_id = pos.tradeData.symbolId
+                    asset_name = self._get_symbol_name(symbol_id)
+                    new_active[symbol_id] = {'id': pos.positionId, 'volume': pos.tradeData.volume}
+                    
+                    if asset_name in self.portfolio_state:
+                        # divisor based on asset (match FeatureManager)
+                        divisor = 100.0 if asset_name == 'XAUUSD' else 100000.0
+                        
+                        entry_price = pos.tradeData.entryPrice / divisor
+                        # cTrader volume is units * 100. 1 lot = 100,000 units = 10,000,000 volume.
+                        # Position size in RL usually relative to equity.
+                        lots = pos.tradeData.volume / (100000.0 * 100.0)
+                        
+                        state = self.portfolio_state[asset_name]
+                        state['has_position'] = 1.0
+                        state['position_size'] = lots # Model expects size/equity but lots is closer for single-pair PPO
+                        state['entry_price'] = entry_price
+                        state['current_sl'] = (pos.stopLoss / divisor) if pos.stopLoss else 0.0
+                        state['current_tp'] = (pos.takeProfit / divisor) if pos.takeProfit else 0.0
+                        
+                        # Unrealized PnL (Normalize to equity % if possible)
+                        # pos.unrealizedPnL is in account currency cents
+                        state['unrealized_pnl'] = (pos.unrealizedPnL / 100.0) / self.portfolio_state.get('equity', 1.0)
+                        
+                        # Position Age in 5-min bars (approx)
+                        age_ms = now_ms - pos.tradeData.openTimestamp
+                        state['position_age'] = age_ms / (5 * 60 * 1000)
+                        
+                        total_notional += (pos.tradeData.volume / 100.0)
             
             self.active_positions = new_active
-            self.logger.info(f"Synced {len(self.active_positions)} active positions from API.")
+            self.logger.info(f"Synced {len(self.active_positions)} active positions. Portfolio state updated.")
             
-            # Update portfolio state for features
+            # Update Global features
             self.portfolio_state['num_open_positions'] = len(self.active_positions)
+            equity = self.portfolio_state.get('equity', 1.0)
+            self.portfolio_state['margin_usage_pct'] = total_notional / (equity * 100.0) # Approx leverage usage
             
             # This doesn't update last_global_sync yet, 
             # we'll do it after account summary too if called from bootstrap
@@ -267,7 +313,15 @@ class Orchestrator:
             inference_time = time.time() - inference_start
             
             if not decision or decision.get('action') == 0:
-                self.logger.info(f"Inference complete in {inference_time:.3f}s. No action taken.")
+                self.logger.info(f"Inference complete in {inference_time:.3f}s. Action is FLAT (0).")
+                # Close existing position if any to match backtest logic
+                if symbol_id in self.active_positions:
+                    pos_info = self.active_positions[symbol_id]
+                    if pos_info != "PENDING":
+                        self.logger.info(f"Closing position {pos_info['id']} for {asset_name} to align with Alpha 'FLAT' signal.")
+                        yield self.client.close_position(pos_info['id'], pos_info['volume'])
+                        # Remove from local tracking
+                        del self.active_positions[symbol_id]
                 return 
             
             # 5. Execute & Notify
@@ -327,9 +381,10 @@ class Orchestrator:
             
             # Record risk actions for this position to use when it closes
             if hasattr(execution_res, 'position') and execution_res.position:
-                pos_id = execution_res.position.positionId
+                pos = execution_res.position
+                pos_id = pos.positionId
                 self.pending_risk_actions[pos_id] = decision.get('risk_actions', np.zeros(2))
-                self.active_positions[symbol_id] = pos_id
+                self.active_positions[symbol_id] = {'id': pos_id, 'volume': volume}
                 self.logger.info(f"Recorded pending risk actions for {decision['asset']} position {pos_id}")
             else:
                 # Optimistically lock asset if we don't have ID yet
