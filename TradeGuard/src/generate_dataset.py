@@ -187,7 +187,9 @@ class TrainingDatasetGenerator:
                             
                             norm_risk_obs = self.risk_norm_env.normalize_obs(risk_obs)
                             risk_action, _ = risk_model.predict(norm_risk_obs, deterministic=True)
-                            if isinstance(risk_action, np.ndarray): risk_action = risk_action[0]
+                            
+                            # Ensure risk_action is a 1D array [SL_Mult, TP_Mult]
+                            risk_action = np.atleast_1d(risk_action.squeeze())
                             
                             # Risk model now has 2 outputs: [SL_Mult, TP_Mult]
                             sl_mult = np.clip((risk_action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)
