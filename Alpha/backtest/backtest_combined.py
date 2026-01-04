@@ -567,9 +567,9 @@ def run_combined_backtest(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Combined Alpha-Risk Model Backtest")
-    parser.add_argument("--alpha-model", type=str, default="models/checkpoints/ppo_final_model.zip",
+    parser.add_argument("--alpha-model", type=str, default="models/checkpoints/alpha/ppo_final_model.zip",
                         help="Path to Alpha model (.zip file) relative to project root")
-    parser.add_argument("--risk-model", type=str, default="models/risk/risk_model_final.zip",
+    parser.add_argument("--risk-model", type=str, default="models/checkpoints/risk/risk_model_final.zip",
                         help="Path to Risk model (.zip file) relative to project root")
     parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data",
                         help="Path to backtest data directory relative to project root")

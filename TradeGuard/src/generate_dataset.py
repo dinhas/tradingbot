@@ -4,10 +4,12 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 import logging
 import sys
 import gc
+import gymnasium as gym
+from gymnasium import spaces
 from tqdm import tqdm
 
 # Add project root to sys.path
@@ -73,13 +75,29 @@ class TrainingDatasetGenerator:
         return data
 
     def generate(self, output_file='TradeGuard/data/training_dataset.parquet', chunk_size=50000):
-        # Load Risk Model
-        risk_model_path = "RiskLayer/models/2.15.zip"
+        # Load Risk Model and Normalizer
+        risk_model_path = "models/checkpoints/risk/risk_model_final.zip"
+        risk_norm_path = "models/checkpoints/risk/vec_normalize.pkl"
+        
         logger.info(f"Loading Risk Model from {risk_model_path}...")
         try:
             risk_model = PPO.load(risk_model_path, device='cpu')
+            
+            # Create a dummy env with 165 dims to load the Risk normalizer
+            class SimpleRiskEnv(gym.Env):
+                def __init__(self):
+                    self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(165,))
+                    self.action_space = spaces.Box(low=-1, high=1, shape=(3,))
+                def reset(self, seed=None): return np.zeros(165), {}
+                def step(self, action): return np.zeros(165), 0, False, False, {}
+
+            self.risk_norm_env = VecNormalize.load(risk_norm_path, DummyVecEnv([lambda: SimpleRiskEnv()]))
+            self.risk_norm_env.training = False
+            self.risk_norm_env.norm_reward = False
+            logger.info(f"Loaded Risk Normalizer from {risk_norm_path}")
+            
         except Exception as e:
-            logger.error(f"Failed to load Risk Model: {e}")
+            logger.error(f"Failed to load Risk Model/Normalizer: {e}")
             return
 
         # Determine total rows based on the SHORTEST asset to avoid out-of-bounds slicing
@@ -131,7 +149,14 @@ class TrainingDatasetGenerator:
                 raw_env = TradingEnv(data=sliced_data, is_training=False, stage=1)
                 env = DummyVecEnv([lambda: raw_env])
                 
-                # Load Alpha model into this env
+                # Load Alpha model and Normalizer into this env
+                alpha_norm_path = "models/checkpoints/alpha/ppo_final_vecnormalize.pkl"
+                if os.path.exists(alpha_norm_path):
+                    env = VecNormalize.load(alpha_norm_path, env)
+                    env.training = False
+                    env.norm_reward = False
+                    logger.info(f"Loaded Alpha Normalizer from {alpha_norm_path}")
+                
                 model = PPO.load(self.model_path, env=env)
                 
                 # Feature calculator for this slice
@@ -180,8 +205,9 @@ class TrainingDatasetGenerator:
                                 
                                 risk_obs = np.concatenate([market_obs, account_obs, hist_pnl, hist_acts])
                                 
-                                # 3. Get Risk Action
-                                risk_action, _ = risk_model.predict(risk_obs, deterministic=True)
+                                # 3. Get Risk Action (Normalize observation first!)
+                                norm_risk_obs = self.risk_norm_env.normalize_obs(risk_obs)
+                                risk_action, _ = risk_model.predict(norm_risk_obs, deterministic=True)
                                 
                                 # 4. Decode Risk Action (RiskLayer Logic)
                                 # SL: 0.2 - 2.0 ATR
@@ -330,6 +356,6 @@ class TrainingDatasetGenerator:
         return state
 
 if __name__ == "__main__":
-    MODEL_PATH = "Alpha/models/checkpoints/8.03.zip"
+    MODEL_PATH = "models/checkpoints/alpha/ppo_final_model.zip"
     generator = TrainingDatasetGenerator(MODEL_PATH)
     generator.generate(chunk_size=50000)

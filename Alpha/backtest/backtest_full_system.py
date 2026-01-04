@@ -19,7 +19,9 @@ if not hasattr(np, "_core"):
     sys.modules["numpy._core"] = np.core
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+import gymnasium as gym
+from gymnasium import spaces
 from Alpha.backtest.backtest_combined import CombinedBacktest
 from Alpha.backtest.backtest import BacktestMetrics, FullSystemMetrics, generate_full_system_charts
 from Alpha.backtest.tradeguard_feature_builder import TradeGuardFeatureBuilder
@@ -82,12 +84,32 @@ class FullSystemBacktest(CombinedBacktest):
         risk_model = PPO.load(risk_model_path, env=DummyVecEnv([lambda: r_env]))
         os.unlink(tmp_path)
         
-        # 4. Load TradeGuard Model (PPO)
+        # 4. Load TradeGuard Model & Normalizer
         if not os.path.exists(guard_model_path):
-             raise FileNotFoundError(f"TradeGuard model not found at {guard_model_path}")
+             # Try fallback to .zip if path doesn't have it
+             if not str(guard_model_path).endswith('.zip') and os.path.exists(f"{guard_model_path}.zip"):
+                 guard_model_path = f"{guard_model_path}.zip"
+             else:
+                 raise FileNotFoundError(f"TradeGuard model not found at {guard_model_path}")
+        
+        self.guard_norm_env = None
+        guard_norm_path = str(guard_model_path).replace('.zip', '_vecnormalize.pkl')
+        if os.path.exists(guard_norm_path):
+            logger.info(f"Loading TradeGuard Normalizer from {guard_norm_path}")
+            class DummyGuardEnv(gym.Env):
+                def __init__(self):
+                    self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(105,))
+                    self.action_space = spaces.Discrete(2)
+                def reset(self, seed=None): return np.zeros(105), {}
+                def step(self, action): return np.zeros(105), 0, False, False, {}
+
+            self.guard_norm_env = VecNormalize.load(guard_norm_path, DummyVecEnv([lambda: DummyGuardEnv()]))
+            self.guard_norm_env.training = False
+            self.guard_norm_env.norm_reward = False
         
         try:
              guard_model = PPO.load(guard_model_path)
+             logger.info(f"Loaded TradeGuard model from {guard_model_path}")
         except Exception as e:
              raise ValueError(f"Failed to load TradeGuard PPO model: {e}")
 
@@ -282,6 +304,10 @@ class FullSystemBacktest(CombinedBacktest):
                     
                     # Predict (Allow/Block)
                     # Action 1 = Allow, 0 = Block
+                    # Apply TradeGuard normalization if available
+                    if self.guard_norm_env:
+                        features = self.guard_norm_env.normalize_obs(features)
+                    
                     guard_action, _ = self.guard_model.predict(features, deterministic=True)
                     
                     # Probability (Optional, if supported by policy)
@@ -555,9 +581,9 @@ def run_full_system_backtest(args):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Three-Layer Full System Backtest")
-    parser.add_argument("--alpha-model", type=str, default="Alpha/models/checkpoints/8.03.zip")
-    parser.add_argument("--risk-model", type=str, default="RiskLayer/models/2.15.zip")
-    parser.add_argument("--guard-model", type=str, default="TradeGuard/models/manual_test_model.zip")
+    parser.add_argument("--alpha-model", type=str, default="models/checkpoints/alpha/ppo_final_model.zip")
+    parser.add_argument("--risk-model", type=str, default="models/checkpoints/risk/risk_model_final.zip")
+    parser.add_argument("--guard-model", type=str, default="TradeGuard/models/tradeguard_ppo_final.zip")
     # guard-meta is no longer required for PPO, but keeping it optional or removing it
     parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data")
     parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results/full_system")
