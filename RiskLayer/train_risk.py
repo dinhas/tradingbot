@@ -70,7 +70,7 @@ if torch.cuda.is_available():
 # PPO Hyperparameters (Expert Tuned for Financial Data)
 # HYPERPARAMETERS - "Max Efficiency Edition" 🚀
 
-TOTAL_TIMESTEPS = 5_000_000 
+TOTAL_TIMESTEPS = 8_000_000 
 LEARNING_RATE = 1.5e-4    # 📈 Increased for maximum learning in 5M steps.
 N_STEPS = 16384           # ⬆️ INCREASED. Large window for stable gradient updates.
 BATCH_SIZE = 2048         # ⬆️ INCREASED. Stability with higher Learning Rate.

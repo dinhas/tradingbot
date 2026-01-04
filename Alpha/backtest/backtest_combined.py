@@ -86,6 +86,7 @@ class CombinedBacktest:
         self.ENABLE_SLIPPAGE = True
         self.SLIPPAGE_MIN_PIPS = 0.5
         self.SLIPPAGE_MAX_PIPS = 1.5
+        self.SPREAD_PIPS = 1.0       # 1.0 pip standard spread
         
         # Per-asset history tracking
         self.asset_histories = {
@@ -297,13 +298,15 @@ class CombinedBacktest:
                     
                     if act:
                         direction = act['direction']
-                        # Slippage
+                        # Slippage + Spread (Adverse movement)
                         if self.ENABLE_SLIPPAGE:
                             slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-                            slippage_price = slippage_pips * 0.0001 * price_raw
-                            price = price_raw + (direction * -1 * slippage_price)
+                            # Add half spread to slippage
+                            friction_pips = slippage_pips + (self.SPREAD_PIPS / 2.0)
+                            friction_price = friction_pips * 0.0001 * price_raw
+                            price = price_raw + (direction * friction_price)
                         else:
-                            price = price_raw
+                            price = price_raw + (direction * (self.SPREAD_PIPS / 2.0) * 0.0001 * price_raw)
                             
                         if current_pos is None:
                             self.env._open_position(asset, direction, act, price, atr)
@@ -313,7 +316,14 @@ class CombinedBacktest:
                     else:
                         # No action for this asset: close existing position if any
                         if current_pos is not None:
-                            self.env._close_position(asset, price_raw)
+                            # Apply exit friction (slippage + spread)
+                            slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
+                            friction_pips = slippage_pips + (self.SPREAD_PIPS / 2.0)
+                            exit_friction_price = friction_pips * 0.0001 * price_raw
+                            # Market close means trading against the current position
+                            exit_direction = -current_pos['direction']
+                            exit_price = price_raw + (exit_direction * exit_friction_price)
+                            self.env._close_position(asset, exit_price)
                 
                 # Advance time and update
                 self.env.current_step += 1
