@@ -2,7 +2,7 @@ import os
 import yaml
 import logging
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from TradeGuard.src.trade_guard_env import TradeGuardEnv
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -14,7 +14,7 @@ class TradeGuardTrainer:
         self.config = self._load_config()
         if config_override:
             self._update_recursive(self.config, config_override)
-        self.env = self._setup_env()
+        self.env, self.vec_normalize = self._setup_env()
         self.model = self._setup_model()
         
     def _update_recursive(self, d, u):
@@ -49,7 +49,21 @@ class TradeGuardTrainer:
             return _init
             
         logger.info(f"Creating {n_cpu} parallel environments...")
-        return SubprocVecEnv([make_env(i) for i in range(n_cpu)])
+        base_env = SubprocVecEnv([make_env(i) for i in range(n_cpu)])
+        
+        # Wrap with VecNormalize for observation normalization
+        # This is CRITICAL for stable training with features of different scales
+        vec_normalize = VecNormalize(
+            base_env,
+            norm_obs=True,      # Normalize observations
+            norm_reward=True,   # Normalize rewards
+            clip_obs=10.0,      # Clip normalized obs to [-10, 10]
+            clip_reward=10.0,   # Clip normalized rewards
+            gamma=0.99,         # Discount factor for reward normalization
+            epsilon=1e-8        # Small constant for numerical stability
+        )
+        logger.info("VecNormalize wrapper applied for observation/reward normalization.")
+        return vec_normalize, vec_normalize
         
     def _setup_model(self):
         ppo_params = self.config['ppo']
@@ -85,9 +99,18 @@ class TradeGuardTrainer:
         logger.info("Training complete.")
         
     def save(self, path):
+        """Save model and VecNormalize stats together."""
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        self.model.save(path)
-        logger.info(f"Model saved to {path}")
+        
+        # Save the PPO model
+        model_path = path if path.endswith('.zip') else f"{path}.zip"
+        self.model.save(model_path)
+        logger.info(f"Model saved to {model_path}")
+        
+        # Save VecNormalize stats - CRITICAL for inference!
+        norm_path = model_path.replace('.zip', '_vecnormalize.pkl')
+        self.vec_normalize.save(norm_path)
+        logger.info(f"VecNormalize stats saved to {norm_path}")
 
 if __name__ == "__main__":
     trainer = TradeGuardTrainer("TradeGuard/config/ppo_config.yaml")

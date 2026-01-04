@@ -50,7 +50,7 @@ from RiskLayer.src.risk_env import RiskManagementEnv
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-initial_equity=10000.0
+initial_equity=10.0
 
 class CombinedBacktest:
     """Combined backtest using Alpha model for direction and Risk model for SL/TP/sizing"""
@@ -140,8 +140,8 @@ class CombinedBacktest:
         sl_mult = np.clip((action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)  # 0.2-2.0 ATR
         tp_mult = np.clip((action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)  # 0.5-4.0 ATR
         
-        # Fixed Risk (2%) - matching training logic
-        risk_raw = 0.02
+        # Fixed Risk (7%) - matching training logic
+        risk_raw = 0.07
         
         return sl_mult, tp_mult, risk_raw
     
