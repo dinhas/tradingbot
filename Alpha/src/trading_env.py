@@ -130,11 +130,12 @@ class TradingEnv(gym.Env):
             if feat in self.processed_data.columns:
                 self.master_obs_matrix[:, self.internal_feature_map[feat]] = self.processed_data[feat].values
 
-    def _get_observation(self):
-        """
-        Optimized observation retrieval. Extracts 40 features for current asset.
-        """
-        # 1. Update master matrix with dynamic features (Internal 140-dim representation)
+    def get_full_observation(self):
+        """Returns the full 140-dimensional observation state."""
+        return self._get_full_obs()
+
+    def _get_full_obs(self):
+        """Internal helper to get the 140-dim full observation."""
         full_obs = self.master_obs_matrix[self.current_step].copy()
         
         # Update Global Dynamic
@@ -161,7 +162,15 @@ class TradingEnv(gym.Env):
                 full_obs[indices['entry_price']] = pos['entry_price']
                 full_obs[indices['current_sl']] = pos['sl']
                 full_obs[indices['current_tp']] = pos['tp']
+        
+        return full_obs
 
+    def _get_observation(self):
+        """
+        Optimized observation retrieval. Extracts 40 features for current asset.
+        """
+        full_obs = self._get_full_obs()
+        
         # 2. Extract the 40 features for current_asset
         # [25 asset features] + [15 global features]
         asset_start_idx = self.assets.index(self.current_asset) * 25

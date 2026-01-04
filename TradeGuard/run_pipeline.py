@@ -44,7 +44,7 @@ def run_pipeline(force_download=False, force_generate=False, config_path="TradeG
         logger.info(f"✅ Dataset file {dataset_file} already exists. Skipping generation.")
     else:
         # We need the Alpha model for generation
-        alpha_model_path = "Alpha/models/checkpoints/8.03.zip"
+        alpha_model_path = "models/checkpoints/alpha/ppo_final_model.zip"
         if not os.path.exists(alpha_model_path):
             logger.error(f"Alpha model not found at {alpha_model_path}. Cannot generate dataset.")
             return
