@@ -83,13 +83,13 @@ class TrainingDatasetGenerator:
         try:
             risk_model = PPO.load(risk_model_path, device='cpu')
             
-            # Create a dummy env with 165 dims to load the Risk normalizer
+            # Create a dummy env with 45 dims to load the Risk normalizer
             class SimpleRiskEnv(gym.Env):
                 def __init__(self):
-                    self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(165,))
-                    self.action_space = spaces.Box(low=-1, high=1, shape=(3,))
-                def reset(self, seed=None): return np.zeros(165), {}
-                def step(self, action): return np.zeros(165), 0, False, False, {}
+                    self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(45,))
+                    self.action_space = spaces.Box(low=-1, high=1, shape=(2,))
+                def reset(self, seed=None): return np.zeros(45), {}
+                def step(self, action): return np.zeros(45), 0, False, False, {}
 
             self.risk_norm_env = VecNormalize.load(risk_norm_path, DummyVecEnv([lambda: SimpleRiskEnv()]))
             self.risk_norm_env.training = False
@@ -126,11 +126,8 @@ class TrainingDatasetGenerator:
         
         dataset = []
         action_history = {asset: [] for asset in self.assets}
-        stats = {'total_steps': 0, 'alpha_signals': 0, 'risk_blocked_low_conf': 0, 'risk_blocked_bad_rr': 0, 'saved_rows': 0}
+        stats = {'total_steps': 0, 'alpha_signals': 0, 'risk_blocked_bad_rr': 0, 'saved_rows': 0}
         
-        from collections import deque
-        risk_history_pnl = deque([0.0]*5, maxlen=5)
-        risk_history_actions = deque([np.zeros(3) for _ in range(5)], maxlen=5)
         warmup = 500 
         
         with tqdm(total=total_rows, desc="Generating Dataset", unit="rows") as pbar:
@@ -180,22 +177,23 @@ class TrainingDatasetGenerator:
                         # LINKAGE FIX: Only allow entry if the signal is NEW (avoid duplicates)
                         if direction != 0 and direction != prev_act:
                             stats['alpha_signals'] += 1
-                            market_obs = raw_env.get_full_observation()
                             
+                            # Construct 45-dim observation for Risk Model
+                            # Alpha features (40) + Account state (5)
                             drawdown = 1.0 - (raw_env.equity / raw_env.peak_equity)
                             account_obs = np.array([1.0, drawdown, 0.0, 1.0, 0.0], dtype=np.float32)
-                            risk_obs = np.concatenate([market_obs, account_obs, np.array(risk_history_pnl, dtype=np.float32), np.array(risk_history_actions, dtype=np.float32).flatten()])
+                            risk_obs = np.concatenate([obs, account_obs])
                             
                             norm_risk_obs = self.risk_norm_env.normalize_obs(risk_obs)
                             risk_action, _ = risk_model.predict(norm_risk_obs, deterministic=True)
                             if isinstance(risk_action, np.ndarray): risk_action = risk_action[0]
                             
+                            # Risk model now has 2 outputs: [SL_Mult, TP_Mult]
                             sl_mult = np.clip((risk_action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)
                             tp_mult = np.clip((risk_action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
-                            risk_val = np.clip((risk_action[2] + 1) / 2, 0.0, 1.0)
                             
-                            if risk_val < 0.2: stats['risk_blocked_low_conf'] += 1
-                            if tp_mult < sl_mult: stats['risk_blocked_bad_rr'] += 1
+                            if tp_mult < sl_mult: 
+                                stats['risk_blocked_bad_rr'] += 1
 
                             price = raw_env.close_arrays[asset][step]
                             atr = raw_env.atr_arrays[asset][step]
@@ -204,9 +202,8 @@ class TrainingDatasetGenerator:
                                 'sl': price - (direction * sl_mult * atr),
                                 'tp': price + (direction * tp_mult * atr),
                                 'direction': direction,
-                                'risk_val': risk_val
+                                'risk_val': 1.0 # Placeholder since new Risk model doesn't output confidence
                             }
-                            risk_history_actions.append(risk_action[:3])
                         
                         action_history[asset].append(direction)
                         if len(action_history[asset]) > 20: action_history[asset].pop(0)
@@ -228,7 +225,6 @@ class TrainingDatasetGenerator:
                             outcomes[f'target_{asset}'] = label
                             outcomes[f'pnl_{asset}'] = result['pnl']
                             
-                            risk_history_pnl.append(result['pnl'] / 1000.0)
                             raw_env.positions[asset] = None
 
                         row = {f'f_{i}': val for i, val in enumerate(tg_features)}
