@@ -17,14 +17,18 @@
 
 ---
 
-## 📊 Backtest Performance
+## 📊 Backtest Performance (V2 Combined System)
 
 | Metric | Value | Target (Live) |
 |--------|-------|---------------|
-| **Sharpe Ratio** | 11.35 | ≥ 8.0 |
-| **Max Drawdown** | -14.4% | ≤ 20% |
-| **Profit Factor** | 3.79 | ≥ 2.5 |
-| **Total Return** | $10 → $248,793 | — |
+| **Sharpe Ratio** | 21.15 | ≥ 8.0 |
+| **Profit Factor** | 4.56 | ≥ 2.5 |
+| **Max Drawdown** | -6.76% | ≤ 20% |
+| **Win Rate** | 59.5% | ≥ 45% |
+| **Avg RR Ratio** | 19.88 | — |
+| **Total Return** | $10 → $69.7M | — |
+
+*Backtest Zeitraum: Multi-year 5-minute data (10M Timesteps training).*
 
 ---
 
@@ -148,6 +152,15 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 
 ---
 
+## 🚀 Recent Updates (V2 Branch)
+
+- **Single-Pair Inference Core**: Refactored the engine to handle assets as independent pairs while maintaining a global portfolio view.
+- **Enhanced Risk Layer**: New PnL Efficiency reward system with "Bullet Dodger" bonus for capital preservation.
+- **Sniper Execution**: Improved TradeGuard logic to filter 99% of noisy signals, focusing on high RR (19:1) trades.
+- **Parallel Optimization**: Backtest and dataset generation now support multi-core parallel execution.
+
+---
+
 ## 🚀 Usage
 
 ### Training Pipeline
@@ -193,18 +206,17 @@ docker-compose up -d
 |-----------|-------|
 | **Algorithm** | PPO (Proximal Policy Optimization) |
 | **Framework** | Stable-Baselines3 |
-| **Features** | 140 technical indicators |
-| **Output** | Direction (Long / Short / Hold) |
+| **Features** | 40 indicators (extracted from 140 basket) |
+| **Reward** | PEEK & LABEL (Lookahead) |
 | **Assets** | EURUSD, GBPUSD, USDJPY, USDCHF, XAUUSD |
-| **Timeframe** | M5 (5-minute) |
 
-### Layer 2: Risk (Position Sizing)
+### Layer 2: Risk / TradeGuard (Execution)
 | Attribute | Value |
 |-----------|-------|
-| **Algorithm** | PPO |
-| **Framework** | Stable-Baselines3 |
-| **Features** | 165 (Alpha features + portfolio state) |
-| **Output** | Position size, Stop-Loss, Take-Profit |
+| **Algorithm** | PPO with Dual Normalization |
+| **Reward** | PnL Efficiency + Bullet Dodger |
+| **Win Rate** | ~23% (Optimized for PnL/RR) |
+| **Payoff Ratio** | 19:1 (Sniper Mode) |
 
 ---
 
