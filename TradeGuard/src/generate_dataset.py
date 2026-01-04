@@ -141,6 +141,7 @@ class TrainingDatasetGenerator:
                 if any(df.empty for df in sliced_data.values()): continue
 
                 raw_env = TradingEnv(data=sliced_data, is_training=False, stage=1)
+                raw_env.reset() # Critical: Initialize state variables like self.positions
                 tg_calculator = TradeGuardFeatureCalculator(raw_env.data)
                 
                 steps_to_skip = start_idx - slice_start
