@@ -329,15 +329,23 @@ class FeatureEngine:
         ])
         
         # Market Regime (3)
-        gbp_ret = current_step_data.get("GBPUSD_return_1", 0)
-        xau_ret = current_step_data.get("XAUUSD_return_1", 0)
-        risk_on = (gbp_ret + xau_ret) / 2
+        # Use pre-calculated (and normalized) values from current_step_data if available
+        # These are calculated in _add_session_features and normalized in _normalize_features
+        risk_on = current_step_data.get("risk_on_score")
+        if risk_on is None:
+            gbp_ret = current_step_data.get("GBPUSD_return_1", 0)
+            xau_ret = current_step_data.get("XAUUSD_return_1", 0)
+            risk_on = (gbp_ret + xau_ret) / 2
+            
+        dispersion = current_step_data.get("asset_dispersion")
+        if dispersion is None:
+            returns = [current_step_data.get(f"{a}_return_1", 0) for a in self.assets]
+            dispersion = np.std(returns)
         
-        returns = [current_step_data.get(f"{a}_return_1", 0) for a in self.assets]
-        dispersion = np.std(returns)
-        
-        atrs = [current_step_data.get(f"{a}_atr_ratio", 0) for a in self.assets]
-        mkt_vol = np.mean(atrs)
+        mkt_vol = current_step_data.get("market_volatility")
+        if mkt_vol is None:
+            atrs = [current_step_data.get(f"{a}_atr_ratio", 0) for a in self.assets]
+            mkt_vol = np.mean(atrs)
         
         obs.extend([risk_on, dispersion, mkt_vol])
         

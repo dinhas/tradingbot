@@ -315,7 +315,7 @@ class Orchestrator:
                 pos_id = execution_res.position.positionId
                 self.pending_risk_actions[pos_id] = decision.get('risk_actions', np.zeros(3))
                 self.active_positions[symbol_id] = pos_id
-                self.logger.info(f"Recorded pending risk actions for {asset_name} position {pos_id}")
+                self.logger.info(f"Recorded pending risk actions for {decision['asset']} position {pos_id}")
             else:
                 # Optimistically lock asset if we don't have ID yet
                 self.active_positions[symbol_id] = "PENDING"
@@ -331,13 +331,13 @@ class Orchestrator:
         """
         try:
             asset_name = self._get_symbol_name(symbol_id)
-            # 1. Get Alpha Observation (140)
-            alpha_obs = self.fm.get_alpha_observation(self.portfolio_state)
+            # 1. Get Alpha Observation (40)
+            alpha_obs = self.fm.get_alpha_observation(asset_name, self.portfolio_state)
             
-            # 2. Alpha Prediction
-            all_alpha_actions = self.ml.get_alpha_action(alpha_obs)
-            asset_index = self.fm.assets.index(asset_name)
-            alpha_val = all_alpha_actions[asset_index]
+            # 2. Alpha Prediction (Returns value in [-1, 1])
+            alpha_pred = self.ml.get_alpha_action(alpha_obs)
+            # Alpha model now predicts for ONE asset, returns (1,) or scalar
+            alpha_val = float(alpha_pred[0] if isinstance(alpha_pred, (np.ndarray, list)) else alpha_pred)
             
             # Parse Alpha Direction (Match Backtest: > 0.33 Buy, < -0.33 Sell)
             direction = 1 if alpha_val > 0.33 else (-1 if alpha_val < -0.33 else 0)
@@ -347,25 +347,26 @@ class Orchestrator:
             if direction == 0:
                 return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold'}
             
-            # 3. Get Risk Observation (165)
+            # 3. Get Risk Observation (45)
             risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs, self.portfolio_state)
             
-            # 4. Risk Prediction
+            # 4. Risk Prediction (Returns [SL_Mult, TP_Mult])
             risk_action = self.ml.get_risk_action(risk_obs)
             
-            # Parse Risk Action (Match Backtest)
-            # sl_mult: 0.2-2.0, tp_mult: 0.5-4.0, risk_raw: 0.0-1.0
+            # Parse Risk Action (Match RiskManagementEnv scaling)
+            # sl_mult: 0.2-2.0, tp_mult: 0.5-4.0
             sl_mult = np.clip((risk_action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)
             tp_mult = np.clip((risk_action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
-            risk_raw = np.clip((risk_action[2] + 1) / 2, 0.0, 1.0)
             
-            # Blocking Logic (Threshold: 0.20)
-            if risk_raw < 0.20:
-                self.logger.info(f"Risk Block for {asset_name}: raw risk {risk_raw:.4f} < 0.20")
-                return {'action': 0, 'allowed': False, 'reason': f'Risk Block ({risk_raw:.2f})'}
-
-            # Rescale Risk (Match Backtest)
-            risk_raw_scaled = (risk_raw - 0.20) / 0.80
+            # FIXED RISK: 2% per trade as per new model design
+            # (In backtest it was 0.02, but we can scale it to actual cash risk)
+            risk_raw = 0.02 
+            
+            # Blocking Logic (Optional: if Alpha confidence is too low or other filters)
+            # Since new Risk model doesn't have confidence, we rely on Alpha threshold and TradeGuard
+            
+            # Rescale Risk (Not applicable for fixed risk, but we keep the logic flow)
+            risk_raw_scaled = 1.0 # Logic assumes the full 2% risk
             
             # 5. Calculate Sizing & SL/TP Prices
             digits = self.symbol_digits.get(asset_name, 5)

@@ -14,6 +14,7 @@ ppo:
 
 env:
   reward_scaling: 1.0
+  reward_mode: "binary" # Options: "pnl", "binary"
   penalty_factors:
     missed_win: 0.5
     loss_avoided: 0.1

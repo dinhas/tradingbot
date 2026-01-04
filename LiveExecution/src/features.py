@@ -112,20 +112,22 @@ class FeatureManager:
         self.risk_pnl_history[asset].append(pnl_pct)
         self.risk_action_history[asset].append(actions)
 
-    def get_alpha_observation(self, portfolio_state):
-        """Calculates the 140-feature vector for Alpha model."""
-        data_dict = {asset: df for asset, df in self.history.items() if not df.empty}
+    def get_alpha_observation(self, asset, portfolio_state):
+        """Calculates the 40-feature vector for Alpha model for a specific asset."""
+        data_dict = {a: df for a, df in self.history.items() if not df.empty}
         _, normalized_df = self.alpha_fe.preprocess_data(data_dict)
         latest_features = normalized_df.iloc[-1].to_dict()
-        return self.alpha_fe.get_observation(latest_features, portfolio_state)
+        return self.alpha_fe.get_observation(latest_features, portfolio_state, asset)
 
     def get_risk_observation(self, asset, alpha_obs, portfolio_state):
         """
-        Constructs the 165-feature vector for Risk model.
+        Constructs the 45-feature vector for Risk model.
+        (40 Alpha features + 5 Account features)
         """
-        # 1. Market State (140) - alpha_obs passed in
+        # 1. Market State (40) - alpha_obs passed in
         
         # 2. Account State (5)
+        # Match RiskManagementEnv._get_observation logic
         equity = portfolio_state.get('equity', 10.0)
         initial_equity = portfolio_state.get('initial_equity', 10.0)
         peak_equity = portfolio_state.get('peak_equity', initial_equity)
@@ -142,11 +144,8 @@ class FeatureManager:
             0.0  # Padding
         ], dtype=np.float32)
         
-        # 3. History (25)
-        hist_pnl = np.array(self.risk_pnl_history[asset], dtype=np.float32)
-        hist_acts = np.array(self.risk_action_history[asset], dtype=np.float32).flatten()
-        
-        return np.concatenate([alpha_obs, account_obs, hist_pnl, hist_acts])
+        # Total 40 (alpha) + 5 (account) = 45
+        return np.concatenate([alpha_obs, account_obs])
 
     def get_tradeguard_observation(self, asset, t_info, portfolio_state):
         """Calculates the 25-feature vector for the TradeGuard model for a specific asset."""
