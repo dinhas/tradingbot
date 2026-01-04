@@ -212,27 +212,35 @@ class TrainingDatasetGenerator:
                     if trade_infos:
                         parsed_actions_for_state = {a: {'direction': action_history[a][-1]} for a in self.assets}
                         portfolio_state = self._get_portfolio_state(raw_env, parsed_actions_for_state, action_history)
-                        tg_features = tg_calculator.get_multi_asset_obs(step, trade_infos, portfolio_state)
                         
-                        outcomes = {}
-                        for asset in self.assets:
-                            outcomes[f'target_{asset}'] = 0.0
-                            outcomes[f'pnl_{asset}'] = 0.0
-                            
                         for asset, t_info in trade_infos.items():
-                            raw_env.positions[asset] = {'direction': t_info['direction'], 'entry_price': t_info['entry'], 'size': 1000, 'sl': t_info['sl'], 'tp': t_info['tp'], 'entry_step': step}
+                            # Get 25-dim features for this specific asset
+                            tg_features = tg_calculator.get_asset_obs(step, asset, t_info, portfolio_state)
+                            
+                            # Simulate outcome for this specific asset
+                            raw_env.positions[asset] = {
+                                'direction': t_info['direction'], 
+                                'entry_price': t_info['entry'], 
+                                'size': 1000, 
+                                'sl': t_info['sl'], 
+                                'tp': t_info['tp'], 
+                                'entry_step': step
+                            }
                             result = raw_env._simulate_trade_outcome_with_timing(asset)
                             label = 1 if result['exit_reason'] == 'TP' or (result['pnl'] > 0 and result['closed']) else 0
-                            outcomes[f'target_{asset}'] = label
-                            outcomes[f'pnl_{asset}'] = result['pnl']
                             
+                            # Create row restricted to 25 features + this asset's outcome
+                            row = {f'f_{i}': val for i, val in enumerate(tg_features)}
+                            row['target'] = float(label)
+                            row['pnl'] = float(result['pnl'])
+                            row['asset'] = asset
+                            row['timestamp'] = raw_env._get_current_timestamp()
+                            
+                            dataset.append(row)
+                            stats['saved_rows'] += 1
+                            
+                            # Reset position for next asset/step simulation
                             raw_env.positions[asset] = None
-
-                        row = {f'f_{i}': val for i, val in enumerate(tg_features)}
-                        row.update(outcomes)
-                        row['timestamp'] = raw_env._get_current_timestamp()
-                        dataset.append(row)
-                        stats['saved_rows'] += 1
 
                     stats['total_steps'] += 1
 

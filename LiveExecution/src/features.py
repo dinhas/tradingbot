@@ -148,11 +148,11 @@ class FeatureManager:
         
         return np.concatenate([alpha_obs, account_obs, hist_pnl, hist_acts])
 
-    def get_tradeguard_observation(self, trade_infos, portfolio_state):
-        """Calculates the 105-feature vector for the TradeGuard model."""
+    def get_tradeguard_observation(self, asset, t_info, portfolio_state):
+        """Calculates the 25-feature vector for the TradeGuard model for a specific asset."""
         data_dict = {asset: df for asset, df in self.history.items() if not df.empty}
         calculator = TradeGuardFeatureCalculator(data_dict)
-        return calculator.get_multi_asset_obs(-1, trade_infos, portfolio_state)
+        return calculator.get_asset_obs(-1, asset, t_info, portfolio_state)
 
     def is_ready(self):
         """Checks if enough history is collected for all assets."""

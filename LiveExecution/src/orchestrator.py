@@ -412,19 +412,17 @@ class Orchestrator:
             lots = np.clip(lots, 0.01, 100.0)
             
             # 6. TradeGuard Prediction
-            trade_infos = {
-                asset_name: {
-                    'entry': current_price,
-                    'sl': sl_price,
-                    'tp': tp_price
-                }
+            t_info = {
+                'entry': current_price,
+                'sl': sl_price,
+                'tp': tp_price
             }
             
             # Prepare TradeGuard context
             self.portfolio_state[asset_name] = self.portfolio_state.get(asset_name, {})
             self.portfolio_state[asset_name]['action_raw'] = direction
             
-            tg_obs = self.fm.get_tradeguard_observation(trade_infos, self.portfolio_state)
+            tg_obs = self.fm.get_tradeguard_observation(asset_name, t_info, self.portfolio_state)
             tg_action = self.ml.get_tradeguard_action(tg_obs)
             
             allowed = (tg_action == 1)

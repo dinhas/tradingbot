@@ -98,10 +98,10 @@ class FullSystemBacktest(CombinedBacktest):
             logger.info(f"Loading TradeGuard Normalizer from {guard_norm_path}")
             class DummyGuardEnv(gym.Env):
                 def __init__(self):
-                    self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(105,))
+                    self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(25,))
                     self.action_space = spaces.Discrete(2)
-                def reset(self, seed=None): return np.zeros(105), {}
-                def step(self, action): return np.zeros(105), 0, False, False, {}
+                def reset(self, seed=None): return np.zeros(25), {}
+                def step(self, action): return np.zeros(25), 0, False, False, {}
 
             self.guard_norm_env = VecNormalize.load(guard_norm_path, DummyVecEnv([lambda: DummyGuardEnv()]))
             self.guard_norm_env.training = False
@@ -288,42 +288,37 @@ class FullSystemBacktest(CombinedBacktest):
                         np.array([act_info['sl_mult'], act_info['tp_mult'], act_info['risk_raw']], dtype=np.float32)
                     )
                 
-                # 3. TradeGuard Global Evaluation (Only for NEW or REVERSAL entries)
+                # 3. TradeGuard Per-Asset Evaluation (Only for NEW or REVERSAL entries)
                 if pending_new_trades:
                     # Build Portfolio State
                     portfolio_state = self._get_portfolio_state_for_features(directions)
                     
-                    # Use all trades (continuing + new) for guard context, but only block 'new' ones
-                    evaluation_set = {**continuing_trades, **pending_new_trades}
-                    
-                    features = self.feature_builder.get_multi_asset_obs(
-                        self.env.current_step, 
-                        evaluation_set, 
-                        portfolio_state
-                    )
-                    
-                    # Predict (Allow/Block)
-                    # Action 1 = Allow, 0 = Block
-                    # Apply TradeGuard normalization if available
-                    if self.guard_norm_env:
-                        features = self.guard_norm_env.normalize_obs(features)
-                    
-                    guard_action, _ = self.guard_model.predict(features, deterministic=True)
-                    
-                    # Probability (Optional, if supported by policy)
-                    # For PPO, we can get distribution, but let's stick to deterministic action for now.
-                    prob = 1.0 if guard_action == 1 else 0.0 
-                    
-                    if guard_action == 1:
-                        # APPROVED: Add all pending new trades to combined_actions
-                        for asset, act_info in pending_new_trades.items():
+                    for asset, act_info in pending_new_trades.items():
+                        # Get 25-dim features for this specific asset
+                        features = self.feature_builder.get_asset_obs(
+                            self.env.current_step, 
+                            asset, 
+                            act_info, 
+                            portfolio_state
+                        )
+                        
+                        # Apply TradeGuard normalization if available
+                        if self.guard_norm_env:
+                            features = self.guard_norm_env.normalize_obs(features)
+                        
+                        guard_action, _ = self.guard_model.predict(features, deterministic=True)
+                        
+                        # Probability (Optional, if supported by policy)
+                        prob = 1.0 if guard_action == 1 else 0.0 
+                        
+                        if guard_action == 1:
+                            # APPROVED: Add to combined_actions
                             self.asset_histories[asset]['action_history'].append(
                                 np.array([act_info['sl_mult'], act_info['tp_mult'], act_info['risk_raw']], dtype=np.float32)
                             )
                             combined_actions[asset] = act_info
-                    else:
-                        # BLOCKED: Simulate all pending new trades for metrics
-                        for asset, act_info in pending_new_trades.items():
+                        else:
+                            # BLOCKED: Simulate blocked trade for metrics
                             blocked_record = self._simulate_blocked_trade(asset, act_info['direction'], act_info, prob)
                             metrics_tracker.add_blocked_trade(blocked_record)
                             

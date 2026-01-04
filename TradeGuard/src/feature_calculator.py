@@ -135,64 +135,55 @@ class TradeGuardFeatureCalculator:
             
         return precomputed
 
-    def get_multi_asset_obs(self, step, trade_infos, portfolio_state):
+    def get_asset_obs(self, step, asset, t_info, portfolio_state):
         """
-        Constructs a single large vector for ALL 5 assets.
-        Each asset: 20 features. Global: 5 features.
-        Total: 105 features.
+        Constructs a 25-dimensional vector for a SPECIFIC asset.
+        Asset-specific: 20 features. Global: 5 features.
+        Total: 25 features.
         
         ALL FEATURES ARE NORMALIZED to [-1, 1] or [0, 1] ranges.
         """
-        full_obs = []
+        if asset not in self.precomputed_features:
+            return np.zeros(25, dtype=np.float32)
+
+        # 1. Market Precomputed (15 features) - already normalized
+        f_market = self.precomputed_features[asset][step].tolist()
         
-        for asset in self.assets:
-            if asset not in self.precomputed_features:
-                full_obs.extend([0] * 20)
-                continue
-                
-            # 1. Market Precomputed (15 features) - already normalized
-            f_market = self.precomputed_features[asset][step].tolist()
-            
-            # 2. Alpha Context (3 features) - NORMALIZED
-            p_state = portfolio_state.get(asset, {})
-            action_raw = p_state.get('action_raw', 0)  # Already -1, 0, 1
-            signal_persistence = p_state.get('signal_persistence', 0)
-            signal_reversal = p_state.get('signal_reversal', 0)  # Already 0 or 1
-            
-            f_alpha = [
-                action_raw,  # Already in [-1, 1]
-                np.clip(signal_persistence / 10.0, 0, 1),  # Normalize: 10+ bars = 1.0
-                signal_reversal  # Already 0 or 1
-            ]
-            
-            # 3. Execution (2 features) - NORMALIZED
-            t_info = trade_infos.get(asset, {'entry': 0, 'sl': 0, 'tp': 0})
-            sl_dist = abs(t_info['entry'] - t_info['sl'])
-            tp_dist = abs(t_info['entry'] - t_info['tp'])
-            
-            # Use proper ATR for normalization (high - low is just 1-bar range, not ATR)
-            # For better normalization, we use close price to make it asset-agnostic
-            if asset in self.ohlcv_arrays and 'close' in self.ohlcv_arrays[asset]:
-                close_price = self.ohlcv_arrays[asset]['close'][step]
-            else:
-                close_price = t_info['entry'] if t_info['entry'] > 0 else 1.0
-            
-            # SL as percentage of price, typical range 0.1% - 2% -> scale to [0, 1]
-            sl_pct = (sl_dist / (close_price + 1e-8)) * 100  # Convert to percentage
-            sl_normalized = np.clip(sl_pct / 2.0, 0, 1)  # 2% SL = 1.0
-            
-            # Risk:Reward ratio, typical range 0.5 - 4 -> scale to [0, 1]
-            rr_ratio = tp_dist / (sl_dist + 1e-8)
-            rr_normalized = np.clip(rr_ratio / 4.0, 0, 1)  # 4:1 RR = 1.0
-            
-            f_exec = [
-                sl_normalized,
-                rr_normalized
-            ]
-            
-            # Total 15 + 3 + 2 = 20 per asset
-            full_obs.extend(f_market + f_alpha + f_exec)
-            
+        # 2. Alpha Context (3 features) - NORMALIZED
+        p_state = portfolio_state.get(asset, {})
+        action_raw = p_state.get('action_raw', 0)  # Already -1, 0, 1
+        signal_persistence = p_state.get('signal_persistence', 0)
+        signal_reversal = p_state.get('signal_reversal', 0)  # Already 0 or 1
+        
+        f_alpha = [
+            action_raw,  # Already in [-1, 1]
+            np.clip(signal_persistence / 10.0, 0, 1),  # Normalize: 10+ bars = 1.0
+            signal_reversal  # Already 0 or 1
+        ]
+        
+        # 3. Execution (2 features) - NORMALIZED
+        sl_dist = abs(t_info['entry'] - t_info['sl'])
+        tp_dist = abs(t_info['entry'] - t_info['tp'])
+        
+        # Use proper ATR for normalization
+        if asset in self.ohlcv_arrays and 'close' in self.ohlcv_arrays[asset]:
+            close_price = self.ohlcv_arrays[asset]['close'][step]
+        else:
+            close_price = t_info['entry'] if t_info['entry'] > 0 else 1.0
+        
+        # SL as percentage of price, typical range 0.1% - 2% -> scale to [0, 1]
+        sl_pct = (sl_dist / (close_price + 1e-8)) * 100  # Convert to percentage
+        sl_normalized = np.clip(sl_pct / 2.0, 0, 1)  # 2% SL = 1.0
+        
+        # Risk:Reward ratio, typical range 0.5 - 4 -> scale to [0, 1]
+        rr_ratio = tp_dist / (sl_dist + 1e-8)
+        rr_normalized = np.clip(rr_ratio / 4.0, 0, 1)  # 4:1 RR = 1.0
+        
+        f_exec = [
+            sl_normalized,
+            rr_normalized
+        ]
+        
         # 4. Global Features (5 features) - already well-scaled
         first_asset = self.assets[0]
         if first_asset in self.df_dict:
@@ -208,6 +199,8 @@ class TradeGuardFeatureCalculator:
             np.clip(portfolio_state.get('total_drawdown', 0), 0, 1),  # Clip to [0, 1]
             np.clip(portfolio_state.get('total_exposure', 0) / 5.0, 0, 1)  # 5x leverage = 1.0
         ]
-        full_obs.extend(f_global)
+        
+        # Total 15 (market) + 3 (alpha) + 2 (exec) + 5 (global) = 25
+        full_obs = f_market + f_alpha + f_exec + f_global
         
         return np.array(full_obs, dtype=np.float32)

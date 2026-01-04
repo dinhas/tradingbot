@@ -24,8 +24,8 @@ class TradeGuardEnv(gym.Env):
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         
         # Define Spaces
-        # Observations: 105 features (f_0 to f_104)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(105,), dtype=np.float32)
+        # Observations: 25 features (f_0 to f_24)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(25,), dtype=np.float32)
         
         # Actions: 0 = Block, 1 = Allow
         self.action_space = spaces.Discrete(2)
@@ -34,15 +34,13 @@ class TradeGuardEnv(gym.Env):
         self.current_step = 0
         self.total_steps = len(self.df)
         
-        # Cache features for faster access
-        self.features = self.df[[f'f_{i}' for i in range(105)]].values.astype(np.float32)
+        # Cache features for faster access (f_0 to f_24)
+        self.features = self.df[[f'f_{i}' for i in range(25)]].values.astype(np.float32)
         
         # OPTIMIZATION: Cache PnL and Target columns as numpy arrays
-        self.pnl_arrays = {}
-        self.target_arrays = {}
-        for a in self.assets:
-            self.pnl_arrays[a] = self.df[f'pnl_{a}'].values.astype(np.float32)
-            self.target_arrays[a] = self.df[f'target_{a}'].values.astype(np.float32)
+        # Now these are simple columns since each row is a single trade signal
+        self.pnl_array = self.df['pnl'].values.astype(np.float32)
+        self.target_array = self.df['target'].values.astype(np.float32)
         
         logger.info(f"TradeGuardEnv initialized with {self.total_steps} samples.")
 
@@ -58,25 +56,21 @@ class TradeGuardEnv(gym.Env):
         return obs, info
 
     def step(self, action):
-        # OPTIMIZATION: Use numpy arrays instead of pandas iloc
         reward = 0.0
         
+        pnl = self.pnl_array[self.current_step]
+        target = self.target_array[self.current_step]
+        
         if action == 1: # Allow
-            # Reward is the sum of actual PnLs
-            for a in self.assets:
-                reward += self.pnl_arrays[a][self.current_step]
+            reward = pnl
         else: # Block
-            for a in self.assets:
-                pnl = self.pnl_arrays[a][self.current_step]
-                target = self.target_arrays[a][self.current_step]
-                
-                if target == 1:
-                    # Missed Win Penalty
-                    reward -= pnl * self.penalty_factors.get('missed_win', 0.5)
-                else:
-                    # Loss Avoided Incentive
-                    if pnl < 0:
-                        reward += abs(pnl) * self.penalty_factors.get('loss_avoided', 0.1)
+            if target == 1:
+                # Missed Win Penalty (using 1.0 as a base or config value)
+                reward = -pnl * self.penalty_factors.get('missed_win', 0.5)
+            else:
+                # Loss Avoided Incentive
+                if pnl < 0:
+                    reward = abs(pnl) * self.penalty_factors.get('loss_avoided', 0.1)
         
         reward *= self.reward_scaling
         
@@ -87,7 +81,7 @@ class TradeGuardEnv(gym.Env):
         if not terminated:
             obs = self.features[self.current_step]
         else:
-            obs = np.zeros(105, dtype=np.float32)
+            obs = np.zeros(25, dtype=np.float32)
             
         info = {
             'step': self.current_step
