@@ -1,19 +1,18 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+"/>
   <img src="https://img.shields.io/badge/RL-PPO-FF6F00?style=for-the-badge&logo=tensorflow&logoColor=white" alt="PPO"/>
-  <img src="https://img.shields.io/badge/LightGBM-Meta--Labeling-9ACD32?style=for-the-badge" alt="LightGBM"/>
   <img src="https://img.shields.io/badge/cTrader-Open%20API-1D9BF0?style=for-the-badge" alt="cTrader"/>
   <img src="https://img.shields.io/badge/License-Proprietary-red?style=for-the-badge" alt="License"/>
 </p>
 
-<h1 align="center">🚀 TradeGuard AI</h1>
+<h1 align="center">🚀 RL Trading AI</h1>
 
 <p align="center">
-  <strong>A Three-Layer Autonomous Trading System Powered by Reinforcement Learning</strong>
+  <strong>A Two-Layer Autonomous Trading System Powered by Reinforcement Learning</strong>
 </p>
 
 <p align="center">
-  <em>Alpha → Risk → TradeGuard | From Signal Generation to Intelligent Execution</em>
+  <em>Alpha → Risk | From Signal Generation to Intelligent Execution</em>
 </p>
 
 ---
@@ -47,23 +46,23 @@
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              Feature Engineering Pipeline                       │
-│    ┌────────────┬────────────┬─────────────────┐               │
-│    │ Alpha (140)│ Risk (165) │ TradeGuard(105) │               │
-│    │  features  │  features  │    features     │               │
-│    └────────────┴────────────┴─────────────────┘               │
+│    ┌────────────┬────────────┐                                 │
+│    │ Alpha (140)│ Risk (165) │                                 │
+│    │  features  │  features  │                                 │
+│    └────────────┴────────────┘                                 │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              Sequential Inference Chain                         │
 │                                                                 │
-│    ┌──────────┐      ┌──────────┐      ┌──────────────┐        │
-│    │  ALPHA   │ ───▶ │   RISK   │ ───▶ │  TRADEGUARD  │        │
-│    │   PPO    │      │   PPO    │      │   LightGBM   │        │
-│    │          │      │          │      │              │        │
-│    │ Signal:  │      │ Output:  │      │ Decision:    │        │
-│    │ L/S/Hold │      │ Size,SL  │      │ Allow/Block  │        │
-│    └──────────┘      └──────────┘      └──────────────┘        │
+│    ┌──────────┐      ┌──────────┐                              │
+│    │  ALPHA   │ ───▶ │   RISK   │                              │
+│    │   PPO    │      │   PPO    │                              │
+│    │          │      │          │                              │
+│    │ Signal:  │      │ Output:  │                              │
+│    │ L/S/Hold │      │ Size,SL  │                              │
+│    └──────────┘      └──────────┘                              │
 │                                                                 │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
@@ -92,11 +91,6 @@ tradingbot/
 │   ├── src/                    # Risk environment
 │   ├── models/                 # Trained Risk models
 │   └── train_risk.py           # Training script
-│
-├── TradeGuard/                 # Meta-Labeling Filter (LightGBM)
-│   ├── src/                    # Dataset generation & training
-│   ├── models/                 # Trained TradeGuard model
-│   └── config/                 # LightGBM config
 │
 ├── LiveExecution/              # Production Execution Engine
 │   ├── src/                    # API client, feature engine, inference
@@ -166,10 +160,6 @@ python src/train.py
 # 2. Generate Risk Dataset & Train Risk Model
 cd ../RiskLayer
 python run_pipeline.py
-
-# 3. Generate TradeGuard Dataset & Train
-cd ../TradeGuard
-python run_pipeline.py
 ```
 
 ### Backtesting
@@ -177,8 +167,8 @@ python run_pipeline.py
 ```bash
 cd Alpha/backtest
 
-# Combined backtest (Alpha + Risk + TradeGuard)
-python backtest_full_system.py
+# Combined backtest (Alpha + Risk)
+python backtest.py --model models/checkpoints/stage_3_final.zip --stage 3
 ```
 
 ### Live Execution
@@ -216,14 +206,6 @@ docker-compose up -d
 | **Features** | 165 (Alpha features + portfolio state) |
 | **Output** | Position size, Stop-Loss, Take-Profit |
 
-### Layer 3: TradeGuard (Meta-Labeling)
-| Attribute | Value |
-|-----------|-------|
-| **Algorithm** | LightGBM Classifier |
-| **Features** | 105 (trade context + market regime) |
-| **Output** | Allow / Block trade decision |
-| **Purpose** | Filter low-quality signals |
-
 ---
 
 ## ⚡ Performance Targets
@@ -246,7 +228,6 @@ docker-compose up -d
 
 - **Max 1 position per asset** — prevents overexposure
 - **Model-driven sizing** — Risk layer determines position size
-- **TradeGuard filter** — blocks low-conviction trades
 - **Circuit breakers** — graceful shutdown on critical errors
 - **Discord alerts** — real-time monitoring of all events
 
@@ -270,7 +251,6 @@ docker-compose up -d
 
 The system sends Discord notifications for:
 - ✅ Trade executed (symbol, direction, size, entry price)
-- 🚫 Trade blocked by TradeGuard
 - ❌ Order rejected
 - 🔄 System startup / shutdown
 - ⚠️ API connection errors

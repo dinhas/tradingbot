@@ -100,9 +100,6 @@ class CombinedBacktest:
         self.equity = initial_equity
         self.peak_equity = initial_equity
         
-        # Track blocked trades
-        self.blocked_trades = []
-        
     def build_risk_observation(self, asset, alpha_obs):
         """Build 45-feature observation for risk model"""
         # Alpha features are already the 40 features [25 asset + 15 global]
@@ -407,6 +404,10 @@ def run_combined_backtest(args):
     risk_norm_path = risk_model_path.parent / "vec_normalize.pkl"
     if not risk_norm_path.exists():
         risk_norm_path = Path(str(risk_model_path).replace('.zip', '_vecnormalize.pkl'))
+    
+    # NEW FALLBACK: handle 10M.zip -> 10M.pkl
+    if not risk_norm_path.exists():
+        risk_norm_path = Path(str(risk_model_path).replace('.zip', '.pkl'))
         
     risk_norm_env = None
     
@@ -530,34 +531,7 @@ def run_combined_backtest(args):
         asset_file = output_dir_path / f"asset_breakdown_combined_{timestamp}.csv"
         pd.DataFrame(per_asset).T.to_csv(asset_file)
         logger.info(f"Saved per-asset breakdown to {asset_file}")
-    
-    # 3.5. Save Blocked Trades Analysis
-    if hasattr(backtest, 'blocked_trades') and backtest.blocked_trades:
-        blocked_file = output_dir_path / f"blocked_trades_combined_{timestamp}.csv"
-        df_blocked = pd.DataFrame(backtest.blocked_trades)
-        df_blocked.to_csv(blocked_file, index=False)
-        logger.info(f"Saved blocked trades log to {blocked_file}")
         
-        # Calculate Stats
-        total_blocked = len(df_blocked)
-        blocked_wins = len(df_blocked[df_blocked['outcome'] == 'WIN'])
-        blocked_losses = len(df_blocked[df_blocked['outcome'] == 'LOSS'])
-        
-        # Avoided Loss (Sum of negative PnL that was blocked)
-        # Note: 'theoretical_pnl' is raw value from simulation. Negative means we saved that loss.
-        avoided_loss_sum = df_blocked[df_blocked['theoretical_pnl'] < 0]['theoretical_pnl'].sum()
-        missed_profit_sum = df_blocked[df_blocked['theoretical_pnl'] > 0]['theoretical_pnl'].sum()
-        
-        logger.info(f"\n{'BLOCKED TRADES ANALYSIS':^60}")
-        logger.info("="*60)
-        logger.info(f"{'Total Blocked Trades:':<40} {total_blocked}")
-        logger.info(f"{'Blocked LOSSES (Good Blocks):':<40} {blocked_losses} ({blocked_losses/total_blocked:.1%})")
-        logger.info(f"{'Blocked WINS (Missed Opport.):':<40} {blocked_wins} ({blocked_wins/total_blocked:.1%})")
-        logger.info(f"{'Total Avoided Loss Value (Red Saved):':<40} {abs(avoided_loss_sum):.4f}")
-        logger.info(f"{'Total Missed Profit Value (Green Lost):':<40} {missed_profit_sum:.4f}")
-        logger.info("="*60)
-
-    
     # 4. Generate all visualizations
     if metrics_tracker.equity_curve and metrics_tracker.trades:
         logger.info("\nGenerating comprehensive charts...")

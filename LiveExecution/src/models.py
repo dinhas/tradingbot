@@ -7,7 +7,7 @@ from pathlib import Path
 
 class ModelLoader:
     """
-    Loads and provides inference for Alpha, Risk, and TradeGuard models.
+    Loads and provides inference for Alpha and Risk models.
     Supports VecNormalize for proper feature scaling.
     """
     def __init__(self):
@@ -19,9 +19,6 @@ class ModelLoader:
         
         self.risk_model = None
         self.risk_norm = None
-        
-        self.tradeguard_model = None
-        self.tradeguard_norm = None
 
     def _load_vec_normalize(self, venv_path, model):
         """Loads VecNormalize statistics and wraps a dummy environment."""
@@ -65,25 +62,14 @@ class ModelLoader:
             
             # 2. Risk Model (45-dim Refactored)
             risk_dir = checkpoint_dir / "risk"
-            risk_path = risk_dir / "3.5M.zip"
-            risk_norm_path = risk_dir / "3.5M.pkl"
+            risk_path = risk_dir / "10M.zip"
+            risk_norm_path = risk_dir / "10M.pkl"
             
             self.logger.info(f"Loading Risk model from {risk_path}...")
             self.risk_model = PPO.load(risk_path)
             self.risk_norm = self._load_vec_normalize(risk_norm_path, self.risk_model)
             if self.risk_norm:
                 self.logger.info("Risk VecNormalize stats loaded.")
-            
-            # 3. TradeGuard Model
-            tg_path = self.project_root / "TradeGuard" / "models" / "manual_test_model.zip"
-            # TradeGuard might have its normalizer in the same folder
-            tg_norm_path = tg_path.with_name("manual_test_model_vecnormalize.pkl")
-            
-            self.logger.info(f"Loading TradeGuard model from {tg_path}...")
-            self.tradeguard_model = PPO.load(tg_path)
-            if tg_norm_path.exists():
-                self.tradeguard_norm = self._load_vec_normalize(tg_norm_path, self.tradeguard_model)
-                self.logger.info("TradeGuard VecNormalize stats loaded.")
             
             self.logger.info("All models and normalizers loaded successfully.")
             return True
@@ -100,7 +86,7 @@ class ModelLoader:
         
         # Apply normalization if available
         if self.alpha_norm:
-            observation = self.alpha_norm.normalize_obs(observation)
+            observation = self.alpha_norm.normalize_obs(observation.reshape(1, -1)).flatten()
             
         action, _ = self.alpha_model.predict(observation, deterministic=True)
         # Should return a single value or (1,) array
@@ -113,20 +99,9 @@ class ModelLoader:
         
         # Apply normalization if available
         if self.risk_norm:
-            observation = self.risk_norm.normalize_obs(observation)
+            observation = self.risk_norm.normalize_obs(observation.reshape(1, -1)).flatten()
             
         action, _ = self.risk_model.predict(observation, deterministic=True)
         # Should return (2,) array for [SL_Mult, TP_Mult]
         return action
 
-    def get_tradeguard_action(self, observation):
-        """Predicts Allow/Block (1/0) for a trade signal."""
-        if self.tradeguard_model is None:
-            raise RuntimeError("TradeGuard model not loaded.")
-        
-        # Apply normalization if available
-        if self.tradeguard_norm:
-            observation = self.tradeguard_norm.normalize_obs(observation)
-            
-        action, _ = self.tradeguard_model.predict(observation, deterministic=True)
-        return action

@@ -27,105 +27,30 @@ class Orchestrator:
             'USDJPY': 3,
             'XAUUSD': 2 # Gold usually has 2 or 3, most commonly 2 for demo/live
         }
+        
+        # Batching State
+        self.pending_batch = {} # Maps symbol_id to candle_data
+        self.batch_timer = None
+        self.is_processing_batch = False
     def update_account_state(self, account_res):
         """Updates internal portfolio state from cTrader response."""
-        # ProtoOATrader provides balance, and usually we can derive equity
+        # ProtoOATrader provides balance
         self.portfolio_state['balance'] = account_res.trader.balance / 100.0
-        # For simplicity, if we don't have real-time equity from ProtoOATrader, use balance
-        # Usually ProtoOATrader doesn't have live Equity, you need ProtoOAAssetReq or similar for margins
-        # But we'll use balance as a proxy or assume equity=balance for sizing if not provided.
+        
+        # Determine Equity (Proxy via Balance if live equity unavailable)
+        #Ideally we would fetch margin/unrealized PnL, but using balance as base for now
         self.portfolio_state['equity'] = self.portfolio_state.get('equity', self.portfolio_state['balance'])
+        
         self.portfolio_state['initial_equity'] = self.portfolio_state.get('initial_equity', self.portfolio_state['equity'])
         self.portfolio_state['peak_equity'] = max(self.portfolio_state.get('peak_equity', 0), self.portfolio_state['equity'])
-
-    def on_order_execution(self, event):
-        """Handles order execution events from cTrader."""
-        try:
-            self.logger.info(f"=== ORDER EXECUTION EVENT ===")
-            self.logger.info(f"Execution Type: {event.executionType}")
-            
-            # Position Data
-            if event.position:
-                pos = event.position
-                pos_id = pos.positionId
-                symbol_id = pos.tradeData.symbolId
-                asset_name = self._get_symbol_name(symbol_id)
-                
-                # Check for closures or updates
-                # ExecutionType: 3 (TRADE) for closures, 2 (ORDER_ACCEPTED) for openings?
-                # Actually in cTrader OpenAPI:
-                # 2 = ORDER_ACCEPTED (The order is accepted by the server)
-                # 3 = ORDER_FILLED (The order is fully or partially filled)
-                # Here we want to track when a position is GONE or CLOSED.
-                
-                from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAExecutionType
-                
-                if event.executionType == ProtoOAExecutionType.ORDER_FILLED:
-                    # If positionStatus is CLOSED/DELETED, it's a closure
-                    from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAPositionStatus
-                    if pos.positionStatus in [ProtoOAPositionStatus.POSITION_STATUS_CLOSED, 6]: # 6 is often used for DELETED/GONE
-                         self.logger.info(f"Position {pos_id} CLOSED for {asset_name}")
-                         
-                         # Calculate PnL % for Risk Model
-                         # Note: In a real bot, we'd pull the actual realized PnL from the broker
-                         # For now, we'll derive it if possible or use balance change
-                         # But since we have the price, we can calculate it:
-                         if pos_id in self.pending_risk_actions:
-                             entry_price = pos.price
-                             # Realized PnL is usually in pos.swap + pos.commission + pnl
-                             # However, Risk Model features expect PnL % relative to entry
-                             # This is how it was trained in the backtest.
-                             
-                             # We'll use a simplified PnL % for now or wait for account balance sync
-                             # But better to record something close to what the model expects.
-                             # Let's assume we can calculate it relative to entry price.
-                             # (ClosePrice - EntryPrice) / EntryPrice * side
-                             # But we might not have the closure price directly in this event if it just says 'closed'
-                             
-                             # Actually, let's keep it simple: fetch account summary after closure 
-                             # and use balance delta? No, the risk model wants PnL per trade.
-                             pass
-                         
-                         if symbol_id in self.active_positions:
-                             del self.active_positions[symbol_id]
-
-                    elif pos.positionStatus == ProtoOAPositionStatus.POSITION_STATUS_OPEN:
-                        # Position just opened or updated
-                        self.active_positions[symbol_id] = pos_id
-                        self.logger.info(f"Position {pos_id} is now OPEN for {asset_name}")
-
-            # If it's a trade closure, let's log the detail
-            if hasattr(event, 'order') and event.order:
-                 order = event.order
-                 if order.closingOrder:
-                      self.logger.info(f"Order {order.orderId} is a CLOSING order.")
-                
-        except Exception as e:
-            self.logger.error(f"Error handling execution event: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-
-    def on_order_error(self, event):
-        """Handles order error events from cTrader."""
-        self.logger.error(f"=== ORDER ERROR EVENT ===")
-        self.logger.error(f"Error Code: {event.errorCode}")
-        self.logger.error(f"Description: {event.description if hasattr(event, 'description') else 'N/A'}")
-        self.logger.error(f"Order ID: {event.orderId if hasattr(event, 'orderId') else 'N/A'}")
         
-        # Try to get more details
-        if hasattr(event, 'ctidTraderAccountId'):
-            self.logger.error(f"Account ID: {event.ctidTraderAccountId}")
-        
-        # Send notification
-        self.notifier.send_error(f"Order rejected: {event.errorCode} - {getattr(event, 'description', 'No description')}")
+        # Calculate Drawdown
+        peak = self.portfolio_state['peak_equity']
+        if peak > 0:
+            self.portfolio_state['total_drawdown'] = 1.0 - (self.portfolio_state['equity'] / peak)
+        else:
+             self.portfolio_state['total_drawdown'] = 0.0
 
-    def is_asset_locked(self, symbol_id):
-        """Checks if a position is already open for the given symbol."""
-        locked = symbol_id in self.active_positions
-        if locked:
-            self.logger.info(f"Asset {symbol_id} is locked (position already exists).")
-        return locked
-    
     @inlineCallbacks
     def sync_active_positions(self):
         """Fetches open positions from API and updates internal state."""
@@ -133,16 +58,37 @@ class Orchestrator:
             res = yield self.client.fetch_open_positions()
             # Reset active positions
             new_active = {}
+            total_value_usd = 0.0
+            
             for pos in res.position:
                 if hasattr(pos, 'tradeData') and hasattr(pos.tradeData, 'symbolId'):
-                    new_active[pos.tradeData.symbolId] = pos.positionId
+                    sym_id = pos.tradeData.symbolId
+                    new_active[sym_id] = pos.positionId
+                    
+                    # Calculate Exposure logic
+                    asset_name = self._get_symbol_name(sym_id)
+                    units = pos.volume / 100.0 # cTrader volume is Unit*100
+                    
+                    # Get Price for valuation
+                    price = pos.price 
+                    if asset_name in self.fm.history and not self.fm.history[asset_name].empty:
+                        price = self.fm.history[asset_name].iloc[-1]['close']
+                        
+                    # Exposure in USD
+                    if asset_name in ['USDJPY', 'USDCHF']:
+                         total_value_usd += units
+                    else:
+                         total_value_usd += units * price
             
             self.active_positions = new_active
-            self.logger.info(f"Synced {len(self.active_positions)} active positions from API.")
+            self.logger.info(f"Synced {len(self.active_positions)} active positions. Exposure Value: ${total_value_usd:.2f}")
             
-            # Update portfolio state for features
+            # Update portfolio state
             self.portfolio_state['num_open_positions'] = len(self.active_positions)
-            # You could add more detail here (PnL, etc) if needed by features
+            
+            equity = self.portfolio_state.get('equity', 1.0)
+            if equity <= 0: equity = 1.0
+            self.portfolio_state['total_exposure'] = total_value_usd / equity
             
         except Exception as e:
             self.logger.error(f"Failed to sync active positions: {e}")
@@ -197,81 +143,101 @@ class Orchestrator:
             self.logger.error(f"Error during bootstrap: {e}")
             self.notifier.send_error(f"Bootstrap failed: {e}")
 
-    @inlineCallbacks
-    def on_m5_candle_close(self, symbol_id):
+    def on_m5_candle_close(self, symbol_id, candle_data=None):
         """
-        Main Event Handler: Triggered when an M5 candle closes.
+        Main Event Handler: Collects symbols into a batch over a 200ms window.
+        This solves the 'symbol-by-symbol' disadvantage by allowing ranking.
+        """
+        from twisted.internet import reactor
+        
+        asset_name = self._get_symbol_name(symbol_id)
+        self.logger.info(f"M5 Close Detected for {asset_name}. Adding to batch.")
+        
+        # Add to pending batch
+        self.pending_batch[symbol_id] = candle_data
+        
+        # Schedule batch execution if not already scheduled
+        if not self.batch_timer or not self.batch_timer.active():
+            self.logger.info("Starting batch window (200ms)...")
+            self.batch_timer = reactor.callLater(0.2, self.execute_batch)
+
+    @inlineCallbacks
+    def execute_batch(self):
+        """
+        Executes inference for all collected symbols in the batch.
+        Ranks them by Alpha confidence and picks the best 2.
         """
         import time
         start_time = time.time()
-        asset_name = self._get_symbol_name(symbol_id)
-        self.logger.info(f"--- M5 Close Detected: {asset_name} ({symbol_id}) ---")
         
-        # 0. Check Readiness
-        if not self.fm.is_ready():
-             self.logger.info("FeatureManager not ready (insufficient history). Skipping.")
-             return
-
-        # 1. Sync Positions and Check System/Asset Limits
-        yield self.sync_active_positions()
+        if self.is_processing_batch:
+            self.logger.warning("Batch processing already in progress. Skipping.")
+            return
+            
+        self.is_processing_batch = True
+        symbols_to_process = list(self.pending_batch.keys())
+        batch_data = self.pending_batch.copy()
+        self.pending_batch = {} # Clear for next cycle
         
-        # System-level limit: Max 2 open positions
-        if len(self.active_positions) >= 2:
-            self.logger.info(f"System reached max open positions limit (2). Currently open: {list(self.active_positions.keys())}")
-            return
-
-        if self.is_asset_locked(symbol_id):
-            self.logger.info(f"Skipping {asset_name} due to active lock (symbol already has position).")
-            return
-
+        self.logger.info(f"--- Processing Batch of {len(symbols_to_process)} symbols: {[self._get_symbol_name(s) for s in symbols_to_process]} ---")
+        
         try:
-            # 2. Fetch Data (Parallel)
-            # Fetch OHLCV and Account Summary
-            d_ohlcv = self.client.fetch_ohlcv(symbol_id)
-            d_account = self.client.fetch_account_summary()
+            # 1. Update Feature Manager for all symbols in batch
+            for sid, data in batch_data.items():
+                if data and 'bar' in data:
+                    self.fm.update_single_bar(sid, data['bar'])
             
-            results = yield gatherResults([d_ohlcv, d_account], consumeErrors=True)
+            # 2. Run Inference for all symbols
+            decisions = []
+            for sid in symbols_to_process:
+                asset_name = self._get_symbol_name(sid)
+                
+                # Check Lock (Local State)
+                if self.is_asset_locked(sid):
+                    self.logger.info(f"Asset {asset_name} is locked. Skipping.")
+                    continue
+                
+                # Run Inference
+                decision = self.run_inference_chain(sid)
+                if decision and decision.get('action') != 0:
+                    # Add decision with confidence score (absolute alpha_val)
+                    decisions.append(decision)
             
-            # Check for errors in results
-            for res in results:
-                if isinstance(res, Exception): # Or Failure
-                     self.logger.error(f"Data fetch failed: {res}")
-                     self.notifier.send_error(f"Data fetch failed for {asset_name}: {res}")
-                     return
+            # 3. Handle Positions & Ranking
+            if not decisions:
+                self.logger.info("No trade signals in batch.")
+                self.is_processing_batch = False
+                return
 
-            ohlcv_res = results[0]
-            account_res = results[1]
+            # Rank by alpha_val absolute magnitude (Confidence)
+            # High magnitude = High priority
+            decisions.sort(key=lambda x: abs(x.get('alpha_val', 0)), reverse=True)
             
-            # 3. Update State
-            self.fm.update_data(symbol_id, ohlcv_res)
-            self.update_account_state(account_res)
+            self.logger.info(f"Batch signals ranked: {[(d['asset'], round(d['alpha_val'], 4)) for d in decisions]}")
             
-            # 4. Run Inference
-            inference_start = time.time()
-            decision = self.run_inference_chain(symbol_id)
-            inference_time = time.time() - inference_start
-            
-            if not decision or decision.get('action') == 0:
-                self.logger.info(f"Inference complete in {inference_time:.3f}s. No action taken.")
-                return 
-            
-            # 5. Execute & Notify
-            if decision['allowed']:
-                yield self.execute_decision(decision, symbol_id)
+            # 4. Execute Top Decisions (Up to System Limit)
+            max_to_open = 2 - len(self.active_positions)
+            if max_to_open <= 0:
+                self.logger.info(f"System reached limit (2 positions). Ignoring {len(decisions)} new signals.")
             else:
-                self.notifier.send_block_event({
-                    'symbol': asset_name,
-                    'reason': decision.get('reason', 'TradeGuard Block')
-                })
+                to_execute = decisions[:max_to_open]
+                self.logger.info(f"Executing top {len(to_execute)} signals from batch.")
+                
+                execution_tasks = []
+                for d in to_execute:
+                    execution_tasks.append(self.execute_decision(d, d['symbol_id']))
+                
+                yield gatherResults(execution_tasks, consumeErrors=True)
             
             total_time = time.time() - start_time
-            self.logger.info(f"M5 Cycle for {asset_name} completed in {total_time:.3f}s (Inference: {inference_time:.3f}s)")
-                
+            self.logger.info(f"Batch Cycle completed in {total_time:.3f}s. Processed {len(symbols_to_process)} symbols.")
+            
         except Exception as e:
-            self.logger.error(f"Orchestration error for {asset_name}: {e}")
+            self.logger.error(f"Error in batch execution: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
-            self.notifier.send_error(f"Orchestration error for {asset_name}: {e}")
+        finally:
+            self.is_processing_batch = False
 
     @inlineCallbacks
     def execute_decision(self, decision, symbol_id):
@@ -345,7 +311,7 @@ class Orchestrator:
             self.logger.info(f"Alpha predicted direction for {asset_name}: {direction} (raw: {alpha_val:.4f})")
             
             if direction == 0:
-                return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold'}
+                return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold', 'alpha_val': alpha_val}
             
             # 3. Get Risk Observation (45)
             risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs, self.portfolio_state)
@@ -363,7 +329,7 @@ class Orchestrator:
             risk_raw = 0.02 
             
             # Blocking Logic (Optional: if Alpha confidence is too low or other filters)
-            # Since new Risk model doesn't have confidence, we rely on Alpha threshold and TradeGuard
+            # Since new Risk model doesn't have confidence, we rely on Alpha threshold.
             
             # Rescale Risk (Not applicable for fixed risk, but we keep the logic flow)
             risk_raw_scaled = 1.0 # Logic assumes the full 2% risk
@@ -412,23 +378,6 @@ class Orchestrator:
             
             lots = np.clip(lots, 0.01, 100.0)
             
-            # 6. TradeGuard Prediction
-            t_info = {
-                'entry': current_price,
-                'sl': sl_price,
-                'tp': tp_price
-            }
-            
-            # Prepare TradeGuard context
-            self.portfolio_state[asset_name] = self.portfolio_state.get(asset_name, {})
-            self.portfolio_state[asset_name]['action_raw'] = direction
-            
-            tg_obs = self.fm.get_tradeguard_observation(asset_name, t_info, self.portfolio_state)
-            tg_action = self.ml.get_tradeguard_action(tg_obs)
-            
-            allowed = (tg_action == 1)
-            self.logger.info(f"TradeGuard decision for {asset_name}: {'ALLOW' if allowed else 'BLOCK'}")
-            
             return {
                 'symbol_id': symbol_id,
                 'asset': asset_name,
@@ -439,7 +388,7 @@ class Orchestrator:
                 'relative_sl': relative_sl,
                 'relative_tp': relative_tp,
                 'risk_actions': risk_action,
-                'allowed': allowed
+                'alpha_val': alpha_val
             }
             
         except Exception as e:
@@ -457,6 +406,45 @@ class Orchestrator:
         self.logger.info("Stopping Orchestrator...")
         self.notifier.send_message("🛑 **System Stopping...**")
         self.client.stop()
+
+    def on_order_execution(self, event):
+        """Processes execution events (fills, closes) and updates local state."""
+        from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAExecutionType
+        
+        self.logger.info(f"Execution Event: {event.executionType}")
+        
+        # 1. Update Balance and Account State
+        if hasattr(event, 'trader') and event.trader.balance:
+            self.portfolio_state['balance'] = event.trader.balance / 100.0
+            self.portfolio_state['equity'] = self.portfolio_state.get('equity', self.portfolio_state['balance'])
+            self.logger.info(f"Account state updated via event. Balance: ${self.portfolio_state['balance']:.2f}")
+
+        # 2. Update Position State
+        if event.executionType in [ProtoOAExecutionType.ORDER_FILLED, ProtoOAExecutionType.ORDER_PARTIAL_FILL]:
+            if hasattr(event, 'position'):
+                pos = event.position
+                symbol_id = pos.tradeData.symbolId
+                self.active_positions[symbol_id] = pos.positionId
+                self.logger.info(f"Position TRACKED: {pos.positionId} for symbol {symbol_id}")
+        
+        elif event.executionType == ProtoOAExecutionType.ORDER_CLOSED:
+             if hasattr(event, 'position'):
+                 pos_id = event.position.positionId
+                 # Remove from active map
+                 for sym_id, active_pos_id in list(self.active_positions.items()):
+                     if active_pos_id == pos_id:
+                         del self.active_positions[sym_id]
+                         self.logger.info(f"Position CLOSED & UNTRACKED: {pos_id} for symbol {sym_id}")
+                         break
+
+    def on_order_error(self, event):
+        """Handles order errors."""
+        self.logger.error(f"Order Error: {event.errorCode} - {event.description}")
+        self.notifier.send_error(f"Order Error: {event.description}")
+
+    def is_asset_locked(self, symbol_id):
+        """Checks if there's already an active position for this symbol."""
+        return symbol_id in self.active_positions
 
     def _get_symbol_name(self, symbol_id):
         """Reverse mapping from symbolId to name."""

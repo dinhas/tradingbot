@@ -3,11 +3,10 @@ import numpy as np
 import logging
 from collections import deque
 from Alpha.src.feature_engine import FeatureEngine as AlphaFeatureEngine
-from TradeGuard.src.feature_calculator import TradeGuardFeatureCalculator
 
 class FeatureManager:
     """
-    Coordinates feature calculation for Alpha, Risk, and TradeGuard models.
+    Coordinates feature calculation for Alpha and Risk models.
     """
     def __init__(self):
         self.logger = logging.getLogger("LiveExecution")
@@ -21,6 +20,10 @@ class FeatureManager:
         # Risk-specific history (Last 5 trades per asset)
         self.risk_pnl_history = {asset: deque([0.0]*5, maxlen=5) for asset in self.assets}
         self.risk_action_history = {asset: deque([np.zeros(3) for _ in range(5)], maxlen=5) for asset in self.assets}
+
+        # Cache for performance
+        self.last_preprocessed_ts = None
+        self.cached_normalized_df = None
 
     def push_candle(self, asset, candle_data):
         """
@@ -48,6 +51,12 @@ class FeatureManager:
             self.history[asset] = self.history[asset].iloc[-self.max_history:]
             
         self.logger.debug(f"Pushed candle for {asset}. Buffer size: {len(self.history[asset])}")
+        
+        # Invalidate cache on new high-timestamp candle
+        if self.last_preprocessed_ts is not None and ts > self.last_preprocessed_ts:
+            self.logger.debug(f"Invalidating feature cache due to newer candle: {ts}")
+            self.last_preprocessed_ts = None
+            self.cached_normalized_df = None
 
     def update_data(self, symbol_id, ohlcv_res):
         """
@@ -64,14 +73,7 @@ class FeatureManager:
         # trendbars are often in chronological order but let's be sure
         new_rows = []
         for bar in ohlcv_res.trendbar:
-             # cTrader uses low, deltaOpen, deltaHigh, deltaClose relative to low?
-             # Actually ProtoOATrendbar: low, deltaOpen, deltaHigh, deltaClose
-             # open = low + deltaOpen
-             # high = low + deltaHigh
-             # close = low + deltaClose
-             # divisor is usually 100,000 for prices (pips) or 100 for Gold
              divisor = 100.0 if asset == 'XAUUSD' else 100000.0
-             
              low = bar.low / divisor
              new_rows.append({
                  'timestamp': datetime.fromtimestamp(bar.utcTimestampInMinutes * 60),
@@ -104,6 +106,25 @@ class FeatureManager:
         atr = AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
         return float(atr.iloc[-1])
 
+    def update_single_bar(self, symbol_id, bar):
+        """Processes a single ProtoOATrendbar from a SpotEvent."""
+        from datetime import datetime
+        asset = self._get_asset_name_from_id(symbol_id)
+        if not asset: return
+        
+        divisor = 100.0 if asset == 'XAUUSD' else 100000.0
+        low = bar.low / divisor
+        
+        row = {
+            'timestamp': datetime.fromtimestamp(bar.utcTimestampInMinutes * 60),
+            'open': low + (bar.deltaOpen / divisor),
+            'high': low + (bar.deltaHigh / divisor),
+            'low': low,
+            'close': low + (bar.deltaClose / divisor),
+            'volume': bar.volume
+        }
+        self.push_candle(asset, row)
+
     def record_risk_trade(self, asset, pnl_pct, actions):
         """
         Records trade outcome for Risk model's historical features.
@@ -114,8 +135,19 @@ class FeatureManager:
 
     def get_alpha_observation(self, asset, portfolio_state):
         """Calculates the 40-feature vector for Alpha model for a specific asset."""
-        data_dict = {a: df for a, df in self.history.items() if not df.empty}
-        _, normalized_df = self.alpha_fe.preprocess_data(data_dict)
+        # Use cached preprocessed dataframe if the latest timestamp matches
+        latest_ts = max(df.index.max() for df in self.history.values() if not df.empty)
+        
+        if self.last_preprocessed_ts == latest_ts and self.cached_normalized_df is not None:
+             self.logger.debug(f"Using cached features for TS: {latest_ts}")
+             normalized_df = self.cached_normalized_df
+        else:
+             self.logger.info(f"Recalculating features for TS: {latest_ts}...")
+             data_dict = {a: df for a, df in self.history.items() if not df.empty}
+             _, normalized_df = self.alpha_fe.preprocess_data(data_dict)
+             self.last_preprocessed_ts = latest_ts
+             self.cached_normalized_df = normalized_df
+        
         latest_features = normalized_df.iloc[-1].to_dict()
         return self.alpha_fe.get_observation(latest_features, portfolio_state, asset)
 
@@ -146,12 +178,6 @@ class FeatureManager:
         
         # Total 40 (alpha) + 5 (account) = 45
         return np.concatenate([alpha_obs, account_obs])
-
-    def get_tradeguard_observation(self, asset, t_info, portfolio_state):
-        """Calculates the 25-feature vector for the TradeGuard model for a specific asset."""
-        data_dict = {asset: df for asset, df in self.history.items() if not df.empty}
-        calculator = TradeGuardFeatureCalculator(data_dict)
-        return calculator.get_asset_obs(-1, asset, t_info, portfolio_state)
 
     def is_ready(self):
         """Checks if enough history is collected for all assets."""

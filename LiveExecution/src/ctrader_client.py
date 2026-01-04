@@ -124,8 +124,6 @@ class CTraderClient:
             for bar in event.trendbar:
                 if bar.period == ProtoOATrendbarPeriod.M5:
                     symbol_id = event.symbolId
-                    # utcTimestampInMinutes identifies the bar (e.g. 07:10 for the 07:10-07:15 bar)
-                    # We only process if this is a NEW bar we haven't seen yet.
                     current_ts = bar.utcTimestampInMinutes
                    
                     last_ts = self.last_bar_timestamps.get(symbol_id)
@@ -133,9 +131,17 @@ class CTraderClient:
                     if last_ts is None or current_ts > last_ts:
                         self.logger.info(f"M5 Candle closed for symbol {symbol_id} (TS: {current_ts})")
                         self.last_bar_timestamps[symbol_id] = current_ts
+                        
+                        # Extract candle data from the event to avoid extra fetch
+                        candle_data = {
+                            'timestamp': current_ts,
+                            'bar': bar # Pass the raw bar object
+                        }
+                        
                         try:
                             if self.on_candle_closed:
-                                self.on_candle_closed(symbol_id)
+                                # Trigger orchestrator with the data we already have
+                                self.on_candle_closed(symbol_id, candle_data)
                         except Exception as e:
                             self.logger.error(f"Error in on_candle_closed callback: {e}")
                     else:

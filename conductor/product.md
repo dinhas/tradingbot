@@ -1,38 +1,31 @@
-# Initial Concept
-The user wants to implement the TradeGuard meta-labeling system, a secondary filtering layer using Reinforcement Learning (PPO) to decide whether a trade signal from the Alpha model should be executed or blocked. This agent aims to maximize total portfolio profit by learning to filter out low-quality trades.
-
 # Product Vision
-TradeGuard will act as a secondary RL agent that receives trade signals from the Alpha model and determines whether to allow execution. **Note: The filtering layer is a separate end-of-loop component that will be implemented after the model is trained.**
+A production-ready autonomous trading system powered by Reinforcement Learning, integrating Alpha (Signal Generation) and Risk (Position Management) models into a unified execution pipeline via cTrader Open API.
 
 # Success Metrics
-- **Precision:** > 75% (True Wins / Predicted Wins)
-- **Max Portfolio Drawdown (Backtest 2025):** < 40%
-- **Max Daily Drawdown:** < 10%
-- **Win Rate:** Improve from ~45% to > 55%
-- **Trade Filtering:** Successfully filter 20-35% of low-confidence signals (implemented post-training).
+- **Sharpe Ratio:** ≥ 8.0
+- **Max Portfolio Drawdown:** < 20%
+- **Profit Factor:** ≥ 2.5
+- **Win Rate:** > 45%
 
-# Implementation Priority
-**Phase 1: Dataset Generation (COMPLETED)**
-*   Implemented `generate_dataset.py` with multi-core support and virtual signal capture.
-*   Engineered 60 predictive features across 6 key categories.
-*   Successfully generated high-density training datasets by capturing all Alpha decisions > 0.33 threshold (ignoring position state).
+# Implementation Status
 
-**Phase 2: Model Training (COMPLETED)**
-*   Implemented `TradeGuardEnv` (Gymnasium) with hybrid PnL reward logic.
-*   Created `train_guard.py` for automated PPO training using Stable-Baselines3.
-*   Integrated configurable hyperparameter management via YAML.
-*   Automated model artifact saving and TensorBoard logging support.
+**Phase 1: Signal Generation (Alpha)**
+*   Implemented PPO-based Alpha model with 140 technical features.
+*   Successfully trained on major FX pairs (EURUSD, GBPUSD, USDJPY, USDCHF) and XAUUSD.
+*   Achieved high profit factor in single-pair backtests.
 
-**Phase 4: Live Execution (COMPLETED)**
+**Phase 2: Risk Management (Risk)**
+*   Implemented PPO-based Risk model for dynamic position sizing, SL, and TP.
+*   Engineered 165 features combining market state and portfolio health.
+*   Optimized for maximum profit capture while maintaining strict risk limits (2% per trade).
+
+**Phase 3: Live Execution**
 *   Implemented production-ready autonomous trading system using cTrader Open API.
-*   Established sequential inference pipeline: Alpha -> Risk -> TradeGuard.
+*   Established sequential inference pipeline: Alpha -> Risk.
 *   Integrated real-time Discord notifications for trade events and system health.
 *   Implemented connection resilience with exponential backoff and heartbeats.
 *   Containerized the entire pipeline with Docker for VPS deployment.
 
-**Phase 3: Three-Layer Backtest Integration (COMPLETED)**
-*   Implemented `backtest_full_system.py` integrating Alpha (PPO), Risk (PPO), and TradeGuard (PPO).
-*   Established strict feature parity between training and inference using `TradeGuardFeatureBuilder`.
-*   Integrated a "Shadow Portfolio" (Baseline) system to simulate performance without filtering for direct value-add comparison.
-*   Implemented automated virtual simulation for blocked trades to calculate Opportunity Cost and Block Quality.
-*   Developed a comprehensive visualization suite featuring comparative equity curves, probability distributions, and block quality timelines.
+**Phase 4: Backtest Integration**
+*   Implemented combined backtest integrating Alpha and Risk models.
+*   Developed a comprehensive visualization suite featuring equity curves, PnL distribution, and per-asset breakdown.
