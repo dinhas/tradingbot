@@ -74,7 +74,7 @@ class TrainingDatasetGenerator:
             
         return data
 
-    def generate(self, output_file='TradeGuard/data/training_dataset.parquet', chunk_size=50000):
+    def generate(self, output_file='TradeGuard/data/tradeguard_dataset.parquet', chunk_size=50000):
         # Load Risk Model and Normalizer
         risk_model_path = "models/checkpoints/risk/model10M.zip"
         risk_norm_path = "models/checkpoints/risk/model10M.pkl"
@@ -146,8 +146,16 @@ class TrainingDatasetGenerator:
                 
                 steps_to_skip = start_idx - slice_start
                 
+                # Initialize Synthetic Account State
+                virtual_equity = 100000.0
+                peak_equity = 100000.0
+                
                 for step in range(len(raw_env.processed_data)):
                     raw_env.current_step = step
+                    
+                    # Update raw_env state with synthetic values so feature calculator picks them up
+                    raw_env.equity = virtual_equity
+                    raw_env.peak_equity = peak_equity
                     
                     if step < steps_to_skip:
                         # Update action history even during warmup
@@ -166,6 +174,8 @@ class TrainingDatasetGenerator:
                         continue
 
                     trade_infos = {}
+                    step_pnl = 0.0
+                    
                     for asset in self.assets:
                         raw_env.current_asset = asset
                         obs = raw_env._get_observation()
@@ -180,18 +190,14 @@ class TrainingDatasetGenerator:
                             stats['alpha_signals'] += 1
                             
                             # Construct 45-dim observation for Risk Model
-                            # Alpha features (40) + Account state (5)
-                            drawdown = 1.0 - (raw_env.equity / raw_env.peak_equity)
+                            drawdown = 1.0 - (virtual_equity / peak_equity)
                             account_obs = np.array([1.0, drawdown, 0.0, 1.0, 0.0], dtype=np.float32)
                             risk_obs = np.concatenate([obs, account_obs])
                             
                             norm_risk_obs = self.risk_norm_env.normalize_obs(risk_obs)
                             risk_action, _ = risk_model.predict(norm_risk_obs, deterministic=True)
                             
-                            # Ensure risk_action is a 1D array [SL_Mult, TP_Mult]
                             risk_action = np.atleast_1d(risk_action.squeeze())
-                            
-                            # Risk model now has 2 outputs: [SL_Mult, TP_Mult]
                             sl_mult = np.clip((risk_action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)
                             tp_mult = np.clip((risk_action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
                             
@@ -205,7 +211,7 @@ class TrainingDatasetGenerator:
                                 'sl': price - (direction * sl_mult * atr),
                                 'tp': price + (direction * tp_mult * atr),
                                 'direction': direction,
-                                'risk_val': 1.0 # Placeholder since new Risk model doesn't output confidence
+                                'risk_val': 1.0
                             }
                         
                         action_history[asset].append(direction)
@@ -214,6 +220,9 @@ class TrainingDatasetGenerator:
                     if trade_infos:
                         parsed_actions_for_state = {a: {'direction': action_history[a][-1]} for a in self.assets}
                         portfolio_state = self._get_portfolio_state(raw_env, parsed_actions_for_state, action_history)
+                        
+                        # Override portfolio state with synthetic equity values
+                        portfolio_state['total_drawdown'] = 1.0 - (virtual_equity / peak_equity)
                         
                         for asset, t_info in trade_infos.items():
                             # Get 25-dim features for this specific asset
@@ -231,6 +240,12 @@ class TrainingDatasetGenerator:
                             result = raw_env._simulate_trade_outcome_with_timing(asset)
                             label = 1 if result['exit_reason'] == 'TP' or (result['pnl'] > 0 and result['closed']) else 0
                             
+                            # Accumulate PnL for synthetic equity tracking
+                            # Note: We assume the TradeGuard 'Allowed' it for the sake of data simulation,
+                            # or we can just accumulate the Alpha performance to show Drawdown context.
+                            # Let's accumulate Alpha's raw PnL to show "What happens if we took everything".
+                            step_pnl += result['pnl']
+                            
                             # Create row restricted to 25 features + this asset's outcome
                             row = {f'f_{i}': val for i, val in enumerate(tg_features)}
                             row['target'] = float(label)
@@ -243,6 +258,15 @@ class TrainingDatasetGenerator:
                             
                             # Reset position for next asset/step simulation
                             raw_env.positions[asset] = None
+
+                    # Update Synthetic Equity
+                    virtual_equity += step_pnl
+                    if virtual_equity > peak_equity:
+                        peak_equity = virtual_equity
+                    
+                    # Prevent bankruptcy simulation
+                    if virtual_equity < 50000:
+                        virtual_equity = 100000.0 # Reset if blown up, to keep generating valid data
 
                     stats['total_steps'] += 1
 

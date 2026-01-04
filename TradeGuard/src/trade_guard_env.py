@@ -22,6 +22,10 @@ class TradeGuardEnv(gym.Env):
         
         # Load Dataset
         self.df = pd.read_parquet(self.dataset_path)
+        
+        # Shuffle for IID training (Contextual Bandit style)
+        self.df = self.df.sample(frac=1.0).reset_index(drop=True)
+        
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         
         # Define Spaces

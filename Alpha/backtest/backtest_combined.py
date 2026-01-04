@@ -14,6 +14,8 @@ Usage:
 
 import os
 import sys
+# Fix for WinError 1114: Import torch before other libraries (especially numpy/scipy)
+import torch
 from pathlib import Path
 
 # Add project root to sys.path to allow absolute imports
