@@ -48,10 +48,31 @@ def run_pipeline(force_download=False, force_generate=False, config_path="TradeG
         if not os.path.exists(alpha_model_path):
             logger.error(f"Alpha model not found at {alpha_model_path}. Cannot generate dataset.")
             return
+        
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(dataset_file), exist_ok=True)
             
         generator = TrainingDatasetGenerator(alpha_model_path, data_dir=market_data_dir)
-        # Note: generator.generate saves to its own default or takes an argument
         generator.generate(output_file=dataset_file, chunk_size=50000)
+    
+    # CRITICAL: Verify dataset was created before training
+    if not os.path.exists(dataset_file):
+        logger.error(f"❌ Dataset file {dataset_file} was NOT created! Generation failed.")
+        logger.error("Check the logs above for errors during generation.")
+        return
+    
+    # Verify dataset is not empty
+    import pandas as pd
+    try:
+        df_check = pd.read_parquet(dataset_file)
+        if len(df_check) == 0:
+            logger.error(f"❌ Dataset file {dataset_file} is EMPTY! Generation produced no samples.")
+            return
+        logger.info(f"✅ Dataset verified: {len(df_check)} samples ready for training.")
+        del df_check
+    except Exception as e:
+        logger.error(f"❌ Failed to read dataset: {e}")
+        return
 
     # 4. Training
     logger.info("--- Step 3: Model Training ---")

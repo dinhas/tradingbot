@@ -115,6 +115,10 @@ class TrainingDatasetGenerator:
         
         alpha_model = PPO.load(self.model_path, env=alpha_vec_normalize)
         logger.info("Alpha model and normalizer loaded.")
+        
+        # Diagnostic: Check observation space compatibility
+        logger.info(f"Alpha model observation space: {alpha_model.observation_space}")
+        logger.info(f"Alpha normalizer observation space: {alpha_vec_normalize.observation_space}")
 
         min_len = min(len(df) for df in self.full_data.values())
         total_rows = min_len
@@ -150,13 +154,17 @@ class TrainingDatasetGenerator:
                     if step < steps_to_skip:
                         # Update action history even during warmup
                         for asset in self.assets:
-                            raw_env.current_asset = asset
-                            obs = raw_env._get_observation()
-                            norm_obs = alpha_vec_normalize.normalize_obs(obs)
-                            action, _ = alpha_model.predict(norm_obs, deterministic=True)
-                            direction = 1 if action[0] > 0.33 else (-1 if action[0] < -0.33 else 0)
-                            action_history[asset].append(direction)
-                            if len(action_history[asset]) > 20: action_history[asset].pop(0)
+                            try:
+                                raw_env.current_asset = asset
+                                obs = raw_env._get_observation()
+                                norm_obs = alpha_vec_normalize.normalize_obs(obs)
+                                action, _ = alpha_model.predict(norm_obs, deterministic=True)
+                                direction = 1 if action[0] > 0.33 else (-1 if action[0] < -0.33 else 0)
+                                action_history[asset].append(direction)
+                                if len(action_history[asset]) > 20: action_history[asset].pop(0)
+                            except Exception as e:
+                                logger.error(f"Error during warmup at step {step}, asset {asset}: {e}")
+                                raise
                         continue
 
                     trade_infos = {}
