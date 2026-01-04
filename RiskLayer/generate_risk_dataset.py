@@ -273,10 +273,26 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
     low_arrays = {a: env.low_arrays[a] for a in assets}
     atr_arrays = {a: env.atr_arrays[a] for a in assets}
     
+    
     # 3. Build Observation Matrix (Vectorized)
-    logger.info("Constructing MASTER feature cache (140 cols) for efficient slicing...")
-    # This might take a moment but is much faster than doing it in a loop
+    logger.info("Constructing MASTER feature cache (140 cols)...")
+    
+    # OPTIMIZATION: Free environment memory BEFORE building the master cache if possible
+    # We need df for building cache, and arrays for batching.
+    # We extracted arrays. Can we delete env?
+    del env.raw_data
+    del env.data
+    del env.feature_engine
+    gc.collect()
+    
     all_observations = build_master_feature_cache(df, assets, start_idx, end_idx)
+    
+    # OPTIMIZATION: Free dataframe immediately
+    logger.info("Master cache built. Freeing source DataFrame...")
+    del df
+    del env
+    gc.collect()
+    
     logger.info(f"Master cache built. Shape: {all_observations.shape}. Size: {all_observations.nbytes / 1024**2:.2f} MB")
     
     # 4. Batch Processing Loop
