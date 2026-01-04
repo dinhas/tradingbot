@@ -62,7 +62,7 @@ class TeeStderr:
 
 # Defaults
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
-MODELS_DIR = os.path.join(PROJECT_ROOT, "models", "checkpoints")
+MODELS_DIR = os.path.join(PROJECT_ROOT, "models", "checkpoints", "alpha")
 
 def get_latest_model_files(models_dir):
     """Finds the latest zip model and its corresponding vecnormalize file."""
