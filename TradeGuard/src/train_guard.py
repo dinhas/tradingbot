@@ -59,7 +59,7 @@ class TradeGuardTrainer:
             norm_reward=True,   # Normalize rewards
             clip_obs=10.0,      # Clip normalized obs to [-10, 10]
             clip_reward=10.0,   # Clip normalized rewards
-            gamma=0.99,         # Discount factor for reward normalization
+            gamma=0.0,          # Set to 0.0 for 1-step logic (matches PPO gamma)
             epsilon=1e-8        # Small constant for numerical stability
         )
         logger.info("VecNormalize wrapper applied for observation/reward normalization.")
@@ -89,6 +89,7 @@ class TradeGuardTrainer:
             vf_coef=ppo_params['vf_coef'],
             max_grad_norm=ppo_params['max_grad_norm'],
             target_kl=ppo_params['target_kl'],
+            policy_kwargs=ppo_params.get('policy_kwargs', {}),
             tensorboard_log=tensorboard_log
         )
         return model

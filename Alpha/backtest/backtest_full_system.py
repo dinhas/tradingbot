@@ -267,7 +267,7 @@ class FullSystemBacktest(CombinedBacktest):
                             'size': size_pct,
                             'sl_mult': sl_mult,
                             'tp_mult': tp_mult,
-                            'risk_raw': risk_raw_scaled,
+                            'risk_raw': risk_raw,
                             # Additional info for Feature Builder
                             'entry': entry_price,
                             'sl': entry_price - (direction * sl_mult * atr),

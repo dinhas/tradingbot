@@ -49,7 +49,12 @@ class TradeGuardEnv(gym.Env):
         if seed is not None:
             np.random.seed(seed)
             
-        self.current_step = 0
+        # Randomize start point during training to avoid correlated parallel workers
+        if self.total_steps > 1000:
+             self.current_step = np.random.randint(0, self.total_steps - 512)
+        else:
+             self.current_step = 0
+             
         obs = self.features[self.current_step]
         info = {}
         
