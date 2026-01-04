@@ -287,6 +287,9 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
     
     all_observations = build_master_feature_cache(df, assets, start_idx, end_idx)
     
+    # Store timestamps before deleting df
+    timestamps = df.index[start_idx:end_idx]
+
     # OPTIMIZATION: Free dataframe immediately
     logger.info("Master cache built. Freeing source DataFrame...")
     del df
@@ -313,7 +316,6 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
     batch_starts = np.arange(0, num_rows, BATCH_SIZE)
     
     total_signals = 0
-    timestamps = df.index[start_idx:end_idx]
     
     # Store all batch dataframes to concat at the end
     all_batch_dfs = []

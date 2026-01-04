@@ -88,7 +88,7 @@ class RiskManagementEnv(gym.Env):
         # Check timestamps
         parquet_mtime = os.path.getmtime(self.dataset_path)
         cache_valid = True
-        required_files = ['features.npy', 'metadata.npy', 'entry_prices.npy', 'atrs.npy', 
+        required_files = ['features.npy', 'entry_prices.npy', 'atrs.npy', 
                          'directions.npy', 'max_profit_pcts.npy', 'max_loss_pcts.npy', 
                          'close_prices.npy', 'is_usd_quote.npy', 'is_usd_base.npy']
                          
