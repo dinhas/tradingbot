@@ -357,7 +357,13 @@ class RiskManagementEnv(gym.Env):
             self.history_actions.append(np.array([0.0, 0.0], dtype=np.float32))
             self.history_pnl.append(0.0)
             self.current_step += 1
+            
+            # Check termination (BUG FIX: Ensure we die if too poor to trade)
             terminated = False
+            if self.equity < 1.0:
+                terminated = True
+                reward = -20.0
+            
             truncated = (self.current_step >= self.EPISODE_LENGTH)
             return self._get_observation(), reward, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED_SMALL', 'lots': 0.0, 'equity': self.equity}
 
