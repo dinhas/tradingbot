@@ -291,20 +291,24 @@ class RiskManagementEnv(gym.Env):
         is_usd_base = self.is_usd_base_arr[global_idx]
         
         # --- 3. Execution with Spreads & Slippage ---
-        # Slippage moves the entry price AGAINST the trade direction
+        # Determine pip size (0.01 for JPY/large prices, 0.0001 for others)
+        pip_size = 0.01 if entry_price_raw > 20.0 else 0.0001
+        
+        # Calculate full spread in price units
+        full_spread_price = (self.SPREAD_MIN_PIPS * pip_size) + (self.SPREAD_ATR_FACTOR * atr)
+        half_spread_price = full_spread_price / 2.0
+        
+        # Slippage Configuration (Adverse entry movement)
         if self.ENABLE_SLIPPAGE:
             slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-            slippage_price = slippage_pips * 0.0001 * entry_price_raw
-            entry_price = entry_price_raw + (direction * slippage_price)
+            slippage_price = slippage_pips * pip_size
         else:
             slippage_price = 0.0
-            entry_price = entry_price_raw
 
-        # spread_val represents the HALF-spread (distance from Mid to Ask/Bid)
-        spread_val = (self.SPREAD_MIN_PIPS * 0.0001) + (self.SPREAD_ATR_FACTOR * atr)
-        
-        # Adjust Entry for Spread: Long -> Buy at Ask, Short -> Sell at Bid
-        entry_price += direction * spread_val
+        # Entry Price: Buy at Ask + Slippage, Sell at Bid - Slippage
+        # direction: 1 (Long) -> Entry = Mid + S + Slip
+        # direction: -1 (Short) -> Entry = Mid - S - Slip
+        entry_price = entry_price_raw + direction * (half_spread_price + slippage_price)
 
         # --- 4. Position Sizing & Margin ---
         # Safer Drawdown Calc
@@ -320,8 +324,8 @@ class RiskManagementEnv(gym.Env):
         tp_dist_price = tp_mult * atr
         
         # ATR-based Min SL (SCALPING ADJUSTED)
-        min_sl_dist = max(0.0001 * entry_price, 0.2 * atr)
-        if sl_dist_price < min_sl_dist: sl_dist_price = min_sl_dist
+        min_sl = max(0.0001 * entry_price, 0.2 * atr)
+        if sl_dist_price < min_sl: sl_dist_price = min_sl
         
         risk_amount_cash = self.equity * actual_risk_pct
         
@@ -364,51 +368,46 @@ class RiskManagementEnv(gym.Env):
         self.history_actions.append(decoded_action)
 
         # --- 5. Outcome Simulation (Bid/Ask Hit Logic) ---
+        # SL/TP Prices (Execution price targets)
         sl_price = entry_price - (direction * sl_dist_price)
         tp_price = entry_price + (direction * tp_dist_price)
         
-        sl_pct_dist_raw = abs(sl_dist_price / entry_price_raw)
-        tp_pct_dist_raw = abs(tp_dist_price / entry_price_raw)
+        # Convert distances and costs to Mid-Percentage for dataset comparison
+        sl_pct_dist_raw = sl_dist_price / entry_price_raw
+        tp_pct_dist_raw = tp_dist_price / entry_price_raw
+        full_spread_pct = full_spread_price / entry_price_raw
+        slippage_pct = slippage_price / entry_price_raw
+
+        # --- Explicit Bid/Ask Hit Logic using Mid excursions ---
+        # Long: SL triggers on Bid. Bid = Mid - S.
+        #      Hit SL if Mid - S <= sl_price 
+        #      Equivalent to: Mid - EntryRaw <= sl_price - EntryRaw + S
+        #      Equivalent to: DeltaMid <= (dist_from_mid_to_sl) + S
+        # Since EntryPrice = Mid + S + Slip, sl_price = Mid + S + Slip - sl_dist
+        # Hit SL if Mid - S <= Mid + S + Slip - sl_dist
+        #          -S <= S + Slip - sl_dist
+        #          DeltaMid <= -sl_dist + 2S + Slip
+        # Short: Reverses exactly.
         
-        friction_pct = (slippage_price + spread_val) / entry_price_raw
-        spread_half_pct = spread_val / entry_price_raw
-
-        # Use pre-loaded Arrays for Shadow Simulation (Mid-price basis)
-        max_favorable = self.max_profit_pcts[global_idx] 
-        max_adverse = self.max_loss_pcts[global_idx]
-
-        # --- Simplified Direction-Agnostic Hit Logic ---
         # Dataset 'max_adverse' is always negative (move AGAINST trade)
         # Dataset 'max_favorable' is always positive (move WITH trade)
         
-        # Hit SL if Adverse Move is deeper than (Stop Dist - Costs)
-        # Costs (Friction + Spread) effectively bring the SL closer.
-        # Logic: Is max_adverse <= (cost - dist)? 
-        # Example: Dist=0.01, Cost=0.002. Stop is at -0.008 effective move.
-        # max_adverse must be <= -0.008.
-        hit_sl = max_adverse <= (friction_pct + spread_half_pct - sl_pct_dist_raw)
+        max_adverse = self.max_loss_pcts[global_idx]
+        max_favorable = self.max_profit_pcts[global_idx]
+        
+        hit_sl = max_adverse <= (-sl_pct_dist_raw + full_spread_pct + slippage_pct)
+        hit_tp = max_favorable >= (tp_pct_dist_raw + full_spread_pct + slippage_pct)
 
-        # Hit TP if Favorable Move is larger than (Target Dist + Costs)
-        # Costs push the TP further away.
-        # Logic: Is max_favorable >= (dist + cost)?
-        hit_tp = max_favorable >= (tp_pct_dist_raw + friction_pct + spread_half_pct)
-
-        if direction == 1: # LONG
-             sl_pct_dist = -sl_pct_dist_raw
-             tp_pct_dist = tp_pct_dist_raw
-        else: # SHORT
-             sl_pct_dist = sl_pct_dist_raw
-             tp_pct_dist = -tp_pct_dist_raw
-
+        # Resolve simultaneous hits (First Touch priority: usually SL)
         if hit_sl and hit_tp:
-            if abs(sl_pct_dist) < abs(tp_pct_dist):
+            # Simple heuristic: Tightest level gets hit first
+            if sl_pct_dist_raw < tp_pct_dist_raw:
                 hit_tp = False
             else:
                 hit_sl = False 
         
-        exit_price = self.close_prices[global_idx]
+        # --- 6. Rewards & PnL ---
         exited_on = 'TIME'
-        
         if hit_sl:
             exit_price = sl_price
             exited_on = 'SL'
@@ -418,7 +417,12 @@ class RiskManagementEnv(gym.Env):
         else:
             if self.has_time_limit and self.hours_to_exits[global_idx] > 24:
                 exited_on = 'TIME_LIMIT'
-            exit_price = self.close_prices[global_idx]
+            
+            # Exit at closing BID (for Long) or ASK (for Short)
+            # direction 1 (Long) -> Exit at Bid = Mid - S
+            # direction -1 (Short) -> Exit at Ask = Mid + S
+            exit_price = self.close_prices[global_idx] - (direction * half_spread_price)
+
             
         # --- 6. Rewards & PnL ---
         price_change = exit_price - entry_price
