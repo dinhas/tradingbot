@@ -70,17 +70,17 @@ if torch.cuda.is_available():
 # PPO Hyperparameters (Expert Tuned for Financial Data)
 # HYPERPARAMETERS - "Max Efficiency Edition" 🚀
 
-TOTAL_TIMESTEPS = 8_000_000 
+TOTAL_TIMESTEPS = 25_000_000 
 LEARNING_RATE = 1.5e-4    # 📈 Increased for maximum learning in 5M steps.
 N_STEPS = 16384           # ⬆️ INCREASED. Large window for stable gradient updates.
 BATCH_SIZE = 2048         # ⬆️ INCREASED. Stability with higher Learning Rate.
 GAMMA = 0.98              # 📉 Slightly lower. Focus on high-quality trades, not infinite future.
 GAE_LAMBDA = 0.95         
-ENT_COEF = 0.08           # ⬆️ Increased starting entropy for aggressive exploration.
+ENT_COEF = 0.05           # ⬆️ Increased starting entropy for aggressive exploration.
 VF_COEF = 0.5
 MAX_GRAD_NORM = 0.5       
 CLIP_RANGE = 0.2          
-N_EPOCHS = 10             # ⬆️ INCREASED. Squeeze more learning from each batch.
+N_EPOCHS = 8             # ⬆️ INCREASED. Squeeze more learning from each batch.
 
 # Why this works:
 # 1. 1.5e-4 LR + 5M Steps = Aggressive but stable convergence.
@@ -101,22 +101,48 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-class EntropyDecayCallback(BaseCallback):
+class StepBasedEntropyCallback(BaseCallback):
     """
-    Decays entropy coefficient linearly over time to encourage 
-    exploration early (learning to block) and exploitation later.
+    6) ENTROPY SCHEDULE
+    - 0 to 5M steps: ent_coef = 0.06
+    - 5M to 15M steps: ent_coef = 0.03
+    - 15M+ steps: ent_coef = 0.015
     """
-    def __init__(self, initial_ent=0.08, final_ent=0.005, decay_steps=4_000_000):
+    def __init__(self):
         super().__init__()
-        self.initial_ent = initial_ent
-        self.final_ent = final_ent
-        self.decay_steps = decay_steps
+
+    def _on_step(self):
+        steps = self.num_timesteps
+        if steps < 5_000_000:
+            self.model.ent_coef = 0.06
+        elif steps < 15_000_000:
+            self.model.ent_coef = 0.03
+        else:
+            self.model.ent_coef = 0.015
+        return True
+
+class GlobalStepCallback(BaseCallback):
+    """Updates the shared global step counter for environments."""
+    def __init__(self, shared_step, update_freq=1024):
+        super().__init__()
+        self.shared_step = shared_step
+        self.update_freq = update_freq
     
     def _on_step(self):
-        progress = min(1.0, self.num_timesteps / self.decay_steps)
-        new_ent = self.initial_ent - progress * (self.initial_ent - self.final_ent)
-        self.model.ent_coef = new_ent
+        # PERFORMANCE FIX: Only update shared memory every N steps to avoid lock contention
+        if self.n_calls % self.update_freq == 0:
+            self.shared_step.value = self.num_timesteps
         return True
+
+# ... (keep existing code)
+
+    # 1. Create Vectorized Environment (Parallel)
+    # Shared Step Counter for Staged Rewards
+    # PERFORMANCE FIX: lock=False to remove synchronization overhead
+    shared_step = multiprocessing.Value('l', 0, lock=False)
+    
+    # SubprocVecEnv runs each env in a separate process
+    env_fns = [make_env(i, shared_step=shared_step) for i in range(N_ENVS)]
 
 class TensorboardCallback(BaseCallback):
     """
@@ -139,10 +165,10 @@ class TensorboardCallback(BaseCallback):
                      self.logger.record('custom/lots', info['lots'])
         return True
 
-def make_env(rank, seed=0):
+def make_env(rank, seed=0, shared_step=None):
     """Utility function for multiprocessed env."""
     def _init():
-        env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
+        env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True, shared_step_counter=shared_step)
         env.reset(seed=seed + rank)
         return env
     return _init
@@ -162,8 +188,12 @@ def train():
     print("Cache validated. Starting parallel environments...")
 
     # 1. Create Vectorized Environment (Parallel)
+    # Shared Step Counter for Staged Rewards
+    # PERFORMANCE FIX: lock=False to remove synchronization overhead
+    shared_step = multiprocessing.Value('l', 0, lock=False)
+    
     # SubprocVecEnv runs each env in a separate process
-    env_fns = [make_env(i) for i in range(N_ENVS)]
+    env_fns = [make_env(i, shared_step=shared_step) for i in range(N_ENVS)]
     vec_env = SubprocVecEnv(env_fns)
     
     # CRITICAL: Normalize observations. 
@@ -215,18 +245,15 @@ def train():
         name_prefix="risk_model_ppo"
     )
     
-    entropy_callback = EntropyDecayCallback(
-        initial_ent=ENT_COEF, 
-        final_ent=0.001, 
-        decay_steps=TOTAL_TIMESTEPS // 2
-    )
+    entropy_callback = StepBasedEntropyCallback()
+    global_step_callback = GlobalStepCallback(shared_step)
     tb_callback = TensorboardCallback()
 
     # 4. Train
     try:
         model.learn(
             total_timesteps=TOTAL_TIMESTEPS, 
-            callback=[checkpoint_callback, entropy_callback, tb_callback],
+            callback=[checkpoint_callback, entropy_callback, tb_callback, global_step_callback],
             progress_bar=True
         )
         

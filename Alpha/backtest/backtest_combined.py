@@ -52,7 +52,7 @@ from RiskLayer.src.risk_env import RiskManagementEnv
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-initial_equity=10.0
+initial_equity=10000.0
 
 class CombinedBacktest:
     """Combined backtest using Alpha model for direction and Risk model for SL/TP/sizing"""
@@ -86,7 +86,11 @@ class CombinedBacktest:
         self.ENABLE_SLIPPAGE = True
         self.SLIPPAGE_MIN_PIPS = 0.5
         self.SLIPPAGE_MAX_PIPS = 1.5
-        self.SPREAD_PIPS = 1.0       # 1.0 pip standard spread
+        
+        # SPREAD CONFIGURATION (Dynamic, matching risk_env.py)
+        # RiskEnv: SPREAD_MIN_PIPS + (SPREAD_ATR_FACTOR * ATR)
+        self.SPREAD_MIN_PIPS = 0.5
+        self.SPREAD_ATR_FACTOR = 0.05
         
         # Per-asset history tracking
         self.asset_histories = {
@@ -100,6 +104,67 @@ class CombinedBacktest:
         # Track current equity and peak
         self.equity = initial_equity
         self.peak_equity = initial_equity
+
+    def calculate_dynamic_spread(self, price, atr):
+        """Calculate dynamic spread matching RiskEnv logic"""
+        # Determine pip size (0.01 for JPY/large prices, 0.0001 for others)
+        pip_size = 0.01 if price > 20.0 else 0.0001
+        
+        # Calculate full spread in price units
+        full_spread_price = (self.SPREAD_MIN_PIPS * pip_size) + (self.SPREAD_ATR_FACTOR * atr)
+        return full_spread_price
+        
+    def _strict_update_positions(self):
+        """
+        Check SL/TP with strict Spread application (Exit Spread).
+        Matches RiskEnv: Hit SL if Mid <= SL + HalfSpread (Long)
+        """
+        current_prices = self.env._get_current_prices()
+        current_atrs = self.env._get_current_atrs()
+        
+        # Iterate over copy
+        for asset, pos in list(self.env.positions.items()):
+            if pos is None:
+                continue
+            
+            price = current_prices[asset]
+            atr = current_atrs[asset]
+            
+            # Calculate Dynamic Spread for Exit
+            full_spread = self.calculate_dynamic_spread(price, atr)
+            half_spread = full_spread / 2.0
+            
+            # Check SL/TP (Trigger on Bid/Ask, not Mid)
+            if pos['direction'] == 1:  # Long
+                # Exit Sell at Bid = Mid - HalfSpread.
+                # Trigger if Bid <= SL.
+                # Mid - HalfSpread <= SL  =>  Mid <= SL + HalfSpread
+                if price <= (pos['sl'] + half_spread):
+                    self.env._close_position(asset, pos['sl'])
+                
+                # Trigger if Bid >= TP ?? No, Limit order (TP) usually sells at Ask? 
+                # Or Bid? Long TP is Sell. Sell at Bid.
+                # RiskEnv implies TP is hard to hit too?
+                # RiskEnv: Hit TP if MaxFav >= TP_Dist + Spread.
+                # i.e. Price must go HIGHER by spread to cover valid exit?
+                # Actually, standard MT4: TP for Long is Sell Limit. Executed at Bid.
+                # Values:
+                # Bid = Mid - 0.5*S.
+                # If Bid >= TP. Mid - 0.5*S >= TP. Mid >= TP + 0.5*S.
+                elif price >= (pos['tp'] + half_spread):
+                    self.env._close_position(asset, pos['tp'])
+                    
+            else:  # Short
+                # Exit Buy at Ask = Mid + HalfSpread.
+                # Trigger if Ask >= SL.
+                # Mid + HalfSpread >= SL  =>  Mid >= SL - HalfSpread
+                if price >= (pos['sl'] - half_spread):
+                    self.env._close_position(asset, pos['sl'])
+                
+                # Trigger if Ask <= TP.
+                # Mid + HalfSpread <= TP  =>  Mid <= TP - HalfSpread
+                elif price <= (pos['tp'] - half_spread):
+                    self.env._close_position(asset, pos['tp'])
         
     def build_risk_observation(self, asset, alpha_obs):
         """Build 45-feature observation for risk model"""
@@ -217,7 +282,7 @@ class CombinedBacktest:
             'position_size': position_size
         }
     
-    def run_backtest(self, episodes=1):
+    def run_backtest(self, episodes=1, max_steps=None):
         """Run combined backtest"""
         metrics_tracker = BacktestMetrics()
         logger.info(f"Running {episodes} episodes...")
@@ -236,6 +301,11 @@ class CombinedBacktest:
             alpha_non_zero = 0
             
             while not done:
+                # Check explicit step limit
+                if max_steps is not None and step_count >= max_steps:
+                    logger.info(f"Reached max steps limit: {max_steps}")
+                    break
+
                 combined_actions = {}
                 
                 # For each asset, get Alpha direction
@@ -301,12 +371,24 @@ class CombinedBacktest:
                         # Slippage + Spread (Adverse movement)
                         if self.ENABLE_SLIPPAGE:
                             slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-                            # Add half spread to slippage
-                            friction_pips = slippage_pips + (self.SPREAD_PIPS / 2.0)
-                            friction_price = friction_pips * 0.0001 * price_raw
+                            
+                            # FULL DYNAMIC SPREAD
+                            full_spread_price = self.calculate_dynamic_spread(price_raw, atr)
+                            half_spread_price = full_spread_price / 2.0
+                            
+                            # Friction = Slippage + Half Spread
+                            if self.ENABLE_SLIPPAGE:
+                                pip_val = 0.01 if price_raw > 20 else 0.0001
+                                slippage_price = slippage_pips * pip_val
+                            else:
+                                slippage_price = 0.0
+                                
+                            friction_price = slippage_price + half_spread_price
                             price = price_raw + (direction * friction_price)
                         else:
-                            price = price_raw + (direction * (self.SPREAD_PIPS / 2.0) * 0.0001 * price_raw)
+                            # Still pay spread
+                            full_spread_price = self.calculate_dynamic_spread(price_raw, atr)
+                            price = price_raw + (direction * (full_spread_price / 2.0))
                             
                         if current_pos is None:
                             self.env._open_position(asset, direction, act, price, atr)
@@ -318,16 +400,24 @@ class CombinedBacktest:
                         if current_pos is not None:
                             # Apply exit friction (slippage + spread)
                             slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-                            friction_pips = slippage_pips + (self.SPREAD_PIPS / 2.0)
-                            exit_friction_price = friction_pips * 0.0001 * price_raw
+                            
+                            full_spread_price = self.calculate_dynamic_spread(price_raw, atr)
+                            half_spread_price = full_spread_price / 2.0
+                            
+                            slippage_price = slippage_pips * (0.01 if price_raw > 20 else 0.0001) if self.ENABLE_SLIPPAGE else 0.0
+                            friction_price = slippage_price + half_spread_price
+                            
                             # Market close means trading against the current position
                             exit_direction = -current_pos['direction']
-                            exit_price = price_raw + (exit_direction * exit_friction_price)
+                            exit_price = price_raw + (exit_direction * friction_price)
                             self.env._close_position(asset, exit_price)
                 
                 # Advance time and update
                 self.env.current_step += 1
-                self.env._update_positions()
+                
+                # USE STRICT UPDATE (Accounts for Exit Spread)
+                self._strict_update_positions()
+                
                 
                 # Update peak equity and check termination
                 self.env.peak_equity = max(self.env.peak_equity, self.env.equity)
@@ -371,6 +461,8 @@ def run_combined_backtest(args):
     logger.info(f"Alpha model: {alpha_model_path}")
     logger.info(f"Risk model: {risk_model_path}")
     logger.info(f"Data directory: {data_dir_path}")
+    if args.steps:
+        logger.info(f"Step limit: {args.steps}")
     
     # Create output directory
     output_dir_path.mkdir(parents=True, exist_ok=True)
@@ -475,7 +567,7 @@ def run_combined_backtest(args):
     )
 
     # Run backtest
-    metrics_tracker = backtest.run_backtest(episodes=args.episodes)
+    metrics_tracker = backtest.run_backtest(episodes=args.episodes, max_steps=args.steps)
 
 
 
@@ -563,6 +655,8 @@ if __name__ == "__main__":
                         help="Path to save results relative to project root")
     parser.add_argument("--episodes", type=int, default=1,
                         help="Number of episodes to run")
+    parser.add_argument("--steps", type=int, default=None,
+                        help="Limit number of steps to run (optional)")
     
     args = parser.parse_args()
     

@@ -23,9 +23,11 @@ class RiskManagementEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
     
-    def __init__(self, dataset_path, initial_equity=10.0, is_training=True):
+    def __init__(self, dataset_path, initial_equity=10.0, is_training=True, shared_step_counter=None):
         super(RiskManagementEnv, self).__init__()
         
+        self.shared_step_counter = shared_step_counter
+        self.cached_global_step = 0
         self.dataset_path = dataset_path
         self.initial_equity_base = initial_equity
         self.is_training = is_training
@@ -212,6 +214,9 @@ class RiskManagementEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
+        if self.shared_step_counter is not None:
+            self.cached_global_step = self.shared_step_counter.value
+            
         self.equity = self.initial_equity_base
         self.peak_equity = self.initial_equity_base
         self.current_step = 0
@@ -456,6 +461,13 @@ class RiskManagementEnv(gym.Env):
         realized_pct = (price_change / entry_price) * direction
         pnl_efficiency = (realized_pct / denom) * 10.0
         
+        # 4) EFFICIENCY REWARD CLIPPING (-8 to +8)
+        pnl_efficiency = np.clip(pnl_efficiency, -8.0, 8.0)
+        
+        # 3) EFFICIENCY REWARD FLOOR
+        if pnl_efficiency < 0.2:
+            pnl_efficiency = -1.0
+        
         # Smart Rewards (Regret vs. Bullet Dodger)
         regret_penalty = 0.0
         bullet_bonus = 0.0
@@ -467,16 +479,29 @@ class RiskManagementEnv(gym.Env):
             market_hit_tp_level = max_favorable >= (tp_pct_dist_raw + full_spread_pct + slippage_pct)
             
             if market_hit_tp_level:
-                # We choked a winner. Massive Penalty.
-                regret_penalty = -15.0
+                # 1) STAGED REGRET PENALTY
+                current_global_step = self.cached_global_step
+                
+                if current_global_step < 5_000_000:
+                    regret_penalty = -6.0
+                elif current_global_step < 15_000_000:
+                    regret_penalty = -10.0
+                else:
+                    regret_penalty = -15.0
             
             # Check for "Bullet Dodger" (Good Save)
             # If we didn't choke a winner, did we save ourselves from a crash?
             # Condition: Adverse move was > 2x our Stop distance
+            # 2) BULLET DODGER BONUS (+8)
             elif abs(max_adverse) > (sl_pct_dist_raw * 2.0):
-                bullet_bonus = 5.0
+                bullet_bonus = 8.0
         
-        reward = np.clip(pnl_efficiency + bullet_bonus + regret_penalty, -20.0, 20.0)
+        # 5) SURVIVAL REWARD
+        survival_reward = 0.0
+        if self.equity > 1.0:
+            survival_reward = 0.01
+
+        reward = np.clip(pnl_efficiency + bullet_bonus + regret_penalty + survival_reward, -20.0, 20.0)
         self.history_pnl.append(net_pnl / max(prev_equity, 1e-6))
         
         self.current_step += 1
