@@ -446,7 +446,7 @@ class RiskManagementEnv(gym.Env):
 
         # Efficiency Reward
         atr_ratio = atr / entry_price_raw
-        denom = max(max_favorable[global_idx], atr_ratio, 1e-5)
+        denom = max(max_favorable, atr_ratio, 1e-5)
         realized_pct = (price_change / entry_price) * direction
         pnl_efficiency = (realized_pct / denom) * 10.0
         
@@ -458,7 +458,7 @@ class RiskManagementEnv(gym.Env):
             # Check for "Regret" (Choked Winner)
             # Did the market OFFER the TP level? (Even if we stopped out first/later)
             # The logic: If the market range contained the TP, we "missed" it by stopping out.
-            market_hit_tp_level = max_favorable[global_idx] >= (tp_pct_dist_raw + full_spread_pct + slippage_pct)
+            market_hit_tp_level = max_favorable >= (tp_pct_dist_raw + full_spread_pct + slippage_pct)
             
             if market_hit_tp_level:
                 # We choked a winner. Massive Penalty.
@@ -467,7 +467,7 @@ class RiskManagementEnv(gym.Env):
             # Check for "Bullet Dodger" (Good Save)
             # If we didn't choke a winner, did we save ourselves from a crash?
             # Condition: Adverse move was > 2x our Stop distance
-            elif abs(max_adverse[global_idx]) > (sl_pct_dist_raw * 2.0):
+            elif abs(max_adverse) > (sl_pct_dist_raw * 2.0):
                 bullet_bonus = 5.0
         
         reward = np.clip(pnl_efficiency + bullet_bonus + regret_penalty, -20.0, 20.0)
