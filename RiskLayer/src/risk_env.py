@@ -477,7 +477,7 @@ class RiskManagementEnv(gym.Env):
         terminated = False
         truncated = (self.current_step >= self.EPISODE_LENGTH)
         
-        if self.equity < (self.initial_equity_base * 0.3): 
+        if self.equity < 1.0: 
             terminated = True
             reward = -20.0
             
