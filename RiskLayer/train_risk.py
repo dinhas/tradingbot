@@ -175,9 +175,10 @@ def train():
 
     # 1. Create Vectorized Environment (Parallel)
     # Shared Step Counter for Staged Rewards
-    # Changed lock=True for stability (fixes mmap pickling issue on some platforms)
-    # UPDATED: Changed to lock=False to fix 'cannot pickle mmap' on Linux/Kaggle with spawn
-    shared_step = multiprocessing.Value('l', 0, lock=False)
+    # Using Manager to avoid mmap pickling issues with spawn/cloudpickle on Linux/Kaggle
+    # value is a proxy, which is picklable
+    manager = multiprocessing.Manager()
+    shared_step = manager.Value('l', 0)
     
     # SubprocVecEnv runs each env in a separate process
     env_fns = [make_env(i, shared_step=shared_step) for i in range(N_ENVS)]
