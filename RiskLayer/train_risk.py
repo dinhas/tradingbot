@@ -134,16 +134,6 @@ class GlobalStepCallback(BaseCallback):
             self.shared_step.value = self.num_timesteps
         return True
 
-# ... (keep existing code)
-
-    # 1. Create Vectorized Environment (Parallel)
-    # Shared Step Counter for Staged Rewards
-    # PERFORMANCE FIX: lock=False to remove synchronization overhead
-    shared_step = multiprocessing.Value('l', 0, lock=False)
-    
-    # SubprocVecEnv runs each env in a separate process
-    env_fns = [make_env(i, shared_step=shared_step) for i in range(N_ENVS)]
-
 class TensorboardCallback(BaseCallback):
     """
     Custom callback for logging additional values in tensorboard.
