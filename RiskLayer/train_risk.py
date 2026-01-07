@@ -9,6 +9,14 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNorma
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.utils import set_random_seed
 from torch.nn import LeakyReLU
+import logging
+
+# Configure logging to output to stdout (which Tee will capture)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
 
 # Add src to path so we can import the environment
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
