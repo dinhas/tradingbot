@@ -110,6 +110,10 @@ class RiskManagementEnv(gym.Env):
                 time.sleep(1)
             # Re-check validity after wait
             cache_valid = True
+            for f in required_files:
+                if not os.path.exists(os.path.join(cache_dir, f)):
+                    cache_valid = False
+                    break
         
         if not cache_valid:
             # Create Lock

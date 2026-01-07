@@ -171,12 +171,6 @@ def train():
     if not os.path.exists(DATASET_PATH):
         raise FileNotFoundError(f"Dataset not found at {DATASET_PATH}")
 
-    # 0. Pre-generate Cache (Sequentially) to avoid race conditions
-    print("Pre-validating dataset cache...")
-    temp_env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
-    del temp_env
-    print("Cache validated. Starting parallel environments...")
-
     # 1. Create Vectorized Environment (Parallel)
     # Shared Step Counter for Staged Rewards
     # PERFORMANCE FIX: lock=False to remove synchronization overhead
