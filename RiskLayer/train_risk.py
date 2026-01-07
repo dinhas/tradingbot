@@ -70,7 +70,7 @@ if torch.cuda.is_available():
 # PPO Hyperparameters (Expert Tuned for Financial Data)
 # HYPERPARAMETERS - "Max Efficiency Edition" 🚀
 
-TOTAL_TIMESTEPS = 25_000_000 
+TOTAL_TIMESTEPS = 15_000_000 
 LEARNING_RATE = 1.5e-4    # 📈 Increased for maximum learning in 5M steps.
 N_STEPS = 16384           # ⬆️ INCREASED. Large window for stable gradient updates.
 BATCH_SIZE = 2048         # ⬆️ INCREASED. Stability with higher Learning Rate.
@@ -115,7 +115,7 @@ class StepBasedEntropyCallback(BaseCallback):
         steps = self.num_timesteps
         if steps < 5_000_000:
             self.model.ent_coef = 0.06
-        elif steps < 15_000_000:
+        elif steps < 10_000_000:
             self.model.ent_coef = 0.03
         else:
             self.model.ent_coef = 0.015
@@ -196,11 +196,11 @@ def train():
     
     vec_env = VecMonitor(vec_env, LOG_DIR) # Monitor wrapper for logging
 
-    # Network Architecture (Expert Recommended: Larger for 165 features)
+    # Network Architecture (Increased by 50%)
     policy_kwargs = dict(
         net_arch=dict(
-            pi=[512, 256, 128],  # Policy network (actor)
-            vf=[512, 256, 128]   # Value network (critic)
+            pi=[768, 384, 192],  # Policy network (actor)
+            vf=[768, 384, 192]   # Value network (critic)
         ),
         activation_fn=LeakyReLU,  # Better for financial data
         log_std_init=-1.0,  # Start with lower action variance

@@ -105,6 +105,14 @@ class CombinedBacktest:
         self.equity = initial_equity
         self.peak_equity = initial_equity
 
+        self.SYMBOL_IDS = {
+            'EURUSD': 1,
+            'GBPUSD': 2,
+            'XAUUSD': 41,
+            'USDCHF': 6,
+            'USDJPY': 4
+        }
+
     def calculate_dynamic_spread(self, price, atr):
         """Calculate dynamic spread matching RiskEnv logic"""
         # Determine pip size (0.01 for JPY/large prices, 0.0001 for others)
@@ -175,12 +183,25 @@ class CombinedBacktest:
         equity_norm = self.equity / self.initial_equity
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
         
+        # Get current market data for spread/symbol calc
+        current_prices = self.env._get_current_prices()
+        current_atrs = self.env._get_current_atrs()
+        price = current_prices[asset]
+        atr = current_atrs[asset]
+        
+        # Calculate Spread Ratio
+        full_spread = self.calculate_dynamic_spread(price, atr)
+        spread_ratio = full_spread / atr if atr > 1e-9 else 0.0
+        
+        # Get Symbol ID
+        symbol_id = self.SYMBOL_IDS.get(asset, 0.0)
+        
         account_obs = np.array([
             equity_norm,
             drawdown,
-            0.0,  # Leverage placeholder
+            float(symbol_id),  # Symbol ID
             risk_cap_mult,
-            0.0   # Padding
+            spread_ratio   # Spread Ratio
         ], dtype=np.float32)
         
         # Combine all features (40 Market + 5 Account = 45)

@@ -196,7 +196,8 @@ class DataFetcherTraining:
                         close = (bar.low + bar.deltaClose) / DIVISOR
                         
                         bars_data.append({
-                            'open': open_p, 'high': high, 'low': low, 'close': close, 'volume': bar.volume
+                            'open': open_p, 'high': high, 'low': low, 'close': close, 'volume': bar.volume,
+                            'pair': asset_name
                         })
                     
                     if not bars_data:

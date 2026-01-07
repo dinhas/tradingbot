@@ -1,4 +1,5 @@
 import os
+import logging
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -14,7 +15,7 @@ class RiskManagementEnv(gym.Env):
     
     State Space (45):
         [0..39]:    Alpha Features (25 Asset-Specific + 15 Global)
-        [40..44]:   Account State (Equity, Drawdown, Leverage, RiskCap, Padding)
+        [40..44]:   Account State (Equity, Drawdown, Leverage, RiskCap, SpreadRatio)
         
     Action Space (3):
         0: SL Multiplier (0.2x - 2.0x ATR)
@@ -57,6 +58,19 @@ class RiskManagementEnv(gym.Env):
         self.TARGET_PROFIT_PCT = 0.001   # 0.1% Target Gain (10 pips)
         self.MAX_DRAWDOWN_PCT = 0.0005   # 0.05% Drawdown Tolerance (5 pips)
         
+        self.SYMBOL_IDS = {
+            'EURUSD': 1,
+            'GBPUSD': 2,
+            'XAUUSD': 41,
+            'USDCHF': 6,
+            'USDJPY': 4
+        }
+        
+        # Logging
+        self.REWARD_LOG_INTERVAL = 5000
+        self.total_steps_executed = 0
+        self.max_step_reward = -float('inf')
+
         # --- Load Data ---
         self._load_data()
         
@@ -92,7 +106,7 @@ class RiskManagementEnv(gym.Env):
         cache_valid = True
         required_files = ['features.npy', 'entry_prices.npy', 'atrs.npy', 
                          'directions.npy', 'max_profit_pcts.npy', 'max_loss_pcts.npy', 
-                         'close_prices.npy', 'is_usd_quote.npy', 'is_usd_base.npy']
+                         'close_prices.npy', 'is_usd_quote.npy', 'is_usd_base.npy', 'symbol_ids.npy']
                          
         for f in required_files:
             fp = os.path.join(cache_dir, f)
@@ -155,6 +169,13 @@ class RiskManagementEnv(gym.Env):
                      is_usd_quote = np.ones(n, dtype=bool)
                      is_usd_base = np.zeros(n, dtype=bool)
 
+                # Symbol IDs
+                if 'pair' in self.df.columns:
+                    pairs = self.df['pair'].astype(str).str.upper()
+                    symbol_ids = pairs.map(self.SYMBOL_IDS).fillna(0).values.astype(np.float32)
+                else:
+                    symbol_ids = np.zeros(len(self.df), dtype=np.float32)
+
                 # Save arrays
                 np.save(os.path.join(cache_dir, 'features.npy'), features_array)
                 np.save(os.path.join(cache_dir, 'entry_prices.npy'), self.df['entry_price'].values.astype(np.float32))
@@ -165,6 +186,7 @@ class RiskManagementEnv(gym.Env):
                 np.save(os.path.join(cache_dir, 'close_prices.npy'), self.df['close_1000_price'].values.astype(np.float32))
                 np.save(os.path.join(cache_dir, 'is_usd_quote.npy'), is_usd_quote)
                 np.save(os.path.join(cache_dir, 'is_usd_base.npy'), is_usd_base)
+                np.save(os.path.join(cache_dir, 'symbol_ids.npy'), symbol_ids)
                 
                 # Optional time limit
                 if 'hours_to_exit' in self.df.columns:
@@ -196,6 +218,7 @@ class RiskManagementEnv(gym.Env):
             self.close_prices = np.load(os.path.join(cache_dir, 'close_prices.npy'), mmap_mode='r')
             self.is_usd_quote_arr = np.load(os.path.join(cache_dir, 'is_usd_quote.npy'), mmap_mode='r')
             self.is_usd_base_arr = np.load(os.path.join(cache_dir, 'is_usd_base.npy'), mmap_mode='r')
+            self.symbol_ids = np.load(os.path.join(cache_dir, 'symbol_ids.npy'), mmap_mode='r')
             
             p_time = os.path.join(cache_dir, 'hours_to_exits.npy')
             if os.path.exists(p_time):
@@ -224,6 +247,7 @@ class RiskManagementEnv(gym.Env):
         self.equity = self.initial_equity_base
         self.peak_equity = self.initial_equity_base
         self.current_step = 0
+        self.max_step_reward = -float('inf')
         
         # Reset History (Zero-filled)
         self.history_pnl = deque([0.0]*5, maxlen=5)
@@ -245,6 +269,25 @@ class RiskManagementEnv(gym.Env):
             
         return self._get_observation(), {}
 
+    def _calculate_spread(self, global_idx):
+        """
+        Calculate spread based on market conditions (ATR & Price).
+        Returns: (full_spread_price, pip_size)
+        """
+        if global_idx >= self.n_samples:
+             return 0.0, 0.0001
+             
+        entry_price_raw = self.entry_prices[global_idx]
+        atr = self.atrs[global_idx]
+        
+        # Determine pip size (0.01 for JPY/large prices, 0.0001 for others)
+        pip_size = 0.01 if entry_price_raw > 20.0 else 0.0001
+        
+        # Calculate full spread in price units
+        full_spread_price = (self.SPREAD_MIN_PIPS * pip_size) + (self.SPREAD_ATR_FACTOR * atr)
+        
+        return full_spread_price, pip_size
+
     def _get_observation(self):
         # 1. Market State (40)
         global_idx = self.episode_start_idx + self.current_step
@@ -258,12 +301,21 @@ class RiskManagementEnv(gym.Env):
         # BUG FIX: Risk Cap Formula logic preserved
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0)) 
         
+        # Get Current Spread Data
+        full_spread_price, _ = self._calculate_spread(global_idx)
+        atr = self.atrs[global_idx]
+        
+        # Normalized Spread (Spread / ATR)
+        spread_ratio = full_spread_price / atr if atr > 1e-9 else 0.0
+        
+        symbol_id = self.symbol_ids[global_idx]
+        
         account_obs = np.array([
             equity_norm,
             drawdown,
-            0.0, # Leverage (placeholder)
+            symbol_id, # Symbol ID
             risk_cap_mult,
-            0.0 # Padding
+            spread_ratio # Current Spread / ATR
         ], dtype=np.float32)
         
         # 3. History (20) - REMOVED
@@ -300,11 +352,8 @@ class RiskManagementEnv(gym.Env):
         is_usd_base = self.is_usd_base_arr[global_idx]
         
         # --- 3. Execution with Spreads & Slippage ---
-        # Determine pip size (0.01 for JPY/large prices, 0.0001 for others)
-        pip_size = 0.01 if entry_price_raw > 20.0 else 0.0001
-        
-        # Calculate full spread in price units
-        full_spread_price = (self.SPREAD_MIN_PIPS * pip_size) + (self.SPREAD_ATR_FACTOR * atr)
+        # USE NEW HELPER
+        full_spread_price, pip_size = self._calculate_spread(global_idx)
         half_spread_price = full_spread_price / 2.0
         
         # Slippage Configuration (Adverse entry movement)
@@ -506,9 +555,27 @@ class RiskManagementEnv(gym.Env):
             survival_reward = 0.01
 
         reward = np.clip(pnl_efficiency + bullet_bonus + regret_penalty + survival_reward, -20.0, 20.0)
+        
+        # Update best step reward
+        if reward > self.max_step_reward:
+            self.max_step_reward = reward
+
         self.history_pnl.append(net_pnl / max(prev_equity, 1e-6))
         
         self.current_step += 1
+        self.total_steps_executed += 1
+        
+        if self.total_steps_executed % self.REWARD_LOG_INTERVAL == 0:
+             logging.info(
+                f"[Reward] step={self.total_steps_executed} "
+                f"pnl_eff={pnl_efficiency:.2f} "
+                f"bullet={bullet_bonus} "
+                f"regret={regret_penalty} "
+                f"dd={drawdown:.2%} "
+                f"reward={reward:.4f} "
+                f"best_step={self.max_step_reward:.4f}"
+            )
+
         terminated = False
         truncated = (self.current_step >= self.EPISODE_LENGTH)
         
