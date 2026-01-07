@@ -12,7 +12,7 @@ from torch.nn import LeakyReLU
 
 # Add src to path so we can import the environment
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-from risk_env import RiskManagementEnv
+# from risk_env import RiskManagementEnv (Moved inside make_env)
 
 class Tee:
     """Redirect stdout/stderr to both console and file."""
@@ -158,6 +158,8 @@ class TensorboardCallback(BaseCallback):
 def make_env(rank, seed=0, shared_step=None):
     """Utility function for multiprocessed env."""
     def _init():
+        # Lazy import to ensure clean subprocess initialization
+        from risk_env import RiskManagementEnv
         env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True, shared_step_counter=shared_step)
         env.reset(seed=seed + rank)
         return env
@@ -173,12 +175,12 @@ def train():
 
     # 1. Create Vectorized Environment (Parallel)
     # Shared Step Counter for Staged Rewards
-    # PERFORMANCE FIX: lock=False to remove synchronization overhead
-    shared_step = multiprocessing.Value('l', 0, lock=False)
+    # Changed lock=True for stability (fixes mmap pickling issue on some platforms)
+    shared_step = multiprocessing.Value('l', 0, lock=True)
     
     # SubprocVecEnv runs each env in a separate process
     env_fns = [make_env(i, shared_step=shared_step) for i in range(N_ENVS)]
-    vec_env = SubprocVecEnv(env_fns)
+    vec_env = SubprocVecEnv(env_fns, start_method='spawn')
     
     # CRITICAL: Normalize observations. 
     # Financial features are on vastly different scales (Prices vs Slopes vs PnL)
