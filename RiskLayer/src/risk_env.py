@@ -517,8 +517,10 @@ class RiskManagementEnv(gym.Env):
         # 4) EFFICIENCY REWARD CLIPPING (-8 to +8)
         pnl_efficiency = np.clip(pnl_efficiency, -8.0, 8.0)
         
-        # 3) EFFICIENCY REWARD FLOOR
-        if pnl_efficiency < 0.2:
+        # 3) EFFICIENCY REWARD SHAPING
+        # If we made a small "chicken" profit, punish it.
+        # If we lost money, let the negative score stand (so we learn to minimize losses).
+        if 0.0 <= pnl_efficiency < 0.2:
             pnl_efficiency = -1.0
         
         # Smart Rewards (Regret vs. Bullet Dodger)
@@ -544,9 +546,9 @@ class RiskManagementEnv(gym.Env):
             
             # Check for "Bullet Dodger" (Good Save)
             # If we didn't choke a winner, did we save ourselves from a crash?
-            # Condition: Adverse move was > 2x our Stop distance
-            # 2) BULLET DODGER BONUS (+8)
-            elif abs(max_adverse) > (sl_pct_dist_raw * 2.0):
+            # Condition: Adverse move was > 2x our Stop distance AND > 3x ATR (Real Crash)
+            # This prevents "farming" the bonus by setting tiny stops in normal noise.
+            elif abs(max_adverse) > (sl_pct_dist_raw * 2.0) and abs(max_adverse) > (3.0 * (atr / entry_price_raw)):
                 bullet_bonus = 8.0
         
         # 5) SURVIVAL REWARD

@@ -177,6 +177,17 @@ class CombinedBacktest:
     def build_risk_observation(self, asset, alpha_obs):
         """Build 45-feature observation for risk model"""
         # Alpha features are already the 40 features [25 asset + 15 global]
+        # CLONE to avoid modifying the original Alpha observation
+        risk_alpha_obs = alpha_obs.copy()
+        
+        # ZERO OUT dynamic features to match Risk training (which was done in 'Flat' state)
+        # 1. Per-Asset Dynamic (Indices 13-19)
+        risk_alpha_obs[13:20] = 0.0
+        
+        # 2. Global Dynamic (Indices 25-28)
+        # Note: generate_risk_dataset set index 0 of global (index 25 here) to 10000.0
+        risk_alpha_obs[25] = 10000.0
+        risk_alpha_obs[26:29] = 0.0
         
         # Account state (5 features)
         drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
