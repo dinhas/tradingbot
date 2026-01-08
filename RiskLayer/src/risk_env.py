@@ -67,7 +67,7 @@ class RiskManagementEnv(gym.Env):
         }
         
         # Logging
-        self.REWARD_LOG_INTERVAL = 5000
+        self.REWARD_LOG_INTERVAL = 1000
         self.total_steps_executed = 0
         self.max_step_reward = -float('inf')
 
@@ -418,7 +418,7 @@ class RiskManagementEnv(gym.Env):
             
             # Check termination (BUG FIX: Ensure we die if too poor to trade)
             terminated = False
-            if self.equity < 1.0:
+            if self.equity < 5.0:
                 terminated = True
                 reward = -20.0
             
@@ -508,55 +508,62 @@ class RiskManagementEnv(gym.Env):
         self.equity += net_pnl
         self.peak_equity = max(self.peak_equity, self.equity)
 
-        # Efficiency Reward
-        atr_ratio = atr / entry_price_raw
-        denom = max(max_favorable, atr_ratio, 1e-5)
-        realized_pct = (price_change / entry_price) * direction
-        pnl_efficiency = (realized_pct / denom) * 10.0
+        # --- 6. Rewards (Excursion-Based Regret - EBR) ---
+        # Reconstruct Absolute MFE/MAE from Percentages
+        # max_profit_pct = (High - Entry) / Entry  (Always Positive)
+        # max_loss_pct   = (Low - Entry) / Entry   (Always Negative for Long)
         
-        # 4) EFFICIENCY REWARD CLIPPING (-8 to +8)
-        pnl_efficiency = np.clip(pnl_efficiency, -8.0, 8.0)
+        mfe_pct = max_favorable
+        mae_pct = abs(max_adverse) # Convert to positive distance
         
-        # 3) EFFICIENCY REWARD SHAPING
-        # If we made a small "chicken" profit, punish it.
-        # If we lost money, let the negative score stand (so we learn to minimize losses).
-        if 0.0 <= pnl_efficiency < 0.2:
-            pnl_efficiency = -1.0
+        mfe_price_dist = mfe_pct * entry_price_raw
+        mae_price_dist = mae_pct * entry_price_raw
         
-        # Smart Rewards (Regret vs. Bullet Dodger)
-        regret_penalty = 0.0
-        bullet_bonus = 0.0
+        # Normalize by SL Distance
+        # Safety: avoid div by zero
+        sl_dist_safe = max(sl_dist_price, 1e-9)
+        
+        mfe_n = mfe_price_dist / sl_dist_safe
+        mae_n = mae_price_dist / sl_dist_safe
+        
+        # Initialize Rewards
+        ebr_reward = 0.0
         
         if exited_on == 'SL':
-            # Check for "Regret" (Choked Winner)
-            # Did the market OFFER the TP level? (Even if we stopped out first/later)
-            # The logic: If the market range contained the TP, we "missed" it by stopping out.
-            market_hit_tp_level = max_favorable >= (tp_pct_dist_raw + full_spread_pct + slippage_pct)
-            
-            if market_hit_tp_level:
-                # 1) STAGED REGRET PENALTY
-                current_global_step = self.cached_global_step
+            # SL HIT LOGIC
+            # Penalize based on how much "potential" we wasted (MFE)
+            if mfe_n < 0.3:
+                # Good Stop: Price barely went in our favor. We were wrong.
+                ebr_reward = -2.0 
+            elif mfe_n <= 1.0:
+                # Medium Stop: It went somewhat in our favor, then reversed.
+                ebr_reward = -8.0
+            else:
+                # Bad Stop (Regret): Price went > 1.0R in our favor, then we stopped out.
+                # We should have taken profit or moved SL to BE.
+                ebr_reward = -15.0
                 
-                if current_global_step < 5_000_000:
-                    regret_penalty = -6.0
-                elif current_global_step < 15_000_000:
-                    regret_penalty = -10.0
-                else:
-                    regret_penalty = -15.0
+        elif exited_on == 'TP':
+            # TP HIT LOGIC
+            # Base reward for winning
+            ebr_reward = 10.0
             
-            # Check for "Bullet Dodger" (Good Save)
-            # If we didn't choke a winner, did we save ourselves from a crash?
-            # Condition: Adverse move was > 2x our Stop distance AND > 3x ATR (Real Crash)
-            # This prevents "farming" the bonus by setting tiny stops in normal noise.
-            elif abs(max_adverse) > (sl_pct_dist_raw * 2.0) and abs(max_adverse) > (3.0 * (atr / entry_price_raw)):
-                bullet_bonus = 8.0
+            # Clean Trade Bonus (Low Drawdown)
+            if mae_n < 0.5:
+                ebr_reward += 5.0 # Total +15.0 for "Sniper" entry
+                
+        else: # Time Limit or Manual Exit
+            # Penalize proportional to Drawdown endured
+            # If we held through pain just to exit flat, that's bad.
+            ebr_reward = -2.0 * mae_n
+            
+        # Add PnL Component (Efficiency) - Kept as secondary signal
+        # realized_pct = (price_change / entry_price) * direction
+        # pnl_efficiency = (realized_pct / max(max_favorable, 1e-5)) * 5.0
+        # ebr_reward += np.clip(pnl_efficiency, -5.0, 5.0)
         
-        # 5) SURVIVAL REWARD
-        survival_reward = 0.0
-        if self.equity > 1.0:
-            survival_reward = 0.01
-
-        reward = np.clip(pnl_efficiency + bullet_bonus + regret_penalty + survival_reward, -20.0, 20.0)
+        # FINAL REWARD CLIPPING
+        reward = np.clip(ebr_reward, -20.0, 20.0)
         
         # Update best step reward
         if reward > self.max_step_reward:
@@ -568,24 +575,25 @@ class RiskManagementEnv(gym.Env):
         self.total_steps_executed += 1
         
         if self.total_steps_executed % self.REWARD_LOG_INTERVAL == 0:
-             logging.info(
-                f"[Reward] step={self.total_steps_executed} "
-                f"pnl_eff={pnl_efficiency:.2f} "
-                f"bullet={bullet_bonus} "
-                f"regret={regret_penalty} "
-                f"dd={drawdown:.2%} "
-                f"reward={reward:.4f} "
-                f"best_step={self.max_step_reward:.4f}"
-            )
+             msg = (f"[Reward] env_pid={os.getpid()} step={self.total_steps_executed} "
+                    f"exit={exited_on} "
+                    f"mfe_n={mfe_n:.2f} "
+                    f"mae_n={mae_n:.2f} "
+                    f"reward={reward:.4f} "
+                    f"best_step={self.max_step_reward:.4f}")
+             logging.info(msg)
+             print(msg, flush=True) # Direct print for terminal visibility
+             import sys
+             sys.stdout.flush()
 
         terminated = False
         truncated = (self.current_step >= self.EPISODE_LENGTH)
         
-        if self.equity < 1.0: 
+        if self.equity < 5.0: 
             terminated = True
             reward = -20.0
             
         return self._get_observation(), reward, terminated, truncated, {
             'pnl': net_pnl, 'exit': exited_on, 'lots': lots, 'equity': self.equity, 
-            'efficiency': pnl_efficiency, 'bullet': bullet_bonus
+            'mfe_n': mfe_n, 'mae_n': mae_n
         }
