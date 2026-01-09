@@ -1,6 +1,7 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+import pyarrow # Import pyarrow before pandas to prevent ArrowKeyError
 import pandas as pd
 import logging
 from pathlib import Path
@@ -204,10 +205,16 @@ class TradingEnv(gym.Env):
             df = None
             try:
                 df = pd.read_parquet(file_path)
+                # MEMORY OPTIMIZATION: Slice large datasets
+                if len(df) > 50000:
+                    df = df.iloc[-50000:].copy()
                 logging.info(f"Loaded {asset} from {file_path}")
             except FileNotFoundError:
                 try:
                     df = pd.read_parquet(file_path_2025)
+                    # MEMORY OPTIMIZATION: Slice large datasets
+                    if len(df) > 50000:
+                        df = df.iloc[-50000:].copy()
                     logging.info(f"Loaded {asset} from {file_path_2025}")
                 except FileNotFoundError:
                     logging.error(f"Data file not found: {file_path} or {file_path_2025}")

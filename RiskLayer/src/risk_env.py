@@ -24,7 +24,7 @@ class RiskManagementEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
     
-    def __init__(self, dataset_path, initial_equity=10.0, is_training=True, shared_step_counter=None):
+    def __init__(self, dataset_path, initial_equity=10000.0, is_training=True, shared_step_counter=None):
         super(RiskManagementEnv, self).__init__()
         
         self.shared_step_counter = shared_step_counter
@@ -408,23 +408,6 @@ class RiskManagementEnv(gym.Env):
         max_lots_leverage = max_position_value / lot_value_usd
         lots = min(lots, max_lots_leverage)
         
-        # Check Min Lots
-        if lots < self.MIN_LOTS:
-            # Skipped/no-trade
-            reward = 0.0
-            self.history_actions.append(np.array([0.0, 0.0], dtype=np.float32))
-            self.history_pnl.append(0.0)
-            self.current_step += 1
-            
-            # Check termination (BUG FIX: Ensure we die if too poor to trade)
-            terminated = False
-            if self.equity < 5.0:
-                terminated = True
-                reward = -20.0
-            
-            truncated = (self.current_step >= self.EPISODE_LENGTH)
-            return self._get_observation(), reward, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED_SMALL', 'lots': 0.0, 'equity': self.equity}
-
         lots = np.clip(lots, self.MIN_LOTS, 100.0)
         position_val = lots * lot_value_usd
             
@@ -508,62 +491,61 @@ class RiskManagementEnv(gym.Env):
         self.equity += net_pnl
         self.peak_equity = max(self.peak_equity, self.equity)
 
-        # --- 6. Rewards (Excursion-Based Regret - EBR) ---
-        # Reconstruct Absolute MFE/MAE from Percentages
-        # max_profit_pct = (High - Entry) / Entry  (Always Positive)
-        # max_loss_pct   = (Low - Entry) / Entry   (Always Negative for Long)
+        # --- 6. Rewards ---
+        # "Reward for catching the percentage of the (max price + spreads pips) if 30% covered reward 3 out of 10"
         
+        # --- Metrics Calculation (Required for Logging) ---
         mfe_pct = max_favorable
-        mae_pct = abs(max_adverse) # Convert to positive distance
+        mae_pct = abs(max_adverse)
         
         mfe_price_dist = mfe_pct * entry_price_raw
         mae_price_dist = mae_pct * entry_price_raw
         
-        # Normalize by SL Distance
-        # Safety: avoid div by zero
         sl_dist_safe = max(sl_dist_price, 1e-9)
-        
         mfe_n = mfe_price_dist / sl_dist_safe
         mae_n = mae_price_dist / sl_dist_safe
         
-        # Initialize Rewards
-        ebr_reward = 0.0
+        # --- Reward Calculation ---
+        # 1. Realized Move (Price Change)
+        realized_price_dist = (exit_price - entry_price) * direction
         
+        # 2. Potential Move (Max Favorable Excursion)
+        max_potential_price_dist = max_favorable * entry_price_raw
+        
+        # 3. Denominator: Max Potential + Spread (as requested)
+        reward_denominator = max_potential_price_dist + full_spread_price
+        
+        # 4. Calculate Efficiency Ratio
+        if reward_denominator < 1e-12:
+            reward_denominator = 1e-12
+            
+        efficiency_ratio = realized_price_dist / reward_denominator
+        
+        # 5. Scale to 10 (30% -> 3.0)
+        reward = efficiency_ratio * 10.0
+        
+        # Missed Opportunity Penalty
+        # If we hit SL, check if the trade was actually viable with a wider stop.
+        # Criteria:
+        # 1. The potential move (from entry) was significant (> 1.5 ATR)
+        # 2. The Reward (Potential Move) : Risk (Max Adverse Excursion/Loss) ratio was >= 1:1.5
         if exited_on == 'SL':
-            # SL HIT LOGIC
-            # Penalize based on how much "potential" we wasted (MFE)
-            if mfe_n < 0.3:
-                # Good Stop: Price barely went in our favor. We were wrong.
-                ebr_reward = -2.0 
-            elif mfe_n <= 1.0:
-                # Medium Stop: It went somewhat in our favor, then reversed.
-                ebr_reward = -8.0
-            else:
-                # Bad Stop (Regret): Price went > 1.0R in our favor, then we stopped out.
-                # We should have taken profit or moved SL to BE.
-                ebr_reward = -15.0
-                
-        elif exited_on == 'TP':
-            # TP HIT LOGIC
-            # Base reward for winning
-            ebr_reward = 10.0
-            
-            # Clean Trade Bonus (Low Drawdown)
-            if mae_n < 0.5:
-                ebr_reward += 5.0 # Total +15.0 for "Sniper" entry
-                
-        else: # Time Limit or Manual Exit
-            # Penalize proportional to Drawdown endured
-            # If we held through pain just to exit flat, that's bad.
-            ebr_reward = -2.0 * mae_n
-            
-        # Add PnL Component (Efficiency) - Kept as secondary signal
-        # realized_pct = (price_change / entry_price) * direction
-        # pnl_efficiency = (realized_pct / max(max_favorable, 1e-5)) * 5.0
-        # ebr_reward += np.clip(pnl_efficiency, -5.0, 5.0)
+             max_loss_dist_from_entry = mae_price_dist  # MAE is distance from entry
+             max_profit_dist_from_entry = max_potential_price_dist
+             
+             # Avoid division by zero
+             safe_loss_dist = max(max_loss_dist_from_entry, 1e-9)
+             
+             # Ratio = Potential Profit / Potential Loss
+             potential_rr_ratio = max_profit_dist_from_entry / safe_loss_dist
+             
+             if (max_profit_dist_from_entry > (1.5 * atr)) and (potential_rr_ratio >= 1.5):
+                 # We got stopped out of a trade that offered > 1.5R relative to the actual max loss
+                 # AND was a significant move (> 1.5 ATR).
+                 reward -= 10.0
         
-        # FINAL REWARD CLIPPING
-        reward = np.clip(ebr_reward, -20.0, 20.0)
+        # Safety Clipping
+        reward = np.clip(reward, -20.0, 20.0)
         
         # Update best step reward
         if reward > self.max_step_reward:
