@@ -439,12 +439,27 @@ class TradingEnv(gym.Env):
         }
         
         # PEEK & LABEL: Simulate outcome and assign reward NOW
-        simulated_pnl, fast_win = self._simulate_trade_outcome(asset)
+        simulated_pnl, bars_held = self._simulate_trade_outcome(asset)
         self.peeked_pnl_step += simulated_pnl
         
-        # FAST WIN BONUS: Double reward if TP hit within 30 mins (6 candles)
-        if fast_win and simulated_pnl > 0:
-            self.peeked_pnl_step += simulated_pnl
+        # TIERED SPEED REWARDS (Scalping Focus)
+        if simulated_pnl > 0:
+            if bars_held <= 3:
+                # Ultra Fast Win: Triple the reward
+                self.peeked_pnl_step += (simulated_pnl * 2.0)
+            elif bars_held <= 5:
+                # Fast Win: Double the reward
+                self.peeked_pnl_step += simulated_pnl
+            elif bars_held <= 12:
+                # Moderate Win: 50% bonus
+                self.peeked_pnl_step += (simulated_pnl * 0.5)
+        
+        # FAST SL PENALTY (Anti-Overtrade/Precision Focus)
+        elif simulated_pnl < 0 and bars_held <= 3:
+            # If hit SL within 3 candles, add an extra penalty (1% of equity)
+            # This "x price" penalty discourages tight stops that get hunted immediately
+            bad_entry_penalty = -(0.01 * self.start_equity)
+            self.peeked_pnl_step += bad_entry_penalty
         
         # Transaction costs (Notional Based)
         # 0.00002 = 0.2 pips spread (applied to full volume)
@@ -526,10 +541,10 @@ class TradingEnv(gym.Env):
         """
         PEEK & LABEL: Look ahead to see if trade hits SL or TP.
         OPTIMIZED: Uses cached numpy arrays instead of pandas slicing.
-        Returns: (pnl, fast_win)
+        Returns: (pnl, bars_held)
         """
         if self.positions[asset] is None:
-            return 0.0, False
+            return 0.0, 0
         
         pos = self.positions[asset]
         direction = pos['direction']
@@ -541,7 +556,7 @@ class TradingEnv(gym.Env):
         end_idx = min(start_idx + 1000, len(self.raw_data))
         
         if start_idx >= end_idx:
-            return 0.0, False
+            return 0.0, 0
             
         # OPTIMIZATION: Use pre-cached numpy arrays
         lows = self.low_arrays[asset][start_idx:end_idx]
@@ -557,7 +572,7 @@ class TradingEnv(gym.Env):
         sl_hit = sl_hit_mask.any()
         tp_hit = tp_hit_mask.any()
         
-        fast_win = False
+        bars_held = end_idx - start_idx
         
         # Determine outcome
         # FIX: When both hit on same candle, assume SL first (conservative)
@@ -566,19 +581,16 @@ class TradingEnv(gym.Env):
             first_tp_idx = np.argmax(tp_hit_mask)
             if first_sl_idx <= first_tp_idx:
                 exit_price = sl
+                bars_held = first_sl_idx + 1
             else:
                 exit_price = tp
-                # Check for fast win (within 6 candles = 30 mins)
-                if first_tp_idx < 6:
-                    fast_win = True
+                bars_held = first_tp_idx + 1
         elif sl_hit:
             exit_price = sl
+            bars_held = np.argmax(sl_hit_mask) + 1
         elif tp_hit:
             exit_price = tp
-            # Check for fast win
-            first_tp_idx = np.argmax(tp_hit_mask)
-            if first_tp_idx < 6:
-                fast_win = True
+            bars_held = np.argmax(tp_hit_mask) + 1
         else:
             # Neither hit: use last available price from cached array
             exit_price = self.close_arrays[asset][end_idx - 1]
@@ -589,7 +601,7 @@ class TradingEnv(gym.Env):
         position_value = pos['size'] * self.leverage
         pnl = price_change_pct * position_value
         
-        return pnl, fast_win
+        return pnl, bars_held
 
     def _simulate_trade_outcome_with_timing(self, asset):
         """

@@ -319,6 +319,11 @@ class CombinedBacktest:
         metrics_tracker = BacktestMetrics()
         logger.info(f"Running {episodes} episodes...")
         
+        # Fixed Risk Mode Configuration
+        FIXED_RISK_PCT = 0.01  # 1% risk
+        FIXED_SL_ATR = 1.5
+        FIXED_TP_ATR = 3.0
+        
         for episode in range(episodes):
             obs_dummy, _ = self.env.reset()
             done = False
@@ -332,6 +337,11 @@ class CombinedBacktest:
             alpha_actions_sum = 0
             alpha_non_zero = 0
             
+            # --- Fixed Mode Tracking ---
+            fixed_positions = {asset: None for asset in self.env.assets} # Virtual positions
+            fixed_stats = {'wins': 0, 'losses': 0, 'pnl_total': 0.0, 'trades': 0}
+            fixed_equity = self.initial_equity # Track shadow equity for sizing
+            
             while not done:
                 # Check explicit step limit
                 if max_steps is not None and step_count >= max_steps:
@@ -339,6 +349,7 @@ class CombinedBacktest:
                     break
 
                 combined_actions = {}
+                fixed_actions = {} # Actions for the shadow fixed mode
                 
                 # For each asset, get Alpha direction
                 for asset in self.env.assets:
@@ -363,6 +374,15 @@ class CombinedBacktest:
                     
                     if direction == 0:
                         continue
+
+                    # --- Fixed Mode Action Setup ---
+                    # Always take the trade if direction != 0
+                    fixed_actions[asset] = {
+                        'direction': direction,
+                        'risk_pct': FIXED_RISK_PCT,
+                        'sl_mult': FIXED_SL_ATR,
+                        'tp_mult': FIXED_TP_ATR
+                    }
                         
                     # Build and predict with Risk model
                     risk_obs = self.build_risk_observation(asset, alpha_obs)
@@ -391,7 +411,95 @@ class CombinedBacktest:
                 self.env.completed_trades = []
                 current_prices = self.env._get_current_prices()
                 atrs = self.env._get_current_atrs()
+                lows = self.env.low_arrays
+                highs = self.env.high_arrays
                 
+                # --- Fixed Mode Execution & Update ---
+                # 1. Check existing positions (SL/TP)
+                for asset in self.env.assets:
+                    f_pos = fixed_positions[asset]
+                    if f_pos:
+                        # Check SL/TP using current Step's Low/High
+                        # Note: env.current_step is the index for THIS step
+                        curr_low = lows[asset][self.env.current_step]
+                        curr_high = highs[asset][self.env.current_step]
+                        
+                        exit_price = None
+                        pnl = 0.0
+                        
+                        if f_pos['direction'] == 1: # Long
+                            if curr_low <= f_pos['sl']:
+                                exit_price = f_pos['sl']
+                            elif curr_high >= f_pos['tp']:
+                                exit_price = f_pos['tp']
+                        else: # Short
+                            if curr_high >= f_pos['sl']:
+                                exit_price = f_pos['sl']
+                            elif curr_low <= f_pos['tp']:
+                                exit_price = f_pos['tp']
+                                
+                        if exit_price:
+                            # Close Fixed Trade
+                            price_diff = (exit_price - f_pos['entry_price']) * f_pos['direction']
+                            pnl = (price_diff * f_pos['lots'] * (100000 if asset != 'XAUUSD' else 100)) # Approx
+                            fixed_equity += pnl
+                            fixed_stats['pnl_total'] += pnl
+                            fixed_stats['trades'] += 1
+                            if pnl > 0: fixed_stats['wins'] += 1
+                            else: fixed_stats['losses'] += 1
+                            fixed_positions[asset] = None
+                
+                # 2. Process Signals (Open/Reverse)
+                for asset in self.env.assets:
+                    f_act = fixed_actions.get(asset)
+                    f_pos = fixed_positions[asset]
+                    price = current_prices[asset]
+                    atr = atrs[asset]
+                    
+                    if f_act:
+                        direction = f_act['direction']
+                        
+                        # Close if reversal
+                        if f_pos and f_pos['direction'] != direction:
+                            # Close at current price
+                            exit_price = price
+                            price_diff = (exit_price - f_pos['entry_price']) * f_pos['direction']
+                            pnl = (price_diff * f_pos['lots'] * (100000 if asset != 'XAUUSD' else 100))
+                            fixed_equity += pnl
+                            fixed_stats['pnl_total'] += pnl
+                            fixed_stats['trades'] += 1
+                            if pnl > 0: fixed_stats['wins'] += 1
+                            else: fixed_stats['losses'] += 1
+                            f_pos = None # Closed
+                            fixed_positions[asset] = None
+                        
+                        # Open new if empty
+                        if fixed_positions[asset] is None:
+                            sl_dist = f_act['sl_mult'] * atr
+                            tp_dist = f_act['tp_mult'] * atr
+                            sl = price - (direction * sl_dist)
+                            tp = price + (direction * tp_dist)
+                            
+                            # Simple sizing (Risk % / Stop Dist)
+                            risk_amt = fixed_equity * f_act['risk_pct']
+                            # Approx contract size
+                            contract = 100 if asset == 'XAUUSD' else 100000 
+                            # Value of 1 pip movement (approx for sizing)
+                            # This is a simplification for the shadow tracker
+                            if sl_dist > 0:
+                                lots = risk_amt / (sl_dist * contract)
+                            else:
+                                lots = 0.01
+                            
+                            fixed_positions[asset] = {
+                                'direction': direction,
+                                'entry_price': price,
+                                'sl': sl,
+                                'tp': tp,
+                                'lots': lots
+                            }
+                # --- End Fixed Mode ---
+
                 for asset in self.env.assets:
                     act = combined_actions.get(asset)
                     current_pos = self.env.positions[asset]
@@ -473,7 +581,24 @@ class CombinedBacktest:
                 
                 if step_count % 1000 == 0:
                     avg_alpha = alpha_actions_sum / (step_count * len(self.env.assets) + 1e-9)
-                    logger.info(f"Step {step_count}, Equity: ${self.equity:.2f}, Avg Alpha Action: {avg_alpha:.4f}, Trades Triggered: {alpha_non_zero}")
+                    
+                    # Calculate Risk Model Win Rate for this batch
+                    # Note: metrics_tracker.trades accumulates ALL trades.
+                    risk_total = len(metrics_tracker.trades)
+                    risk_wins = sum(1 for t in metrics_tracker.trades if t.get('net_pnl', 0) > 0)
+                    risk_wr = (risk_wins / risk_total) if risk_total > 0 else 0.0
+                    
+                    # Fixed Mode Stats
+                    fixed_total = fixed_stats['trades']
+                    fixed_wins = fixed_stats['wins']
+                    fixed_wr = (fixed_wins / fixed_total) if fixed_total > 0 else 0.0
+                    
+                    logger.info(
+                        f"Step {step_count} | "
+                        f"RISK: Equity ${self.equity:.0f} WR {risk_wr:.1%} ({risk_wins}/{risk_total}) | "
+                        f"FIXED: Equity ${fixed_equity:.0f} WR {fixed_wr:.1%} ({fixed_wins}/{fixed_total}) | "
+                        f"AvgAlpha {avg_alpha:.2f}"
+                    )
             
             avg_alpha = alpha_actions_sum / (step_count * len(self.env.assets) + 1e-9)
             logger.info(f"Episode {episode + 1} complete. Final Equity: ${self.env.equity:.2f}, Avg Alpha: {avg_alpha:.4f}, Non-Zero Actions: {alpha_non_zero}")
