@@ -160,9 +160,10 @@ class RiskTradingEnv(gym.Env):
         self.atr_arrays = {}
         self.signal_arrays = {}
         
-        # Convert entire processed dataframe to float32
-        self.master_matrix = self.processed_data.astype(np.float32).values
-        self.column_map = {col: i for i, col in enumerate(self.processed_data.columns)}
+        # Convert only numeric columns to float32 to prevent string conversion errors
+        numeric_df = self.processed_data.select_dtypes(include=[np.number])
+        self.master_matrix = numeric_df.astype(np.float32).values
+        self.column_map = {col: i for i, col in enumerate(numeric_df.columns)}
         
         # Cache specific price arrays for simulation
         for asset in self.assets:
@@ -195,7 +196,9 @@ class RiskTradingEnv(gym.Env):
         
         # Identify features for the first asset to count them
         asset = self.assets[0]
-        asset_cols = [c for c in self.processed_data.columns if c.startswith(f"{asset}_")]
+        # Only count numeric columns that actually go into the observation
+        numeric_cols = self.processed_data.select_dtypes(include=[np.number]).columns
+        asset_cols = [c for c in numeric_cols if c.startswith(f"{asset}_")]
         
         self.obs_dim = len(asset_cols)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32)
@@ -257,8 +260,9 @@ class RiskTradingEnv(gym.Env):
         if not hasattr(self, 'asset_col_indices'):
             self.asset_col_indices = {}
             for asset in self.assets:
-                cols = [c for c in self.processed_data.columns if c.startswith(f"{asset}_")]
-                indices = [self.column_map[c] for c in cols]
+                # ONLY include columns that are in our numeric column_map
+                asset_cols = [c for c in self.processed_data.columns if c.startswith(f"{asset}_") and c in self.column_map]
+                indices = [self.column_map[c] for c in asset_cols]
                 self.asset_col_indices[asset] = indices
         
         indices = self.asset_col_indices[self.current_asset]
