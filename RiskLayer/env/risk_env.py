@@ -51,6 +51,19 @@ class RiskTradingEnv(gym.Env):
         
         # Asset ID mapping for observation
         self.asset_ids = {asset: float(i) for i, asset in enumerate(self.assets)}
+
+        # Load Configuration
+        config_path = Path("RiskLayer/config/ppo_config.yaml")
+        config = {}
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                logging.info(f"Loaded configuration from {config_path}")
+            except Exception as e:
+                logging.warning(f"Failed to load config from {config_path}: {e}")
+        else:
+             logging.warning(f"Config not found at {config_path}, using defaults.")
         
         # Configuration
         self.EXECUTION_THRESHOLD = config.get('execution_threshold', 0.2)
