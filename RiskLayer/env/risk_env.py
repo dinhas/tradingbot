@@ -5,6 +5,7 @@ import pandas as pd
 import logging
 import os
 import uuid
+import yaml
 from datetime import datetime
 from pathlib import Path
 try:
@@ -48,13 +49,16 @@ class RiskTradingEnv(gym.Env):
             'XAUUSD': 0.20
         }
         
+        # Asset ID mapping for observation
+        self.asset_ids = {asset: float(i) for i, asset in enumerate(self.assets)}
+        
         # Configuration
-        self.EXECUTION_THRESHOLD = 0.2  # Trigger Threshold
-        self.MIN_RR = 1.5               # Minimum Risk:Reward
-        self.ATR_SL_MIN = 1.0
-        self.ATR_SL_MAX = 5.0
-        self.ATR_TP_MIN = 1.0
-        self.ATR_TP_MAX = 15.0
+        self.EXECUTION_THRESHOLD = config.get('execution_threshold', 0.2)
+        self.MIN_RR = config.get('min_rr', 1.5)
+        self.ATR_SL_MIN = config.get('atr_sl_min', 3.0)
+        self.ATR_SL_MAX = config.get('atr_sl_max', 7.0)
+        self.ATR_TP_MIN = config.get('atr_tp_min', 1.0)
+        self.ATR_TP_MAX = config.get('atr_tp_max', 15.0)
         
         # Logging Setup
         self.log_dir = Path("RiskLayer/logs")
@@ -221,9 +225,10 @@ class RiskTradingEnv(gym.Env):
         numeric_cols = self.processed_data.select_dtypes(include=[np.number]).columns
         asset_cols = [c for c in numeric_cols if c.startswith(f"{asset}_")]
         
-        self.obs_dim = len(asset_cols)
+        # +2 for Spread and Asset ID
+        self.obs_dim = len(asset_cols) + 2
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32)
-        logging.info(f"Observation Dimension: {self.obs_dim}")
+        logging.info(f"Observation Dimension: {self.obs_dim} (Features: {len(asset_cols)} + Spread + ID)")
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -292,6 +297,12 @@ class RiskTradingEnv(gym.Env):
         # Handle NaNs
         if np.isnan(obs).any():
             obs = np.nan_to_num(obs)
+            
+        # Append Static Features (Spread, Asset ID)
+        spread = self.spreads[self.current_asset]
+        asset_id = self.asset_ids[self.current_asset]
+        
+        obs = np.concatenate([obs, [spread, asset_id]])
             
         return obs
 
@@ -374,9 +385,9 @@ class RiskTradingEnv(gym.Env):
                 # Encourages taking AND winning
                 reward = r_multiple + 1.0  # e.g., 2R win = 3.0 reward
             else:
-                # LOSS: Penalty proportional to loss, but not catastrophic
-                # We want the model to learn from losses, not be terrified of trading
-                reward = r_multiple - 0.5  # e.g., -1R loss = -1.5 penalty
+                # LOSS: Heavily amplified penalty to enforce extreme loss aversion
+                # Multiplier increased to 4x so losses are far more damaging than wins
+                reward = (r_multiple * 4.0) - 0.5  # e.g., -1R loss = -4.5 penalty (vs +2.0 for win)
                 
             # Risk:Reward Structure Bonus/Penalty
             rr_ratio = tp_mult / sl_mult

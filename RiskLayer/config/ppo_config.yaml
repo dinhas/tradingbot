@@ -28,8 +28,8 @@ execution_threshold: 0.2   # Keep same
 min_rr: 1.5               # Minimum Risk:Reward ratio
 atr_sl_min: 1.0
 atr_sl_max: 5.0
-atr_tp_min: 1.0
-atr_tp_max: 15.0
+atr_tp_min: 2.0
+atr_tp_max: 20.0
 
 # =========================================================================
 # REWARD SETTINGS (v2 BALANCED - Implemented in risk_env.py)

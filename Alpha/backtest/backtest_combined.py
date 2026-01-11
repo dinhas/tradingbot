@@ -64,13 +64,14 @@ initial_equity=10000.0
 class CombinedBacktest:
     """Combined backtest using Alpha model for direction and Risk model for SL/TP/sizing"""
     
-    def __init__(self, alpha_model, risk_model, data_dir, initial_equity=initial_equity, alpha_norm_env=None, risk_norm_env=None, env=None):
+    def __init__(self, alpha_model, risk_model, data_dir, initial_equity=initial_equity, alpha_norm_env=None, risk_norm_env=None, env=None, use_spreads=True):
         self.alpha_model = alpha_model
         self.risk_model = risk_model
         self.alpha_norm_env = alpha_norm_env
         self.risk_norm_env = risk_norm_env
         self.data_dir = data_dir
         self.initial_equity = initial_equity
+        self.use_spreads = use_spreads
         
         # Create Alpha environment for data access (or reuse existing)
         if env is not None:
@@ -102,20 +103,30 @@ class CombinedBacktest:
             self.risk_asset_cols[asset] = asset_cols
         
         # Risk model parameters (match RiskTradingEnv)
-        self.ATR_SL_MIN = 1.0
-        self.ATR_SL_MAX = 5.0
+        self.ATR_SL_MIN = 3.0
+        self.ATR_SL_MAX = 7.0
         self.ATR_TP_MIN = 1.0
         self.ATR_TP_MAX = 15.0
         self.EXECUTION_THRESHOLD = 0.2
         
         # Spreads (match RiskTradingEnv)
-        self.spreads = {
-            'EURUSD': 0.0001,
-            'GBPUSD': 0.00015,
-            'USDJPY': 0.01,
-            'USDCHF': 0.00015,
-            'XAUUSD': 0.20
-        }
+        if self.use_spreads:
+            self.spreads = {
+                'EURUSD': 0.0001,
+                'GBPUSD': 0.00015,
+                'USDJPY': 0.01,
+                'USDCHF': 0.00015,
+                'XAUUSD': 0.20
+            }
+        else:
+            logger.info("⚠️ SPREADS DISABLED for this backtest")
+            self.spreads = {
+                'EURUSD': 0.0,
+                'GBPUSD': 0.0,
+                'USDJPY': 0.0,
+                'USDCHF': 0.0,
+                'XAUUSD': 0.0
+            }
         
         # Per-asset history tracking
         self.asset_histories = {
@@ -293,6 +304,7 @@ class CombinedBacktest:
             total_steps = 0
             alpha_signals_count = 0
             risk_approvals_count = 0
+            risk_blocked_count = 0
             alpha_min = 100.0
             alpha_max = -100.0
             
@@ -340,15 +352,6 @@ class CombinedBacktest:
                     
                     exec_conf, sl_mult, tp_mult = self.parse_risk_action(risk_action)
                     
-                    # LOGGING - Log ALL risk model details for the first 50 signals to debug
-                    if alpha_signals_count < 50 or alpha_signals_count % 100 == 0:
-                        logger.info(f"  [RISK DEBUG] Asset: {asset} | Step: {self.env.current_step}")
-                        logger.info(f"    > Alpha Input: Signal={direction}, Conf={alpha_val:.4f}")
-                        logger.info(f"    > Risk Obs (first 5): {risk_obs[:5]}")
-                        logger.info(f"    > Risk Action Output: Exec={exec_conf:.4f}, SL_Mult={sl_mult:.2f}, TP_Mult={tp_mult:.2f}")
-                        logger.info(f"    > Decision: {'APPROVE' if exec_conf > self.EXECUTION_THRESHOLD else 'SKIP'}")
-
-                    
                     # Risk Decision: Only OPEN if confidence > THRESHOLD
                     if exec_conf > self.EXECUTION_THRESHOLD:
                         risk_approvals_count += 1
@@ -358,6 +361,8 @@ class CombinedBacktest:
                             'sl_mult': sl_mult,
                             'tp_mult': tp_mult
                         }
+                    else:
+                        risk_blocked_count += 1
                 
                 # 2. Execute trades based on Alpha Signal + Risk Model Approval
                 for asset in self.env.assets:
@@ -411,10 +416,16 @@ class CombinedBacktest:
                 
                 if step_count % 1000 == 0:
                     logger.info(f"Step {step_count} | Equity ${self.equity:.0f} | Trades: {len(metrics_tracker.trades)}")
-                    logger.info(f"  > [DEBUG] Alpha Signals: {alpha_signals_count} | Risk Approved: {risk_approvals_count}")
-                    logger.info(f"  > [DEBUG] Alpha Val Range: [{alpha_min:.3f}, {alpha_max:.3f}]")
             
             logger.info(f"Episode {episode + 1} complete. Final Equity: ${self.env.equity:.2f}")
+            logger.info("\n" + "-"*30)
+            logger.info("RISK FILTER SUMMARY")
+            logger.info(f"Total Alpha Signals:  {alpha_signals_count}")
+            logger.info(f"Risk Approved:        {risk_approvals_count}")
+            logger.info(f"Risk Blocked:         {risk_blocked_count}")
+            filter_rate = (risk_blocked_count / alpha_signals_count * 100) if alpha_signals_count > 0 else 0
+            logger.info(f"Filter Rate:          {filter_rate:.2f}%")
+            logger.info("-"*30 + "\n")
         
         return metrics_tracker
 
@@ -520,9 +531,11 @@ def run_combined_backtest(args):
         logger.info(f"Loading Risk Normalizer from {risk_norm_path}")
         try:
             # Create a simple dummy vec env with the correct obs space for loading
+            import gymnasium as gym
             from gymnasium import spaces
-            class SimpleObsEnv:
+            class SimpleObsEnv(gym.Env):
                 def __init__(self, obs_space):
+                    super().__init__()
                     self.observation_space = obs_space
                     self.action_space = spaces.Box(low=-1, high=1, shape=(3,))
                 def reset(self, seed=None): return np.zeros(self.observation_space.shape), {}
@@ -546,7 +559,8 @@ def run_combined_backtest(args):
         initial_equity=initial_equity,
         alpha_norm_env=alpha_norm_env,
         risk_norm_env=risk_norm_env,
-        env=shared_env
+        env=shared_env,
+        use_spreads=not args.no_spreads
     )
 
     # Run backtest
@@ -640,6 +654,8 @@ if __name__ == "__main__":
                         help="Number of episodes to run")
     parser.add_argument("--steps", type=int, default=None,
                         help="Limit number of steps to run (optional)")
+    parser.add_argument("--no-spreads", action="store_true",
+                        help="Disable spreads (set to 0.0) for debugging")
     
     args = parser.parse_args()
     
