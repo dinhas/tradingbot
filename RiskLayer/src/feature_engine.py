@@ -76,11 +76,18 @@ class RiskFeatureEngine:
         # 1. Align Data
         aligned_df = self._align_data(data_dict)
         
-        # 2. Add Features per Asset
+        # 2. Pre-calculate market returns once
+        all_returns = pd.DataFrame()
+        for a in self.assets:
+            if f"{a}_close" in aligned_df.columns:
+                all_returns[a] = aligned_df[f"{a}_close"].pct_change()
+        
+        # 3. Add Features per Asset
         for asset in self.assets:
-            # We pass the subset dataframe to avoid massive copying, but we need to write back to aligned_df
-            # For efficiency, we can calculate series and assign them.
-            
+            # Periodically defragment
+            if asset != self.assets[0]:
+                aligned_df = aligned_df.copy()
+                
             # Group 1: Market Pressure & Flow
             aligned_df = self._add_market_pressure_features(aligned_df, asset)
             
@@ -94,7 +101,7 @@ class RiskFeatureEngine:
             aligned_df = self._add_regime_features(aligned_df, asset)
             
             # Group 5: Alpha/Cross-Asset
-            aligned_df = self._add_alpha_features(aligned_df, asset)
+            aligned_df = self._add_alpha_features(aligned_df, asset, all_returns)
 
         return aligned_df
 
@@ -404,7 +411,7 @@ class RiskFeatureEngine:
         
         return df
 
-    def _add_alpha_features(self, df, asset):
+    def _add_alpha_features(self, df, asset, all_returns=None):
         """
         Group 5: Alpha Signals & Cross-Asset
         """
@@ -417,15 +424,12 @@ class RiskFeatureEngine:
             df[f"{asset}_alpha_conf"] = 0.0
             
         # 2. Correlations
-        # Basket Return (Equal weight of all assets in df)
-        # We need to compute this carefully as 'df' here might be the full aligned df or subset.
-        # The 'df' passed to this method is 'aligned_df' in the loop, so it has all assets.
-        
-        # Identify all asset returns
-        all_returns = pd.DataFrame()
-        for a in self.assets:
-            if f"{a}_close" in df.columns:
-                all_returns[a] = df[f"{a}_close"].pct_change()
+        if all_returns is None or all_returns.empty:
+            # Fallback (slow)
+            all_returns = pd.DataFrame()
+            for a in self.assets:
+                if f"{a}_close" in df.columns:
+                    all_returns[a] = df[f"{a}_close"].pct_change()
         
         if not all_returns.empty:
             basket_return = all_returns.mean(axis=1)
@@ -455,7 +459,7 @@ class RiskFeatureEngine:
         # Specific Correlations (Gold, Indices - require those columns to exist)
         # If XAUUSD is one of the assets, we can correlate with it.
         if "XAUUSD_close" in df.columns:
-            xau_ret = df["XAUUSD_close"].pct_change()
+            xau_ret = all_returns["XAUUSD"] if "XAUUSD" in all_returns else df["XAUUSD_close"].pct_change()
             df[f"{asset}_corr_gold"] = ret.rolling(50).corr(xau_ret)
         else:
             df[f"{asset}_corr_gold"] = 0
@@ -475,7 +479,7 @@ class RiskFeatureEngine:
         
         # Covariance with Lead Asset (e.g. EURUSD as leader)
         if "EURUSD_close" in df.columns:
-            eur_ret = df["EURUSD_close"].pct_change()
+            eur_ret = all_returns["EURUSD"] if "EURUSD" in all_returns else df["EURUSD_close"].pct_change()
             df[f"{asset}_cov_lead"] = ret.rolling(50).cov(eur_ret)
         else:
             df[f"{asset}_cov_lead"] = 0

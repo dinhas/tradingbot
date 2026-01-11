@@ -63,7 +63,8 @@ class RiskTradingEnv(gym.Env):
         self.reward_log_file = self.log_dir / f"rewards_env_{self.env_id}.csv"
         
         with open(self.reward_log_file, "w") as f:
-            f.write("timestamp,step,asset,avg_reward,win_rate,total_pnl,trades_taken,trades_skipped\n")
+            f.write("timestamp,step,asset,avg_reward,win_rate,total_pnl,trades_taken,trades_skipped,skip_rate\n")
+
             
         # Reward Tracking (Rolling 5000 steps)
         self.period_reward = 0.0
@@ -115,30 +116,46 @@ class RiskTradingEnv(gym.Env):
         self.winning_trades = 0
 
     def _load_data(self):
-        """Load labeled market data with Alpha signals."""
+        """Load labeled market data with Alpha signals, ensuring OHLCV columns exist."""
         data = {}
         data_dir_path = Path("data") # Use shared data directory
         for asset in self.assets:
-            file_path = data_dir_path / f"{asset}_alpha_labeled.parquet"
+            labeled_path = data_dir_path / f"{asset}_alpha_labeled.parquet"
+            raw_path = data_dir_path / f"{asset}_5m.parquet"
             
             df = None
-            if file_path.exists():
+            # 1. Try loading labeled data
+            if labeled_path.exists():
                 try:
-                    df = pd.read_parquet(file_path)
-                    # Rename alpha_confidence to alpha_conf to match FeatureEngine
+                    df = pd.read_parquet(labeled_path)
                     if 'alpha_confidence' in df.columns:
                         df.rename(columns={'alpha_confidence': 'alpha_conf'}, inplace=True)
+                    
+                    # Check if OHLCV exists. If not, try to merge with raw data
+                    required_cols = ['open', 'high', 'low', 'close', 'volume']
+                    if not all(col in df.columns for col in required_cols) and raw_path.exists():
+                        logging.info(f"Merging labeled {asset} with raw data to restore OHLCV...")
+                        raw_df = pd.read_parquet(raw_path)
+                        # Join on index (timestamp)
+                        df = df[['alpha_signal', 'alpha_conf']].join(raw_df, how='inner')
                         
-                    # Slice if requested
-                    if self.max_rows is not None and len(df) > self.max_rows:
-                        df = df.iloc[-self.max_rows:].copy()
-                        
-                    logging.info(f"Loaded {asset} from {file_path} ({len(df)} rows)")
+                    logging.info(f"Loaded {asset} from {labeled_path} ({len(df)} rows)")
                 except Exception as e:
-                    logging.warning(f"Failed to read {file_path}: {e}")
+                    logging.warning(f"Failed to read {labeled_path}: {e}")
             
+            # 2. Fallback to raw data only (no signals)
+            if df is None and raw_path.exists():
+                try:
+                    df = pd.read_parquet(raw_path)
+                    df['alpha_signal'] = 0.0
+                    df['alpha_conf'] = 0.0
+                    logging.info(f"Loaded raw {asset} from {raw_path} (No Signals)")
+                except Exception as e:
+                    logging.warning(f"Failed to read {raw_path}: {e}")
+
+            # 3. Last resort: Dummy data
             if df is None:
-                logging.warning(f"No labeled data found for {asset}, using dummy.")
+                logging.warning(f"No data found for {asset}, using dummy.")
                 dates = pd.date_range(start='2025-01-01', periods=1000, freq='5min')
                 df = pd.DataFrame(index=dates)
                 base = 1.0 if 'JPY' not in asset else 150.0
@@ -150,6 +167,10 @@ class RiskTradingEnv(gym.Env):
                 df['alpha_signal'] = 0.0
                 df['alpha_conf'] = 0.0
             
+            # Slice if requested
+            if self.max_rows is not None and len(df) > self.max_rows:
+                df = df.iloc[-self.max_rows:].copy()
+                
             data[asset] = df
         return data
 
@@ -298,6 +319,10 @@ class RiskTradingEnv(gym.Env):
              decision = 'SKIP'
 
         # 4. Calculate Reward
+        # =====================
+        # BALANCED REWARD STRUCTURE (v2)
+        # Goal: Prevent skip-everything exploit while rewarding smart filtering
+        # =====================
         reward = 0.0
         info = {
             'action': decision,
@@ -309,55 +334,74 @@ class RiskTradingEnv(gym.Env):
         }
         
         # Simulate Outcome (We simulate regardless to calculate Regret)
-        # CRITICAL FIX: If SKIP, use STANDARDIZED parameters to prevent "Fake Dodge" exploit.
-        # If we used agent's SL, it would set SL=min to force a loss and claim "Good Dodge".
+        # Use agent's chosen SL/TP for OPEN trades, standardized for SKIP
         if decision == 'SKIP':
-            sim_sl_mult = 2.0 # Standard wide stop
-            sim_tp_mult = 4.0 # Standard target
+            sim_sl_mult = 2.0  # Standard stop
+            sim_tp_mult = 4.0  # Standard target (2R)
         else:
             sim_sl_mult = sl_mult
             sim_tp_mult = tp_mult
             
         r_multiple, bars, outcome_type = self._simulate_trade(direction, sim_sl_mult, sim_tp_mult)
         
+        # =====================
+        # SKIP DECISION REWARDS
+        # =====================
         if decision == 'SKIP':
             self.trades_skipped += 1
             info['outcome'] = f"SKIP_({outcome_type})"
-            info['pnl'] = 0.0 # No real PnL
+            info['pnl'] = 0.0
             
-            # --- SKIP LOGIC: Regret vs Relief ---
-            # We judge the SKIP based on what a "Standard Strategy" would have done.
             if r_multiple > 0:
-                # Standard trade would have WON. You missed it.
-                # Regret Penalty
-                reward = -0.5 * r_multiple
+                # Missed a WINNER - significant penalty scaled by profit size
+                # This makes skipping winners painful
+                reward = -2.0 * r_multiple  # e.g., miss 2R = -4.0 penalty
             else:
-                # Standard trade would have LOST. You were right to skip.
-                # Relief Reward
-                reward = 10.0 # Huge reward for dodging a bullet
+                # Dodged a LOSER - capped reward to prevent exploit
+                # Max reward is +2.0 regardless of how bad the loss would have been
+                reward = min(2.0, abs(r_multiple) * 0.5)  # Small relief, capped
                 
+        # =====================
+        # OPEN TRADE REWARDS  
+        # =====================
         else:
-            # OPEN TRADE
             self.trades_taken += 1
             info['pnl'] = r_multiple
             info['outcome'] = outcome_type
             
-            # --- OPEN LOGIC: Chase Wins ---
             if r_multiple > 0:
-                # Win: Direct PnL Reward
-                reward = r_multiple
+                # WIN: R-multiple + activity bonus
+                # Encourages taking AND winning
+                reward = r_multiple + 1.0  # e.g., 2R win = 3.0 reward
             else:
-                # Loss: Money Lost + Missed Dodge Opportunity
-                # r_multiple is negative (e.g. -1.0)
-                # Penalty = -1.0 - 10.0 = -11.0
-                reward = r_multiple - 10.0
+                # LOSS: Penalty proportional to loss, but not catastrophic
+                # We want the model to learn from losses, not be terrified of trading
+                reward = r_multiple - 0.5  # e.g., -1R loss = -1.5 penalty
                 
-            # 2. Structure Penalty (Risk:Reward)
+            # Risk:Reward Structure Bonus/Penalty
             rr_ratio = tp_mult / sl_mult
-            if rr_ratio < self.MIN_RR:
-                reward -= 0.5
+            if rr_ratio >= 2.0:
+                reward += 0.3  # Bonus for good RR structure
+            elif rr_ratio < self.MIN_RR:
+                reward -= 0.5  # Penalty for bad RR
         
-        # --- Tracking Update ---
+        # =====================
+        # SKIP RATE PENALTY
+        # =====================
+        # Penalize if model is skipping too many trades (>70% skip rate)
+        total_decisions = self.trades_taken + self.trades_skipped
+        if total_decisions > 50:  # Only apply after warmup
+            skip_rate = self.trades_skipped / total_decisions
+            if skip_rate > 0.80:
+                # Heavy penalty for excessive skipping
+                reward -= 3.0
+            elif skip_rate > 0.70:
+                # Moderate penalty
+                reward -= 1.0
+        
+        # =====================
+        # TRACKING UPDATE
+        # =====================
         self.period_reward += reward
         self.total_reward += reward
         
@@ -374,8 +418,9 @@ class RiskTradingEnv(gym.Env):
         if self.current_step % 5000 == 0:
             avg_reward = self.period_reward / 5000
             win_rate = (self.period_wins / self.period_trades) if self.period_trades > 0 else 0.0
+            skip_rate = self.period_skipped / (self.period_trades + self.period_skipped + 1)
             
-            log_line = f"{datetime.now()},{self.current_step},{self.current_asset},{avg_reward:.4f},{win_rate:.4f},{self.period_pnl:.4f},{self.period_trades},{self.period_skipped}\n"
+            log_line = f"{datetime.now()},{self.current_step},{self.current_asset},{avg_reward:.4f},{win_rate:.4f},{self.period_pnl:.4f},{self.period_trades},{self.period_skipped},{skip_rate:.2f}\n"
             
             try:
                 with open(self.reward_log_file, "a") as f:
@@ -389,6 +434,7 @@ class RiskTradingEnv(gym.Env):
             self.period_wins = 0
             self.period_pnl = 0.0
             self.period_skipped = 0
+
 
         # 5. Advance State to NEXT SIGNAL
         self.current_step += 1
