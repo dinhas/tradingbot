@@ -3,6 +3,7 @@ import argparse
 import os
 import sys
 import gymnasium as gym
+import torch.nn as nn
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
@@ -18,7 +19,19 @@ def load_config(config_path="RiskLayer/config/ppo_config.yaml"):
         logging.warning(f"Config file {config_path} not found. Using defaults.")
         return {}
     with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    
+    # Map activation function string to torch class
+    if 'policy_kwargs' in config and 'activation_fn' in config['policy_kwargs']:
+        act_fn_str = config['policy_kwargs']['activation_fn']
+        if act_fn_str == "Tanh":
+            config['policy_kwargs']['activation_fn'] = nn.Tanh
+        elif act_fn_str == "ReLU":
+            config['policy_kwargs']['activation_fn'] = nn.ReLU
+        elif act_fn_str == "LeakyReLU":
+            config['policy_kwargs']['activation_fn'] = nn.LeakyReLU
+            
+    return config
 
 def train(dry_run=False, steps_override=None):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
