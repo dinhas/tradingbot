@@ -146,19 +146,17 @@ def generate_signals():
             if current_step % 10000 == 0:
                 print(f"Processed {current_step}/{max_steps}", end='\r')
                 
-        # Create Result DataFrame
-        result_df = pd.DataFrame({
-            'timestamp': timestamps,
-            'close': closes,
-            'alpha_signal': signals,
-            'alpha_confidence': confidences
-        })
-        result_df.set_index('timestamp', inplace=True)
+        # The env has the original raw data in raw_env.data[asset]
+        original_df = raw_env.data[asset].iloc[start_step:current_step].copy()
+        
+        # Add new columns
+        original_df['alpha_signal'] = signals
+        original_df['alpha_confidence'] = confidences
         
         # Save
         out_path = f"{output_dir}/{asset}_alpha_labeled.parquet"
-        result_df.to_parquet(out_path)
-        logging.info(f"\nSaved {out_path} with {len(result_df)} rows. Signals: {result_df['alpha_signal'].abs().sum()}")
+        original_df.to_parquet(out_path)
+        logging.info(f"\nSaved {out_path} with {len(original_df)} rows. Signals: {original_df['alpha_signal'].abs().sum()}")
 
 if __name__ == "__main__":
     generate_signals()
