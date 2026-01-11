@@ -49,7 +49,8 @@ class FeatureEngine:
         
         # Convert to float32 immediately to save 50% RAM
         for col in aligned_df.columns:
-            aligned_df[col] = aligned_df[col].astype(np.float32)
+            if aligned_df[col].dtype in [np.float64, np.int64, np.float32, np.int32]:
+                aligned_df[col] = aligned_df[col].astype(np.float32)
         
         # 2. Calculate Technical Indicators per Asset
         for asset in self.assets:
@@ -77,13 +78,21 @@ class FeatureEngine:
         normalized_df = aligned_df.copy() # One copy is likely needed for the normalized observation set
         # But ensure it's float32
         for col in normalized_df.columns:
-            normalized_df[col] = normalized_df[col].astype(np.float32)
+            if normalized_df[col].dtype in [np.float64, np.int64, np.float32, np.int32]:
+                normalized_df[col] = normalized_df[col].astype(np.float32)
             
         normalized_df = self._normalize_features(normalized_df)
         
         # 6. Handle Missing Values
-        normalized_df = normalized_df.ffill().fillna(0).astype(np.float32)
-        aligned_df = aligned_df.ffill().fillna(0).astype(np.float32)
+        normalized_df = normalized_df.ffill().fillna(0)
+        aligned_df = aligned_df.ffill().fillna(0)
+        
+        # Safely convert numeric columns to float32 at the end
+        numeric_cols_norm = normalized_df.select_dtypes(include=[np.number]).columns
+        normalized_df[numeric_cols_norm] = normalized_df[numeric_cols_norm].astype(np.float32)
+        
+        numeric_cols_align = aligned_df.select_dtypes(include=[np.number]).columns
+        aligned_df[numeric_cols_align] = aligned_df[numeric_cols_align].astype(np.float32)
         
         logger.info(f"Preprocessing complete. Total features: {len(normalized_df.columns)}")
         return aligned_df, normalized_df
