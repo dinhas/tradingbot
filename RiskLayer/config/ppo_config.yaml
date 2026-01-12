@@ -3,7 +3,7 @@
 # =========================================================================
 
 # Training Settings
-total_timesteps: 10000000  # 10M steps for thorough learning
+total_timesteps: 5000000 # 5M steps for thorough learning
 
 # PPO Hyperparameters (Optimized for decision-making)
 learning_rate: 0.0001      # Lower LR for stability (was 0.0003)

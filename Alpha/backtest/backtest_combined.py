@@ -127,6 +127,10 @@ class CombinedBacktest:
                 'USDCHF': 0.0,
                 'XAUUSD': 0.0
             }
+            
+        # Asset ID mapping (Match RiskTradingEnv)
+        self.risk_assets_list = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+        self.asset_ids = {asset: float(i) for i, asset in enumerate(self.risk_assets_list)}
         
         # Per-asset history tracking
         self.asset_histories = {
@@ -183,9 +187,15 @@ class CombinedBacktest:
         if conf_idx != -1:
             obs[conf_idx] = alpha_conf
             
+        # Append Static Features (Spread, Asset ID) - MATCHING RISK ENV
+        spread = self.spreads.get(asset, 0.0)
+        asset_id = self.asset_ids.get(asset, -1.0)
+        
+        obs = np.concatenate([obs, [spread, asset_id]])
+            
         # Debug injection
         if current_step % 1000 == 0 or current_step < 10:
-             logger.info(f"  [DEBUG] Injecting into {asset}: SigIdx={sig_idx}, ConfIdx={conf_idx} | Vals: {alpha_signal}, {alpha_conf}")
+             logger.info(f"  [DEBUG] Injecting into {asset}: SigIdx={sig_idx}, ConfIdx={conf_idx} | Vals: {alpha_signal}, {alpha_conf} | Added Spread={spread}, ID={asset_id}")
              if sig_idx != -1:
                  logger.info(f"    > Verified Injected Sig: {obs[sig_idx]}")
 
