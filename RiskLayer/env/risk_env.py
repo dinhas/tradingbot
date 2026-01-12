@@ -282,7 +282,12 @@ class RiskTradingEnv(gym.Env):
                 self.current_asset = self.assets[self._asset_idx]
 
                 # Random start, but ensure we land on a signal
-                self.current_step = np.random.randint(100, self.max_steps - 2000)
+                # Use dynamic bounds to handle small datasets (e.g., during dry runs or initial tests)
+                low_bound = min(100, max(0, self.max_steps // 10))
+                high_bound = max(
+                    low_bound + 1, self.max_steps - 600
+                )  # Leave ~500 for simulation
+                self.current_step = np.random.randint(low_bound, high_bound)
                 if self._find_next_signal():
                     found_signal = True
                     break
@@ -293,7 +298,7 @@ class RiskTradingEnv(gym.Env):
                 )
         else:
             # Backtest mode: usually linear, handled by caller or options
-            self.current_step = 100
+            self.current_step = min(100, max(0, self.max_steps // 10))
             if options and "asset" in options:
                 self.current_asset = options["asset"]
             if not self._find_next_signal():
@@ -314,7 +319,8 @@ class RiskTradingEnv(gym.Env):
 
         for attempt in range(max_attempts):
             signals = self.signal_arrays[self.current_asset]
-            search_limit = self.max_steps - 500
+            # Search limit: leave enough room for a minimal simulation, but don't go negative
+            search_limit = max(1, self.max_steps - 50)
 
             while self.current_step < search_limit:
                 if abs(signals[self.current_step]) > 0.01:  # Check for non-zero signal
@@ -323,7 +329,9 @@ class RiskTradingEnv(gym.Env):
 
             # If we run out of data, reset to a random point (in training)
             if self.is_training:
-                self.current_step = np.random.randint(100, self.max_steps - 2000)
+                low_bound = min(100, max(0, self.max_steps // 10))
+                high_bound = max(low_bound + 1, self.max_steps - 600)
+                self.current_step = np.random.randint(low_bound, high_bound)
                 # Next iteration will search from the new random point
             else:
                 return False
@@ -596,7 +604,9 @@ class RiskTradingEnv(gym.Env):
         terminated = False
         truncated = False
 
-        if not has_next or self.current_step >= self.max_steps - 500:
+        # Use a dynamic threshold for truncation to avoid immediate termination on small datasets
+        truncation_threshold = max(10, self.max_steps - 100)
+        if not has_next or self.current_step >= truncation_threshold:
             truncated = True
 
         # Get next observation
