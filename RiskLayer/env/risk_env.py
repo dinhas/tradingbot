@@ -125,6 +125,7 @@ class RiskTradingEnv(gym.Env):
         self.current_asset = self.assets[0]
         self.max_steps = len(self.processed_data) - 1
         self.equity = 10000.0
+        self.initial_equity = 10000.0  # Track initial for hypothesis E
         
         # Tracking
         self.total_reward = 0
@@ -424,6 +425,33 @@ class RiskTradingEnv(gym.Env):
                 reward += 0.3  # Bonus for good RR structure
             elif rr_ratio < self.MIN_RR:
                 reward -= 0.5  # Penalty for bad RR
+            
+            # #region agent log
+            # HYPOTHESIS C: Reward amplification of spread losses
+            try:
+                import json
+                import os
+                log_path = r"e:\tradingbot\.cursor\debug.log"
+                with open(log_path, 'a') as f:
+                    f.write(json.dumps({
+                        "id": f"log_{self.current_step}_{self.current_asset}_reward",
+                        "timestamp": int(__import__('time').time() * 1000),
+                        "location": "risk_env.py:step:reward",
+                        "message": "Reward calculation",
+                        "data": {
+                            "asset": self.current_asset,
+                            "decision": decision,
+                            "r_multiple": float(r_multiple),
+                            "reward": float(reward),
+                            "outcome": outcome_type,
+                            "rr_ratio": float(rr_ratio),
+                            "hypothesisId": "C"
+                        },
+                        "sessionId": "debug-session",
+                        "runId": "run1"
+                    }) + "\n")
+            except: pass
+            # #endregion agent log
         
         # =====================
         # SKIP RATE PENALTY
@@ -451,6 +479,33 @@ class RiskTradingEnv(gym.Env):
                 self.period_wins += 1
                 self.winning_trades += 1
             self.period_pnl += r_multiple
+            
+            # #region agent log
+            # HYPOTHESIS E: No equity tracking with spreads
+            try:
+                import json
+                log_path = r"e:\tradingbot\.cursor\debug.log"
+                with open(log_path, 'a') as f:
+                    f.write(json.dumps({
+                        "id": f"log_{self.current_step}_{self.current_asset}_equity",
+                        "timestamp": int(__import__('time').time() * 1000),
+                        "location": "risk_env.py:step:equity",
+                        "message": "Equity tracking check",
+                        "data": {
+                            "asset": self.current_asset,
+                            "equity": float(self.equity),
+                            "initial_equity": float(self.initial_equity),
+                            "equity_change_pct": float((self.equity - self.initial_equity) / self.initial_equity * 100),
+                            "r_multiple": float(r_multiple),
+                            "total_reward": float(self.total_reward),
+                            "trades_taken": int(self.trades_taken),
+                            "hypothesisId": "E"
+                        },
+                        "sessionId": "debug-session",
+                        "runId": "run1"
+                    }) + "\n")
+            except: pass
+            # #endregion agent log
         else:
             self.period_skipped += 1
             
@@ -507,6 +562,12 @@ class RiskTradingEnv(gym.Env):
           SL Trigger: High (Ask) >= SL -> (High_Bid + Spread) >= SL.
           TP Trigger: Low (Ask) <= TP -> (Low_Bid + Spread) <= TP.
         """
+        # #region agent log
+        import json
+        import os
+        log_path = r"e:\tradingbot\.cursor\debug.log"
+        # #endregion agent log
+        
         asset = self.current_asset
         idx = self.current_step
         spread = self.spreads.get(asset, 0.0)
@@ -532,6 +593,36 @@ class RiskTradingEnv(gym.Env):
             entry_price = bid_current # Sell at Bid
             sl_price = entry_price + sl_dist
             tp_price = entry_price - tp_dist
+        
+        # #region agent log
+        try:
+            with open(log_path, 'a') as f:
+                f.write(json.dumps({
+                    "id": f"log_{idx}_{asset}",
+                    "timestamp": int(__import__('time').time() * 1000),
+                    "location": "risk_env.py:_simulate_trade:entry",
+                    "message": "Trade simulation start",
+                    "data": {
+                        "asset": asset,
+                        "direction": "LONG" if direction == 1 else "SHORT",
+                        "bid_current": float(bid_current),
+                        "ask_current": float(ask_current),
+                        "spread": float(spread),
+                        "atr": float(atr),
+                        "sl_mult": float(sl_mult),
+                        "tp_mult": float(tp_mult),
+                        "sl_dist": float(sl_dist),
+                        "tp_dist": float(tp_dist),
+                        "entry_price": float(entry_price),
+                        "sl_price": float(sl_price),
+                        "tp_price": float(tp_price),
+                        "hypothesisId": "A"
+                    },
+                    "sessionId": "debug-session",
+                    "runId": "run1"
+                }) + "\n")
+        except: pass
+        # #endregion agent log
             
         # Look ahead
         horizon = 500
@@ -561,6 +652,7 @@ class RiskTradingEnv(gym.Env):
         # Result
         outcome = ''
         exit_price = 0.0
+        actual_exit_price = 0.0  # Initialize for all cases
         
         if first_sl == horizon + 1 and first_tp == horizon + 1:
             # Timed out
@@ -570,18 +662,36 @@ class RiskTradingEnv(gym.Env):
             close_bid = self.price_arrays[asset]['close'][end-1]
             if direction == 1:
                 exit_price = close_bid # Sell Long at Bid
+                actual_exit_price = close_bid  # Same as exit_price for TIMEOUT
             else:
                 exit_price = close_bid + spread # Cover Short at Ask
+                actual_exit_price = close_bid + spread  # Same as exit_price for TIMEOUT
                 
         elif first_sl < first_tp:
             # SL Hit
             outcome = 'SL'
             bars = first_sl + 1
+            # #region agent log
+            # HYPOTHESIS B: Exit price mismatch - for LONG, should exit at BID, not sl_price
+            actual_exit_bid = lows_bid[first_sl] if first_sl < len(lows_bid) else sl_price
+            if direction == 1:  # LONG: exit at BID when SL hit
+                actual_exit_price = actual_exit_bid
+            else:  # SHORT: exit at ASK when SL hit
+                actual_exit_price = actual_exit_bid + spread
+            # #endregion agent log
             exit_price = sl_price # Assumed filled at SL
         else:
             # TP Hit
             outcome = 'TP'
             bars = first_tp + 1
+            # #region agent log
+            # HYPOTHESIS D: TP calculation ignores spread
+            actual_exit_bid = highs_bid[first_tp] if first_tp < len(highs_bid) else tp_price
+            if direction == 1:  # LONG: exit at BID when TP hit
+                actual_exit_price = actual_exit_bid
+            else:  # SHORT: exit at ASK when TP hit
+                actual_exit_price = actual_exit_bid + spread
+            # #endregion agent log
             exit_price = tp_price # Assumed filled at TP
             
         # Calculate R-multiple
@@ -590,9 +700,48 @@ class RiskTradingEnv(gym.Env):
             pnl = exit_price - entry_price
         else:
             pnl = entry_price - exit_price
+        
+        # #region agent log
+        # HYPOTHESIS A: R-multiple doesn't account for spread in risk
+        # HYPOTHESIS B: Exit price mismatch causes larger losses
+        actual_pnl = actual_exit_price - entry_price if direction == 1 else entry_price - actual_exit_price
+        actual_risk_with_spread = sl_dist + spread if direction == 1 else sl_dist + spread
+        r_multiple_with_spread_risk = actual_pnl / actual_risk_with_spread if actual_risk_with_spread > 0 else 0
+        # #endregion agent log
             
         # Risk was sl_dist (Price Distance)
         # R = PnL / Risk
         r_multiple = pnl / sl_dist if sl_dist > 0 else 0
+        
+        # #region agent log
+        try:
+            with open(log_path, 'a') as f:
+                f.write(json.dumps({
+                    "id": f"log_{idx}_{asset}_exit",
+                    "timestamp": int(__import__('time').time() * 1000),
+                    "location": "risk_env.py:_simulate_trade:exit",
+                    "message": "Trade simulation result",
+                    "data": {
+                        "asset": asset,
+                        "direction": "LONG" if direction == 1 else "SHORT",
+                        "outcome": outcome,
+                        "exit_price_calculated": float(exit_price),
+                        "exit_price_actual": float(actual_exit_price),
+                        "entry_price": float(entry_price),
+                        "spread": float(spread),
+                        "pnl_calculated": float(pnl),
+                        "pnl_actual": float(actual_pnl),
+                        "sl_dist": float(sl_dist),
+                        "actual_risk_with_spread": float(actual_risk_with_spread),
+                        "r_multiple_calculated": float(r_multiple),
+                        "r_multiple_with_spread_risk": float(r_multiple_with_spread_risk),
+                        "r_multiple_diff": float(r_multiple - r_multiple_with_spread_risk),
+                        "hypothesisId": "A,B,D"
+                    },
+                    "sessionId": "debug-session",
+                    "runId": "run1"
+                }) + "\n")
+        except: pass
+        # #endregion agent log
         
         return r_multiple, bars, outcome
