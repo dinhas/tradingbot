@@ -368,9 +368,12 @@ class RiskFeatureEngine:
         close = df[f"{asset}_close"]
         ret = close.pct_change()
         
-        # 1. Alpha Signal (Placeholder)
-        features[f"{asset}_alpha_signal"] = 0.0
-        features[f"{asset}_alpha_conf"] = 0.0
+        # 1. Alpha Signal (Preserve if exists)
+        if f"{asset}_alpha_signal" not in df.columns:
+            features[f"{asset}_alpha_signal"] = 0.0
+            
+        if f"{asset}_alpha_conf" not in df.columns:
+            features[f"{asset}_alpha_conf"] = 0.0
             
         # 2. Correlations
         if all_returns is None or all_returns.empty:
