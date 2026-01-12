@@ -247,24 +247,34 @@ class RiskTradingEnv(gym.Env):
         super().reset(seed=seed)
         
         if self.is_training:
-            # Round-Robin asset selection for guaranteed coverage across all pairs
-            if not hasattr(self, '_asset_idx'):
-                # Initialize with a random start so parallel envs don't all start on the same asset
-                self._asset_idx = np.random.randint(0, len(self.assets))
-            else:
-                self._asset_idx = (self._asset_idx + 1) % len(self.assets)
+            # Try assets until we find one with signals
+            found_signal = False
+            for _ in range(len(self.assets)):
+                # Round-Robin asset selection for guaranteed coverage across all pairs
+                if not hasattr(self, '_asset_idx'):
+                    # Initialize with a random start so parallel envs don't all start on the same asset
+                    self._asset_idx = np.random.randint(0, len(self.assets))
+                else:
+                    self._asset_idx = (self._asset_idx + 1) % len(self.assets)
+                    
+                self.current_asset = self.assets[self._asset_idx]
                 
-            self.current_asset = self.assets[self._asset_idx]
-            
-            # Random start, but ensure we land on a signal
-            self.current_step = np.random.randint(100, self.max_steps - 2000)
-            self._find_next_signal()
+                # Random start, but ensure we land on a signal
+                self.current_step = np.random.randint(100, self.max_steps - 2000)
+                if self._find_next_signal():
+                    found_signal = True
+                    break
+                
+            if not found_signal:
+                logging.error("CRITICAL: No signals found in ANY asset. Training will fail.")
         else:
             # Backtest mode: usually linear, handled by caller or options
             self.current_step = 100
             if options and 'asset' in options:
                 self.current_asset = options['asset']
-            self._find_next_signal()
+            if not self._find_next_signal():
+                logging.warning(f"No signals found for {self.current_asset} in backtest.")
+
         
         self.trades_taken = 0
         self.trades_skipped = 0
@@ -273,23 +283,29 @@ class RiskTradingEnv(gym.Env):
 
     def _find_next_signal(self):
         """Advances current_step to the next index where alpha_signal != 0."""
-        signals = self.signal_arrays[self.current_asset]
+        # Use a loop instead of recursion to avoid RecursionError
+        # Max 5 attempts to find a signal via random resets
+        max_attempts = 5 if self.is_training else 1
         
-        # Search from current_step onwards
-        # We limit search to avoid infinite loops if no signals left
-        search_limit = self.max_steps - 500
-        
-        while self.current_step < search_limit:
-            if abs(signals[self.current_step]) > 0.01: # Check for non-zero signal
-                return True
-            self.current_step += 1
+        for attempt in range(max_attempts):
+            signals = self.signal_arrays[self.current_asset]
+            search_limit = self.max_steps - 500
             
-        # If we run out of data, reset to a random point (in training) or end (in eval)
-        if self.is_training:
-            self.current_step = np.random.randint(100, self.max_steps - 2000)
-            return self._find_next_signal()
-        else:
-            return False
+            while self.current_step < search_limit:
+                if abs(signals[self.current_step]) > 0.01: # Check for non-zero signal
+                    return True
+                self.current_step += 1
+                
+            # If we run out of data, reset to a random point (in training)
+            if self.is_training:
+                self.current_step = np.random.randint(100, self.max_steps - 2000)
+                # Next iteration will search from the new random point
+            else:
+                return False
+                
+        logging.warning(f"No signals found for {self.current_asset} after {max_attempts} random resets. Switch asset?")
+        return False
+
 
     def _get_observation(self):
         """Extract features for current asset at current step."""
