@@ -86,6 +86,17 @@ class CombinedBacktest:
         # Initialize Risk Feature Engine
         self.risk_feature_engine = RiskFeatureEngine()
         logger.info("Preprocessing Risk features for backtest...")
+        
+        # FIX: Align Backtest Data Structure with Training Data Structure
+        # Training data had [OHLCV, alpha_signal, alpha_confidence].
+        # If we don't add them here, they end up at the END of the feature list, shifting all other features.
+        # We also need alpha_confidence to match the 84 feature count (Training had alpha_confidence + generated alpha_conf).
+        for asset in self.env.data:
+            if 'alpha_signal' not in self.env.data[asset].columns:
+                self.env.data[asset]['alpha_signal'] = 0.0
+            if 'alpha_confidence' not in self.env.data[asset].columns:
+                self.env.data[asset]['alpha_confidence'] = 0.0
+                
         # TradingEnv already has raw data in self.env.data
         self.risk_processed_data = self.risk_feature_engine.preprocess_data(self.env.data)
         
@@ -181,11 +192,18 @@ class CombinedBacktest:
             conf_idx = asset_cols.index(conf_col)
         elif "alpha_conf" in asset_cols:
             conf_idx = asset_cols.index("alpha_conf")
+        
+        # Also check for alpha_confidence (from our fix)
+        conf_idx_2 = -1
+        if f"{asset}_alpha_confidence" in asset_cols:
+            conf_idx_2 = asset_cols.index(f"{asset}_alpha_confidence")
             
         if sig_idx != -1:
             obs[sig_idx] = alpha_signal
         if conf_idx != -1:
             obs[conf_idx] = alpha_conf
+        if conf_idx_2 != -1:
+            obs[conf_idx_2] = alpha_conf
             
         # Append Static Features (Spread, Asset ID) - MATCHING RISK ENV
         spread = self.spreads.get(asset, 0.0)

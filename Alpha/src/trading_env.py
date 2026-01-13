@@ -525,16 +525,16 @@ class TradingEnv(gym.Env):
         size_pct = act["size"] * self.MAX_POS_SIZE_PCT
         position_size = size_pct * self.equity
 
-        # Minimum position check
-        if position_size < self.MIN_POSITION_SIZE:
-            return
+        # Minimum position check (REMOVED BLOCKING)
+        # if position_size < self.MIN_POSITION_SIZE:
+        #     return
 
         # Maximum position check
         position_size = min(position_size, self.equity * 0.5)
 
-        # Global exposure check
-        if not self._check_global_exposure(position_size):
-            return
+        # Global exposure check (REMOVED BLOCKING)
+        # if not self._check_global_exposure(position_size):
+        #     return
 
         # Calculate SL/TP levels (FIX: Handle zero ATR edge case)
         atr = max(atr, price * self.MIN_ATR_MULTIPLIER)  # Minimum 0.01% of price
@@ -610,27 +610,30 @@ class TradingEnv(gym.Env):
         self.equity = max(self.equity, 0.01)
 
         # Record trade for backtesting
-        hold_time = (self.current_step - pos["entry_step"]) * 5  # 5 min per step
-        trade_record = {
-            "timestamp": self._get_current_timestamp(),
-            "asset": asset,
-            "action": "BUY" if pos["direction"] == 1 else "SELL",
-            "size": pos["size"],
-            "entry_price": pos["entry_price"],
-            "exit_price": price,
-            "sl": pos["sl"],
-            "tp": pos["tp"],
-            "pnl": pnl,
-            "net_pnl": pnl - cost,
-            "fees": cost,
-            "equity_before": equity_before,
-            "equity_after": self.equity,
-            "hold_time": hold_time,
-            "rr_ratio": pos["tp_dist"] / pos["sl_dist"] if pos["sl_dist"] > 0 else 0,
-        }
+        # LOGGING RESTRICTION: Only log if NOT training (Backtest only)
+        if not self.is_training:
+            hold_time = (self.current_step - pos["entry_step"]) * 5  # 5 min per step
+            trade_record = {
+                "timestamp": self._get_current_timestamp(),
+                "asset": asset,
+                "action": "BUY" if pos["direction"] == 1 else "SELL",
+                "size": pos["size"],
+                "entry_price": pos["entry_price"],
+                "exit_price": price,
+                "sl": pos["sl"],
+                "tp": pos["tp"],
+                "pnl": pnl,
+                "net_pnl": pnl - cost,
+                "fees": cost,
+                "equity_before": equity_before,
+                "equity_after": self.equity,
+                "hold_time": hold_time,
+                "rr_ratio": pos["tp_dist"] / pos["sl_dist"] if pos["sl_dist"] > 0 else 0,
+            }
 
-        self.completed_trades.append(trade_record)
-        self.all_trades.append(trade_record)
+            self.completed_trades.append(trade_record)
+            self.all_trades.append(trade_record)
+        
         self.positions[asset] = None
 
     def _update_positions(self):
@@ -875,7 +878,7 @@ class TradingEnv(gym.Env):
         if reward > self.max_step_reward:
             self.max_step_reward = reward
 
-        if self.current_step % self.REWARD_LOG_INTERVAL == 0:
+        if self.current_step % self.REWARD_LOG_INTERVAL == 0 and not self.is_training:
             logging.debug(
                 f"[Reward] step={self.current_step} "
                 f"peeked={self.peeked_pnl_step:.2f} "

@@ -469,7 +469,7 @@ class RiskTradingEnv(gym.Env):
 
             # #region agent log
             # HYPOTHESIS C: Reward amplification of spread losses
-            if self.current_step % 5000 == 0:
+            if self.current_step % 5000 == 0 and not self.is_training:
                 try:
                     import json
                     import os
@@ -531,7 +531,7 @@ class RiskTradingEnv(gym.Env):
 
             # #region agent log
             # HYPOTHESIS E: No equity tracking with spreads
-            if self.current_step % 5000 == 0:
+            if self.current_step % 5000 == 0 and not self.is_training:
                 try:
                     import json
 
@@ -571,7 +571,7 @@ class RiskTradingEnv(gym.Env):
             self.period_skipped += 1
 
         # --- Logging (Every 5000 steps) ---
-        if self.current_step % 5000 == 0:
+        if self.current_step % 5000 == 0 and not self.is_training:
             avg_reward = self.period_reward / 5000
             win_rate = (
                 (self.period_wins / self.period_trades)
@@ -666,7 +666,7 @@ class RiskTradingEnv(gym.Env):
 
         # #region agent log
         try:
-            if idx % 5000 == 0:
+            if idx % 5000 == 0 and not self.is_training:
                 with open(log_path, "a") as f:
                     f.write(
                         json.dumps(
@@ -804,7 +804,7 @@ class RiskTradingEnv(gym.Env):
 
         # #region agent log
         try:
-            if idx % 5000 == 0:
+            if idx % 5000 == 0 and not self.is_training:
                 with open(log_path, "a") as f:
                     f.write(
                         json.dumps(
