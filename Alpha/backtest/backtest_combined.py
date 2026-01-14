@@ -94,8 +94,8 @@ class CombinedBacktest:
         for asset in self.env.data:
             if 'alpha_signal' not in self.env.data[asset].columns:
                 self.env.data[asset]['alpha_signal'] = 0.0
-            if 'alpha_confidence' not in self.env.data[asset].columns:
-                self.env.data[asset]['alpha_confidence'] = 0.0
+            # if 'alpha_confidence' not in self.env.data[asset].columns:
+            #     self.env.data[asset]['alpha_confidence'] = 0.0
                 
         # TradingEnv already has raw data in self.env.data
         self.risk_processed_data = self.risk_feature_engine.preprocess_data(self.env.data)
@@ -380,17 +380,18 @@ class CombinedBacktest:
                     
                     exec_conf, sl_mult, tp_mult = self.parse_risk_action(risk_action)
                     
-                    # Risk Decision: Only OPEN if confidence > THRESHOLD
-                    if exec_conf > self.EXECUTION_THRESHOLD:
-                        risk_approvals_count += 1
-                        combined_actions[asset] = {
-                            'direction': direction,
-                            'size': 0.5, # Fixed size placeholder (could use sizing logic)
-                            'sl_mult': sl_mult,
-                            'tp_mult': tp_mult
-                        }
-                    else:
-                        risk_blocked_count += 1
+                    # Risk Decision: ALWAYS OPEN (Blocking Disabled)
+                    risk_approvals_count += 1
+                    combined_actions[asset] = {
+                        'direction': direction,
+                        'size': 0.5, # Fixed size placeholder (could use sizing logic)
+                        'sl_mult': sl_mult,
+                        'tp_mult': tp_mult
+                    }
+                    
+                    # Debug: Log if it WOULD have been blocked
+                    # if exec_conf <= self.EXECUTION_THRESHOLD:
+                    #     logger.debug(f"Trade forced (Confidence {exec_conf:.2f} <= {self.EXECUTION_THRESHOLD})")
                 
                 # 2. Execute trades based on Alpha Signal + Risk Model Approval
                 for asset in self.env.assets:
@@ -450,9 +451,7 @@ class CombinedBacktest:
             logger.info("RISK FILTER SUMMARY")
             logger.info(f"Total Alpha Signals:  {alpha_signals_count}")
             logger.info(f"Risk Approved:        {risk_approvals_count}")
-            logger.info(f"Risk Blocked:         {risk_blocked_count}")
-            filter_rate = (risk_blocked_count / alpha_signals_count * 100) if alpha_signals_count > 0 else 0
-            logger.info(f"Filter Rate:          {filter_rate:.2f}%")
+            logger.info(f"Risk Blocking:        DISABLED")
             logger.info("-"*30 + "\n")
         
         return metrics_tracker

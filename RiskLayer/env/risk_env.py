@@ -389,17 +389,12 @@ class RiskTradingEnv(gym.Env):
         direction = 1 if current_signal > 0 else -1
 
         # 3. Determine Execution
-        decision = "SKIP"
-
-        if execution_trig > 0:  # User Threshold can be 0 or small positive
-            decision = "OPEN"
-        else:
-            decision = "SKIP"
+        # Always execute - no skip decision
+        decision = "OPEN"
 
         # 4. Calculate Reward
         # =====================
-        # BALANCED REWARD STRUCTURE (v2)
-        # Goal: Prevent skip-everything exploit while rewarding smart filtering
+        # EQUITY PERCENTAGE REWARD STRUCTURE
         # =====================
         reward = 0.0
         info = {
@@ -408,64 +403,69 @@ class RiskTradingEnv(gym.Env):
             "sl": sl_mult,
             "tp": tp_mult,
             "pnl": 0.0,
-            "outcome": "SKIP",
+            "outcome": "OPEN",
         }
 
-        # Simulate Outcome (We simulate regardless to calculate Regret)
-        # Use agent's chosen SL/TP for OPEN trades, standardized for SKIP
-        if decision == "SKIP":
-            sim_sl_mult = 2.0  # Standard stop
-            sim_tp_mult = 4.0  # Standard target (2R)
-        else:
-            sim_sl_mult = sl_mult
-            sim_tp_mult = tp_mult
-
-        r_multiple, bars, outcome_type = self._simulate_trade(
-            direction, sim_sl_mult, sim_tp_mult
+        # Simulate Outcome
+        r_multiple, bars, outcome_type, pnl_price = self._simulate_trade(
+            direction, sl_mult, tp_mult
         )
 
-        # =====================
-        # SKIP DECISION REWARDS
-        # =====================
-        if decision == "SKIP":
-            self.trades_skipped += 1
-            info["outcome"] = f"SKIP_({outcome_type})"
-            info["pnl"] = 0.0
+        # Calculate dollar PnL based on position sizing
+        # Assume 1% risk per trade as standard
+        asset = self.current_asset
+        atr = self.atr_arrays[asset][self.current_step]
+        idx = self.current_step
+        bid_current = self.price_arrays[asset]["close"][idx]
+        spread = self.spreads.get(asset, 0.0)
 
-            if r_multiple > 0:
-                # Missed a WINNER - significant penalty scaled by profit size
-                # This makes skipping winners painful
-                reward = -2.0 * r_multiple  # e.g., miss 2R = -4.0 penalty
+        sl_dist = sl_mult * atr
+        risk_amount = self.equity * 0.01  # Risk 1% per trade
+
+        # Calculate position size based on asset type
+        contract_size = 100 if asset == "XAUUSD" else 100000
+        is_usd_quote = asset in ["EURUSD", "GBPUSD", "XAUUSD"]
+        is_usd_base = asset in ["USDJPY", "USDCHF"]
+
+        # Calculate lots needed to risk 1%
+        if sl_dist > 0:
+            if is_usd_quote:
+                lots = risk_amount / (sl_dist * contract_size)
+            elif is_usd_base:
+                lots = (risk_amount * bid_current) / (sl_dist * contract_size)
             else:
-                # Dodged a LOSER - capped reward to prevent exploit
-                # Max reward is +2.0 regardless of how bad the loss would have been
-                reward = min(2.0, abs(r_multiple) * 0.5)  # Small relief, capped
+                lots = risk_amount / (sl_dist * contract_size)
+        else:
+            lots = 0.01
+
+        # Convert price PnL to dollar PnL
+        if is_usd_quote:
+            pnl = pnl_price * lots * contract_size
+        elif is_usd_base:
+            pnl = (pnl_price * lots * contract_size) / bid_current
+        else:
+            pnl = pnl_price * lots * contract_size
 
         # =====================
         # OPEN TRADE REWARDS
         # =====================
-        else:
-            self.trades_taken += 1
-            info["pnl"] = r_multiple
-            info["outcome"] = outcome_type
+        self.trades_taken += 1
+        info["pnl"] = pnl
+        info["outcome"] = outcome_type
 
-            if r_multiple > 0:
-                # WIN: R-multiple + activity bonus
-                # Encourages taking AND winning
-                reward = r_multiple + 1.0  # e.g., 2R win = 3.0 reward
-            else:
-                # LOSS: Heavily amplified penalty to enforce extreme loss aversion
-                # Multiplier increased to 4x so losses are far more damaging than wins
-                reward = (
-                    r_multiple * 4.0
-                ) - 0.5  # e.g., -1R loss = -4.5 penalty (vs +2.0 for win)
+        # Main reward: equity change percentage based on current equity
+        equity_change_pct = (pnl / self.equity) * 100
+        reward = equity_change_pct
 
-            # Risk:Reward Structure Bonus/Penalty
-            rr_ratio = tp_mult / sl_mult
-            if rr_ratio >= 2.0:
-                reward += 0.3  # Bonus for good RR structure
-            elif rr_ratio < self.MIN_RR:
-                reward -= 0.5  # Penalty for bad RR
+        # Update current equity
+        self.equity += pnl
+
+        # Risk:Reward Structure Bonus/Penalty
+        rr_ratio = tp_mult / sl_mult
+        if rr_ratio >= 2.0:
+            reward += 0.3  # Bonus for good RR structure
+        elif rr_ratio < self.MIN_RR:
+            reward -= 0.5  # Penalty for bad RR
 
             # #region agent log
             # HYPOTHESIS C: Reward amplification of spread losses
@@ -503,72 +503,55 @@ class RiskTradingEnv(gym.Env):
             # #endregion agent log
 
         # =====================
-        # SKIP RATE PENALTY
-        # =====================
-        # Penalize if model is skipping too many trades (>70% skip rate)
-        total_decisions = self.trades_taken + self.trades_skipped
-        if total_decisions > 50:  # Only apply after warmup
-            skip_rate = self.trades_skipped / total_decisions
-            if skip_rate > 0.80:
-                # Heavy penalty for excessive skipping
-                reward -= 3.0
-            elif skip_rate > 0.70:
-                # Moderate penalty
-                reward -= 1.0
-
-        # =====================
         # TRACKING UPDATE
         # =====================
         self.period_reward += reward
         self.total_reward += reward
 
-        if decision == "OPEN":
-            self.period_trades += 1
-            if r_multiple > 0:
-                self.period_wins += 1
-                self.winning_trades += 1
-            self.period_pnl += r_multiple
+        self.period_trades += 1
+        if r_multiple > 0:
+            self.period_wins += 1
+            self.winning_trades += 1
+        self.period_pnl += r_multiple
 
-            # #region agent log
-            # HYPOTHESIS E: No equity tracking with spreads
-            if self.current_step % 5000 == 0 and not self.is_training:
-                try:
-                    import json
+        # #region agent log
+        # HYPOTHESIS E: No equity tracking with spreads
+        if self.current_step % 5000 == 0 and not self.is_training:
+            try:
+                import json
 
-                    log_path = r"e:\tradingbot\.cursor\debug.log"
-                    with open(log_path, "a") as f:
-                        f.write(
-                            json.dumps(
-                                {
-                                    "id": f"log_{self.current_step}_{self.current_asset}_equity",
-                                    "timestamp": int(__import__("time").time() * 1000),
-                                    "location": "risk_env.py:step:equity",
-                                    "message": "Equity tracking check",
-                                    "data": {
-                                        "asset": self.current_asset,
-                                        "equity": float(self.equity),
-                                        "initial_equity": float(self.initial_equity),
-                                        "equity_change_pct": float(
-                                            (self.equity - self.initial_equity)
-                                            / self.initial_equity
-                                            * 100
-                                        ),
-                                        "r_multiple": float(r_multiple),
-                                        "total_reward": float(self.total_reward),
-                                        "trades_taken": int(self.trades_taken),
-                                        "hypothesisId": "E",
-                                    },
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                }
-                            )
-                            + "\n"
+                log_path = r"e:\tradingbot\.cursor\debug.log"
+                with open(log_path, "a") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "id": f"log_{self.current_step}_{self.current_asset}_equity",
+                                "timestamp": int(__import__("time").time() * 1000),
+                                "location": "risk_env.py:step:equity",
+                                "message": "Equity tracking check",
+                                "data": {
+                                    "asset": self.current_asset,
+                                    "equity": float(self.equity),
+                                    "initial_equity": float(self.initial_equity),
+                                    "equity_change_pct": float(
+                                        (self.equity - self.initial_equity)
+                                        / self.initial_equity
+                                        * 100
+                                    ),
+                                    "r_multiple": float(r_multiple),
+                                    "total_reward": float(self.total_reward),
+                                    "trades_taken": int(self.trades_taken),
+                                    "hypothesisId": "E",
+                                },
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                            }
                         )
-                except:
-                    pass
-            # #endregion agent log
-        else:
-            self.period_skipped += 1
+                        + "\n"
+                    )
+            except:
+                pass
+        # #endregion agent log
 
         # --- Logging (Every 5000 steps) ---
         if self.current_step % 5000 == 0 and not self.is_training:
@@ -846,4 +829,4 @@ class RiskTradingEnv(gym.Env):
             pass
         # #endregion agent log
 
-        return r_multiple, bars, outcome
+        return r_multiple, bars, outcome, pnl
