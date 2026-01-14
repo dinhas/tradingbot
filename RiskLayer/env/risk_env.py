@@ -420,7 +420,7 @@ class RiskTradingEnv(gym.Env):
         spread = self.spreads.get(asset, 0.0)
 
         sl_dist = sl_mult * atr
-        risk_amount = self.equity * 0.01  # Risk 1% per trade
+        risk_amount = self.equity * 0.15  # Risk 15% per trade
 
         # Calculate position size based on asset type
         contract_size = 100 if asset == "XAUUSD" else 100000
