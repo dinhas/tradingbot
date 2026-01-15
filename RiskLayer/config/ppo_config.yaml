@@ -13,7 +13,7 @@ n_epochs: 10               # Keep same
 gamma: 0.995               # Higher gamma for long-term thinking (was 0.99)
 gae_lambda: 0.98           # Smoother advantage estimation (was 0.95)
 clip_range: 0.15           # Tighter clipping for stability (was 0.2)
-ent_coef: 0.005            # Lower entropy for more exploitation (was 0.01)
+ent_coef: 0.01             # Increased entropy for un-learning bias (was 0.005)
 max_grad_norm: 0.5         # Keep same
 
 # Network Architecture (Larger for 83 features)
@@ -26,9 +26,9 @@ policy_kwargs:
 # Environment Settings
 execution_threshold: 0.2   # Keep same
 min_rr: 1.5               # Minimum Risk:Reward ratio
-atr_sl_min: 1.0
-atr_sl_max: 5.0
-atr_tp_min: 2.0
+atr_sl_min: 1.5           # Increased for safety with spreads (was 1.0)
+atr_sl_max: 6.0           # Slightly wider (was 5.0)
+atr_tp_min: 3.0           # Reward high-RR trades (was 2.0)
 atr_tp_max: 20.0
 
 # =========================================================================

@@ -238,6 +238,13 @@ class CombinedBacktest:
                 obs = padded_obs
                 
             obs_normalized = self.risk_norm_env.normalize_obs(obs.reshape(1, -1)).flatten()
+            
+            # Out-of-range check for Risk
+            if np.any(np.abs(obs_normalized) > 10.0):
+                bad_indices = np.where(np.abs(obs_normalized) > 10.0)[0]
+                for idx in bad_indices:
+                    logger.warning(f"⚠️ RISK Out-of-Range: Feature {idx} = {obs_normalized[idx]:.2f} (Asset: {asset}, Step: {current_step})")
+            
             return obs_normalized
             
         return obs
@@ -376,6 +383,11 @@ class CombinedBacktest:
                     pred_obs = alpha_obs
                     if self.alpha_norm_env is not None:
                         pred_obs = self.alpha_norm_env.normalize_obs(alpha_obs.reshape(1, -1)).flatten()
+                        # Out-of-range check for Alpha
+                        if np.any(np.abs(pred_obs) > 10.0):
+                            bad_indices = np.where(np.abs(pred_obs) > 10.0)[0]
+                            for idx in bad_indices:
+                                logger.warning(f"⚠️ ALPHA Out-of-Range: Feature {idx} = {pred_obs[idx]:.2f} (Asset: {asset}, Step: {self.env.current_step})")
                         
                     alpha_action, _ = self.alpha_model.predict(pred_obs, deterministic=True)
                     alpha_val = alpha_action[0]

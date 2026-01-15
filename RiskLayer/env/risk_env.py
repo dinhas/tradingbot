@@ -24,10 +24,10 @@ class RiskTradingEnv(gym.Env):
     3. If TAKE, decides SL and TP placement.
 
     Action Space (Continuous, size 3):
-    - [0] Execution Confidence:
-        * < -threshold: SHORT
-        * > +threshold: LONG
-        * Between: SKIP
+    - [0] Execution Confidence/Direction:
+        * <-0.2: SHORT (Magnitude = Risk %)
+        * > +0.2: LONG (Magnitude = Risk %)
+        * -0.2 to 0.2: SKIP
     - [1] SL Multiplier (normalized)
     - [2] TP Multiplier (normalized)
     """
@@ -75,6 +75,10 @@ class RiskTradingEnv(gym.Env):
         self.ATR_SL_MAX = config.get("atr_sl_max", 7.0)
         self.ATR_TP_MIN = config.get("atr_tp_min", 1.0)
         self.ATR_TP_MAX = config.get("atr_tp_max", 15.0)
+        self.MAX_RISK_PER_TRADE = config.get("max_risk_per_trade", 0.40)
+        self.SLIPPAGE_MIN_PIPS = config.get("slippage_min_pips", 0.5)
+        self.SLIPPAGE_MAX_PIPS = config.get("slippage_max_pips", 1.5)
+        self.PERIOD_LOG_SIZE = config.get("period_log_size", 5000)
 
         # Logging Setup
         self.log_dir = Path("RiskLayer/logs")
@@ -107,8 +111,10 @@ class RiskTradingEnv(gym.Env):
 
         # Build cache for fast access
         self._cache_data_arrays()
+        self._cache_signal_indices()
+        self._cache_asset_columns()
 
-        # Action Space: [Execution_Trig, SL_Mult, TP_Mult]
+        # Action Space: [Execution/Direction, SL_Mult, TP_Mult]
         # [0] Execution: >0.2 LONG, <-0.2 SHORT, -0.2 to 0.2 SKIP
         # [1] SL: Normalized [-1, 1] -> [min, max]
         # [2] TP: Normalized [-1, 1] -> [min, max]
@@ -131,9 +137,6 @@ class RiskTradingEnv(gym.Env):
         self.equity = 10000.0
         self.initial_equity = 10000.0  # Track initial for hypothesis E
         self.peak_equity = 10000.0
-        self.MAX_RISK_PER_TRADE = 0.40  # 40% Max Risk per trade (Agressive)
-        self.SLIPPAGE_MIN_PIPS = 0.5
-        self.SLIPPAGE_MAX_PIPS = 1.5
 
         # Tracking
         self.total_reward = 0
@@ -175,10 +178,14 @@ class RiskTradingEnv(gym.Env):
                             f"Merging labeled {asset} with raw data to restore OHLCV..."
                         )
                         raw_df = pd.read_parquet(raw_path)
-                        # Join on index (timestamp)
+                        # Join on index (timestamp) and validate alignment
                         df = df[["alpha_signal", "alpha_conf"]].join(
                             raw_df, how="inner"
                         )
+                        if len(df) == 0:
+                            logging.warning(f"Merge failed for {asset}: No matching timestamps between labeled and raw data.")
+                        elif len(df) < 0.9 * len(raw_df):
+                            logging.warning(f"Data loss during merge for {asset}: {len(df)} rows remain from {len(raw_df)} raw rows.")
 
                     logging.info(f"Loaded {asset} from {labeled_path} ({len(df)} rows)")
                 except Exception as e:
@@ -255,6 +262,28 @@ class RiskTradingEnv(gym.Env):
                     len(self.processed_data), dtype=np.float32
                 )
 
+    def _cache_signal_indices(self):
+        """Pre-calculate indices of all signals for fast lookups and resets."""
+        self.signal_indices = {}
+        for asset in self.assets:
+            signals = self.signal_arrays[asset]
+            # Consider any non-zero signal as valid
+            indices = np.where(np.abs(signals) > 0.01)[0]
+            self.signal_indices[asset] = indices
+
+    def _cache_asset_columns(self):
+        """Pre-calculate column indices for each asset to avoid string matching in observation."""
+        self.asset_col_indices = {}
+        for asset in self.assets:
+            # ONLY include columns that are in our numeric column_map
+            asset_cols = [
+                c
+                for c in self.processed_data.columns
+                if c.startswith(f"{asset}_") and c in self.column_map
+            ]
+            indices = [self.column_map[c] for c in asset_cols]
+            self.asset_col_indices[asset] = indices
+
     def _determine_obs_shape(self):
         """Calculate observation size based on one asset's view."""
         # We define a standard observation vector:
@@ -278,98 +307,81 @@ class RiskTradingEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
-        if self.is_training:
-            # Try assets until we find one with signals
-            found_signal = False
-            for _ in range(len(self.assets)):
-                # Round-Robin asset selection for guaranteed coverage across all pairs
-                if not hasattr(self, "_asset_idx"):
-                    # Initialize with a random start so parallel envs don't all start on the same asset
-                    self._asset_idx = np.random.randint(0, len(self.assets))
-                else:
-                    self._asset_idx = (self._asset_idx + 1) % len(self.assets)
-
-                self.current_asset = self.assets[self._asset_idx]
-
-                # Random start, but ensure we land on a signal
-                # Use dynamic bounds to handle small datasets (e.g., during dry runs or initial tests)
-                low_bound = min(100, max(0, self.max_steps // 10))
-                high_bound = max(
-                    low_bound + 1, self.max_steps - 600
-                )  # Leave ~500 for simulation
-                self.current_step = np.random.randint(low_bound, high_bound)
-                if self._find_next_signal():
-                    found_signal = True
-                    break
-
-            if not found_signal:
-                logging.error(
-                    "CRITICAL: No signals found in ANY asset. Training will fail."
-                )
+        # Asset Rotation - Works in both training and backtest
+        if not hasattr(self, "_asset_idx"):
+            self._asset_idx = np.random.randint(0, len(self.assets))
         else:
-            # Backtest mode: usually linear, handled by caller or options
-            self.current_step = min(100, max(0, self.max_steps // 10))
-            if options and "asset" in options:
-                self.current_asset = options["asset"]
-            if not self._find_next_signal():
-                logging.warning(
-                    f"No signals found for {self.current_asset} in backtest."
-                )
+            self._asset_idx = (self._asset_idx + 1) % len(self.assets)
+
+        found_signal = False
+        # Try all assets starting from the rotated index to ensure we don't get stuck
+        for i in range(len(self.assets)):
+            rotated_idx = (self._asset_idx + i) % len(self.assets)
+            self.current_asset = self.assets[rotated_idx]
+            
+            indices = self.signal_indices[self.current_asset]
+            if len(indices) == 0:
+                continue
+            
+            # Horizon is 500 steps, leave room for simulation
+            valid_indices = indices[indices < self.max_steps - 550]
+            
+            if len(valid_indices) > 0:
+                if self.is_training:
+                    # Randomly pick a signal index
+                    self.current_step = int(np.random.choice(valid_indices))
+                    # Update master index to the successfully chosen asset
+                    self._asset_idx = rotated_idx
+                else:
+                    # Backtest: usually start from first valid signal or options
+                    if options and "step" in options:
+                        self.current_step = options["step"]
+                    else:
+                        self.current_step = int(valid_indices[0])
+                
+                found_signal = True
+                break
+
+        if not found_signal:
+            logging.error(f"CRITICAL: No signals found in any asset. Check data loading.")
+            # Fallback to avoid complete crash
+            self.current_step = 0
+            self.current_asset = self.assets[0]
 
         self.trades_taken = 0
         self.trades_skipped = 0
         self.equity = self.initial_equity
         self.peak_equity = self.initial_equity
+        
+        # Reset period trackers
+        self.period_reward = 0.0
+        self.period_trades = 0
+        self.period_wins = 0
+        self.period_pnl = 0.0
+        self.period_skipped = 0
+        self.period_signals = 0
 
         return self._get_observation(), {}
 
     def _find_next_signal(self):
-        """Advances current_step to the next index where alpha_signal != 0."""
-        # Use a loop instead of recursion to avoid RecursionError
-        # Max 5 attempts to find a signal via random resets
-        max_attempts = 5 if self.is_training else 1
-
-        for attempt in range(max_attempts):
-            signals = self.signal_arrays[self.current_asset]
-            # Search limit: leave enough room for a minimal simulation, but don't go negative
-            search_limit = max(1, self.max_steps - 50)
-
-            while self.current_step < search_limit:
-                if abs(signals[self.current_step]) > 0.01:  # Check for non-zero signal
-                    return True
-                self.current_step += 1
-
-            # If we run out of data, reset to a random point (in training)
-            if self.is_training:
-                low_bound = min(100, max(0, self.max_steps // 10))
-                high_bound = max(low_bound + 1, self.max_steps - 600)
-                self.current_step = np.random.randint(low_bound, high_bound)
-                # Next iteration will search from the new random point
-            else:
-                return False
-
-        logging.warning(
-            f"No signals found for {self.current_asset} after {max_attempts} random resets. Switch asset?"
-        )
+        """Advances current_step to the next index where alpha_signal != 0 using cached indices."""
+        indices = self.signal_indices[self.current_asset]
+        
+        # Find the first index >= current_step + 1 (since we already processed current_step)
+        next_step_target = self.current_step + 1
+        idx_search_pos = np.searchsorted(indices, next_step_target)
+        
+        if idx_search_pos < len(indices):
+            candidate_step = int(indices[idx_search_pos])
+            # Ensure we haven't hit the end-of-data horizon buffer
+            if candidate_step < self.max_steps - 500:
+                self.current_step = candidate_step
+                return True
+        
         return False
 
     def _get_observation(self):
         """Extract features for current asset at current step."""
-        # Find columns for current asset
-        # This is a bit slow if done every step by string matching.
-        # Optimization: Pre-calculate column indices for each asset.
-        if not hasattr(self, "asset_col_indices"):
-            self.asset_col_indices = {}
-            for asset in self.assets:
-                # ONLY include columns that are in our numeric column_map
-                asset_cols = [
-                    c
-                    for c in self.processed_data.columns
-                    if c.startswith(f"{asset}_") and c in self.column_map
-                ]
-                indices = [self.column_map[c] for c in asset_cols]
-                self.asset_col_indices[asset] = indices
-
         indices = self.asset_col_indices[self.current_asset]
         obs = self.master_matrix[self.current_step, indices]
 
@@ -398,8 +410,8 @@ class RiskTradingEnv(gym.Env):
         self.period_signals += 1
         self.signals_processed += 1
 
-        # Log every 5000 signals instead of steps
-        if self.period_signals >= 5000 and not self.is_training:
+        # Log every X signals - Configurable (Issue 16)
+        if self.period_signals >= self.PERIOD_LOG_SIZE:
             avg_reward = self.period_reward / self.period_signals
             win_rate = (self.period_wins / self.period_trades) if self.period_trades > 0 else 0.0
             skip_rate = self.period_skipped / self.period_signals
@@ -422,24 +434,36 @@ class RiskTradingEnv(gym.Env):
 
     def step(self, action):
         # 1. Parse Action
-        sl_norm = action[0]
-        tp_norm = action[1]
-        risk_raw = np.clip((action[2] + 1) / 2, 0.0, 1.0) # 0.0 to 1.0
+        conf_raw = action[0]   # Execution Confidence / Direction
+        sl_norm = action[1]    # SL Multiplier
+        tp_norm = action[2]    # TP Multiplier
+
+        # Pre-execution Account State (Bug 1: Move peak_safe up)
+        peak_at_start = max(self.peak_equity, 1e-9)
+        prev_equity = self.equity
+        prev_dd = 1.0 - (prev_equity / peak_at_start)
+
+        # 2. Determine Direction and Risk from Action (Bug 2)
+        # Agent now HAS control over direction. 
+        # > Threshold = LONG, < -Threshold = SHORT, else SKIP
+        if conf_raw > self.EXECUTION_THRESHOLD:
+            direction = 1
+            risk_raw = conf_raw # Uses raw confidence as risk (avoiding Bug 10 compression)
+        elif conf_raw < -self.EXECUTION_THRESHOLD:
+            direction = -1
+            risk_raw = abs(conf_raw)
+        else:
+            direction = 0 # SKIP
 
         # Map SL/TP to multipliers
         sl_mult = self._map_range(sl_norm, -1, 1, self.ATR_SL_MIN, self.ATR_SL_MAX)
         tp_mult = self._map_range(tp_norm, -1, 1, self.ATR_TP_MIN, self.ATR_TP_MAX)
 
-        # 2. Determine Direction from Alpha Signal
-        current_signal = self.signal_arrays[self.current_asset][self.current_step]
-        direction = 1 if current_signal > 0 else -1
-
         # 3. Compute Oracle values for blocking evaluation
-        max_favorable, max_adverse = self._get_oracle_values(direction)
+        max_favorable, max_adverse = self._get_oracle_values(direction if direction != 0 else 1)
 
         # 4. Check for Block/Skip
-        BLOCK_THRESHOLD = 0.10
-        is_blocked = (risk_raw < BLOCK_THRESHOLD)
+        is_blocked = (direction == 0)
         
         if is_blocked:
             reward, block_type = self._evaluate_block_reward(max_favorable, max_adverse)
@@ -463,7 +487,7 @@ class RiskTradingEnv(gym.Env):
             self.current_step += 1
             has_next = self._find_next_signal()
             terminated = False
-            truncated = not has_next or self.current_step >= max(10, self.max_steps - 100)
+            truncated = not has_next # Logic simplified, horizon check moved to _find_next_signal
             
             return self._get_observation(), reward, terminated, truncated, info
 
@@ -473,9 +497,10 @@ class RiskTradingEnv(gym.Env):
         bid_current = self.price_arrays[asset]["close"][self.current_step]
         spread = self.spreads.get(asset, 0.0)
         
-        # Approximate 1 pip as 0.01% of price for robust scaling
+        # Scalable Slippage (Bug 7: JPY Support)
         slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-        slippage_price = slippage_pips * 0.0001 * bid_current
+        pip_size = 0.01 if 'JPY' in asset else 0.0001
+        slippage_price = slippage_pips * pip_size
         
         # Slippage moves entry AGAINST us (Long buy higher, Short sell lower)
         if direction == 1:
@@ -483,16 +508,8 @@ class RiskTradingEnv(gym.Env):
         else:
             entry_price = bid_current - slippage_price
 
-        # Rescale risk to allow full range after threshold
-        risk_raw_scaled = (risk_raw - BLOCK_THRESHOLD) / (1.0 - BLOCK_THRESHOLD)
-        
-        # Calculate Risk and Position Size
-        peak_safe = max(self.peak_equity, 1e-9)
-        drawdown = 1.0 - (self.equity / peak_safe)
-        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
-        
-        # Actual Risk %
-        actual_risk_pct = risk_raw_scaled * self.MAX_RISK_PER_TRADE * risk_cap_mult
+        # Actual Risk % (Comment matches implementation now)
+        actual_risk_pct = risk_raw * self.MAX_RISK_PER_TRADE
         risk_amount = self.equity * actual_risk_pct
 
         # Simulate Outcome (Passing the slippage-adjusted entry)
@@ -530,14 +547,11 @@ class RiskTradingEnv(gym.Env):
         else:
             pnl = pnl_price * lots * contract_size
 
-        # Reward Calculation
-        prev_equity = self.equity
-        prev_dd = 1.0 - (prev_equity / peak_safe)
-        
+        # Reward Calculation (Bug 2: Consistent Reference)
         self.equity += pnl
         self.peak_equity = max(self.peak_equity, self.equity)
         
-        new_dd = 1.0 - (self.equity / peak_safe)
+        new_dd = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
         dd_increase = max(0.0, new_dd - prev_dd)
         dd_penalty = -(dd_increase ** 2) * 50.0
         
@@ -549,7 +563,6 @@ class RiskTradingEnv(gym.Env):
             tp_bonus = 0.5 * (tp_mult / 8.0)
             
         reward = pnl_reward + tp_bonus + dd_penalty
-        reward = np.clip(reward, -100.0, 100.0)
 
         # Tracking Update
         self.trades_taken += 1
@@ -589,7 +602,7 @@ class RiskTradingEnv(gym.Env):
             reward += 50.0 # Reward for "winning" the simulation
             
         reward = np.clip(reward, -100.0, 100.0)
-        truncated = not has_next or self.current_step >= max(10, self.max_steps - 100)
+        truncated = not has_next
         
         return self._get_observation(), reward, terminated, truncated, info
 
@@ -600,30 +613,37 @@ class RiskTradingEnv(gym.Env):
         """
         Helper to calculate reward for blocked/skipped trades using Oracle.
         Implements Tiered Blocking Rewards (Loss Avoidance) vs Scaled Win-Miss Penalties.
+        Now uses spread-aware percentages.
         """
-        # 1. Tiered Blocking Rewards (Loss Avoidance)
-        if max_adverse < -0.03:
-            return 200.0, "BLOCKED_CATASTROPHIC"
+        asset = self.current_asset
+        spread_pct = self.spreads.get(asset, 0.0) / self.price_arrays[asset]["close"][self.current_step]
         
-        if max_adverse < -0.015:
-             return 50.0, "BLOCKED_MAJOR_LOSS"
+        # 1. Tiered Blocking Rewards (Loss Avoidance)
+        # We reward blocking trades that would have exceeded our spread + some slippage
+        if max_adverse < -(spread_pct * 2.5): 
+            return 150.0, "BLOCKED_CATASTROPHIC"
+        
+        if max_adverse < -(spread_pct * 1.5):
+             return 40.0, "BLOCKED_MAJOR_LOSS"
              
         # 2. Scaled Win-Miss Penalties (Opportunity Cost)
-        if max_favorable > 0.02:
-             return -300.0, "MISSED_HUGE_WIN"
+        # Missed winners need to be significantly above spread to be a "real" miss
+        if max_favorable > (spread_pct * 10.0): # E.g. 10 pips if spread is 1
+             return -250.0, "MISSED_HUGE_WIN"
              
-        if max_favorable > 0.01:
-             return -100.0, "MISSED_BIG_WIN"
+        if max_favorable > (spread_pct * 5.0):
+             return -80.0, "MISSED_BIG_WIN"
              
-        if max_favorable > 0.0:
-             return -30.0, "MISSED_SMALL_WIN"
+        if max_favorable > (spread_pct * 2.0):
+             return -20.0, "MISSED_SMALL_WIN"
              
-        # 3. Minor Loss / Noise
-        return 5.0, "BLOCKED_MINOR_LOSS"
+        # 3. Minor Loss / Noise / Spread-Eaten trades
+        return 2.0, "BLOCKED_NOISE"
 
     def _get_oracle_values(self, direction):
         """
         Look ahead to find max potential profit/loss for oracle rewards.
+        Correctly accounts for Bid/Ask spread on entry and exit.
         """
         asset = self.current_asset
         idx = self.current_step
@@ -631,11 +651,23 @@ class RiskTradingEnv(gym.Env):
         
         bid_current = self.price_arrays[asset]["close"][idx]
         ask_current = bid_current + spread
-        entry_price = ask_current if direction == 1 else bid_current
+        
+        # Entry logic with estimated slippage to match simulation (Bug 5)
+        slippage_est = spread * 0.5
+        if direction == 1: # LONG
+            entry_price = ask_current + slippage_est
+        else: # SHORT
+            entry_price = bid_current - slippage_est
         
         horizon = 500
         start = idx + 1
-        end = min(start + horizon, len(self.price_arrays[asset]["close"]))
+        
+        # Explicit boundary check (Bug 5)
+        total_len = len(self.price_arrays[asset]["close"])
+        if start >= total_len:
+             return 0.0, 0.0
+             
+        end = min(start + horizon, total_len)
         
         if start >= end:
             return 0.0, 0.0
@@ -644,10 +676,11 @@ class RiskTradingEnv(gym.Env):
         highs_bid = self.price_arrays[asset]["high"][start:end]
         
         if direction == 1: # LONG
+            # Exit Long at Bid
             max_fav = (highs_bid.max() - entry_price) / entry_price
             max_adv = (lows_bid.min() - entry_price) / entry_price
         else: # SHORT
-            # Short exit price is Ask (Bid + Spread)
+            # Exit Short at Ask (Bid + Spread)
             max_fav = (entry_price - (lows_bid.min() + spread)) / entry_price
             max_adv = (entry_price - (highs_bid.max() + spread)) / entry_price
             
@@ -656,6 +689,7 @@ class RiskTradingEnv(gym.Env):
     def _simulate_trade(self, direction, sl_mult, tp_mult, entry_price_override=None):
         """
         Simulate trade outcome using realistic Bid/Ask spreads.
+        Ensures PnL and R-multiple are spread-aware.
         """
         asset = self.current_asset
         idx = self.current_step
@@ -671,12 +705,19 @@ class RiskTradingEnv(gym.Env):
 
         atr = self.atr_arrays[asset][idx]
         if atr <= 0:
-            atr = bid_current * 0.0001
+            # Bug 4 Safety: Minimum ATR as at least a healthy floor
+            atr = max(bid_current * 0.0001, 1e-5)
 
-        sl_dist = sl_mult * atr
+        # SPREAD PROTECTION: (Bug 3)
+        # Calculate sl_dist but ensure it's at least 6x the spread to prevent ultra-tight stops
+        # Also ensure a hard minimum distance (e.g. 5 pips) for stability
+        sl_dist_raw = sl_mult * atr
+        min_sl_dist = max(spread * 6.0, 0.0005) if asset != "USDJPY" else max(spread * 6.0, 0.05)
+        sl_dist = max(sl_dist_raw, min_sl_dist)
+        
         tp_dist = tp_mult * atr
 
-        # Determine Triggers (SL/TP are calculated from Entry)
+        # Determine Triggers (Calculated from Entry)
         if direction == 1:  # Long
             sl_price = entry_price - sl_dist
             tp_price = entry_price + tp_dist
@@ -684,186 +725,66 @@ class RiskTradingEnv(gym.Env):
             sl_price = entry_price + sl_dist
             tp_price = entry_price - tp_dist
 
-        # #region agent log
-        try:
-            if idx % 5000 == 0 and not self.is_training:
-                with open(log_path, "a") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "id": f"log_{idx}_{asset}",
-                                "timestamp": int(__import__("time").time() * 1000),
-                                "location": "risk_env.py:_simulate_trade:entry",
-                                "message": "Trade simulation start",
-                                "data": {
-                                    "asset": asset,
-                                    "direction": "LONG" if direction == 1 else "SHORT",
-                                    "bid_current": float(bid_current),
-                                    "ask_current": float(ask_current),
-                                    "spread": float(spread),
-                                    "atr": float(atr),
-                                    "sl_mult": float(sl_mult),
-                                    "tp_mult": float(tp_mult),
-                                    "sl_dist": float(sl_dist),
-                                    "tp_dist": float(tp_dist),
-                                    "entry_price": float(entry_price),
-                                    "sl_price": float(sl_price),
-                                    "tp_price": float(tp_price),
-                                    "hypothesisId": "A",
-                                },
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                            }
-                        )
-                        + "\n"
-                    )
-        except:
-            pass
-        # #endregion agent log
-
         # Look ahead
         horizon = 500
         start = idx + 1
-        end = min(start + horizon, len(self.price_arrays[asset]["close"]))
+        
+        # Explicit boundary check (Bug 5)
+        total_len = len(self.price_arrays[asset]["close"])
+        if start >= total_len:
+            return 0.0, 0.0, "TIMEOUT", 0.0
+            
+        end = min(start + horizon, total_len)
 
         # Future Price Arrays (Bid)
         lows_bid = self.price_arrays[asset]["low"][start:end]
         highs_bid = self.price_arrays[asset]["high"][start:end]
 
         # Check hits
-        if direction == 1:  # Long Checks (against Bid)
-            # SL hit if Bid goes below SL
+        if direction == 1:  # Long Checks (Exit at Bid)
             sl_hits = lows_bid <= sl_price
-            # TP hit if Bid goes above TP
             tp_hits = highs_bid >= tp_price
-        else:  # Short Checks (against Ask)
-            # Short SL hit if Ask (High_Bid + Spread) goes above SL
+        else:  # Short Checks (Exit at Ask)
+            # Short hits if Ask (Bid + Spread) matches SL or TP
             sl_hits = (highs_bid + spread) >= sl_price
-            # Short TP hit if Ask (Low_Bid + Spread) goes below TP
             tp_hits = (lows_bid + spread) <= tp_price
 
         # Find first occurrence
         first_sl = np.argmax(sl_hits) if sl_hits.any() else horizon + 1
         first_tp = np.argmax(tp_hits) if tp_hits.any() else horizon + 1
 
-        # Result
+        # Result Logic
         outcome = ""
-        exit_price = 0.0
-        actual_exit_price = 0.0  # Initialize for all cases
+        actual_exit_price = 0.0
 
         if first_sl == horizon + 1 and first_tp == horizon + 1:
-            # Timed out
             outcome = "TIMEOUT"
             bars = horizon
-            # Close position at current market rates
             close_bid = self.price_arrays[asset]["close"][end - 1]
-            if direction == 1:
-                exit_price = close_bid  # Sell Long at Bid
-                actual_exit_price = close_bid  # Same as exit_price for TIMEOUT
-            else:
-                exit_price = close_bid + spread  # Cover Short at Ask
-                actual_exit_price = close_bid + spread  # Same as exit_price for TIMEOUT
+            # Exit at market rates
+            actual_exit_price = close_bid if direction == 1 else (close_bid + spread)
 
         elif first_sl < first_tp:
-            # SL Hit
             outcome = "SL"
             bars = first_sl + 1
-            # #region agent log
-            # HYPOTHESIS B: Exit price mismatch - for LONG, should exit at BID, not sl_price
-            actual_exit_bid = (
-                lows_bid[first_sl] if first_sl < len(lows_bid) else sl_price
-            )
-            if direction == 1:  # LONG: exit at BID when SL hit
-                actual_exit_price = actual_exit_bid
-            else:  # SHORT: exit at ASK when SL hit
-                actual_exit_price = actual_exit_bid + spread
-            # #endregion agent log
-            exit_price = sl_price  # Assumed filled at SL
+            # Fill at SL price (assume slippage is already in entry)
+            actual_exit_price = sl_price 
         else:
-            # TP Hit
             outcome = "TP"
             bars = first_tp + 1
-            # #region agent log
-            # HYPOTHESIS D: TP calculation ignores spread
-            actual_exit_bid = (
-                highs_bid[first_tp] if first_tp < len(highs_bid) else tp_price
-            )
-            if direction == 1:  # LONG: exit at BID when TP hit
-                actual_exit_price = actual_exit_bid
-            else:  # SHORT: exit at ASK when TP hit
-                actual_exit_price = actual_exit_bid + spread
-            # #endregion agent log
-            exit_price = tp_price  # Assumed filled at TP
+            # Fill at TP price
+            actual_exit_price = tp_price
 
-        # Calculate R-multiple
-        # Real PnL
+        # SPREAD-AWARE PnL
         if direction == 1:
-            pnl = exit_price - entry_price
+            pnl_price = actual_exit_price - entry_price
         else:
-            pnl = entry_price - exit_price
+            pnl_price = entry_price - actual_exit_price
 
-        # #region agent log
-        # HYPOTHESIS A: R-multiple doesn't account for spread in risk
-        # HYPOTHESIS B: Exit price mismatch causes larger losses
-        actual_pnl = (
-            actual_exit_price - entry_price
-            if direction == 1
-            else entry_price - actual_exit_price
-        )
-        actual_risk_with_spread = (
-            sl_dist + spread if direction == 1 else sl_dist + spread
-        )
-        r_multiple_with_spread_risk = (
-            actual_pnl / actual_risk_with_spread if actual_risk_with_spread > 0 else 0
-        )
-        # #endregion agent log
+        # SPREAD-AWARE R-MULTIPLE
+        # Risk is the distance from entry to stop loss. 
+        # Since entry_price and sl_price both account for spread/slippage, 
+        # sl_dist IS the correct risk denominator.
+        r_multiple = pnl_price / sl_dist if sl_dist > 0 else 0
 
-        # Risk was sl_dist (Price Distance)
-        # R = PnL / Risk
-        r_multiple = pnl / sl_dist if sl_dist > 0 else 0
-
-        # #region agent log
-        try:
-            if idx % 5000 == 0 and not self.is_training:
-                with open(log_path, "a") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "id": f"log_{idx}_{asset}_exit",
-                                "timestamp": int(__import__("time").time() * 1000),
-                                "location": "risk_env.py:_simulate_trade:exit",
-                                "message": "Trade simulation result",
-                                "data": {
-                                    "asset": asset,
-                                    "direction": "LONG" if direction == 1 else "SHORT",
-                                    "outcome": outcome,
-                                    "exit_price_calculated": float(exit_price),
-                                    "exit_price_actual": float(actual_exit_price),
-                                    "entry_price": float(entry_price),
-                                    "spread": float(spread),
-                                    "pnl_calculated": float(pnl),
-                                    "pnl_actual": float(actual_pnl),
-                                    "sl_dist": float(sl_dist),
-                                    "actual_risk_with_spread": float(
-                                        actual_risk_with_spread
-                                    ),
-                                    "r_multiple_calculated": float(r_multiple),
-                                    "r_multiple_with_spread_risk": float(
-                                        r_multiple_with_spread_risk
-                                    ),
-                                    "r_multiple_diff": float(
-                                        r_multiple - r_multiple_with_spread_risk
-                                    ),
-                                    "hypothesisId": "A,B,D",
-                                },
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                            }
-                        )
-                        + "\n"
-                    )
-        except:
-            pass
-        # #endregion agent log
-
-        return r_multiple, bars, outcome, pnl
+        return r_multiple, bars, outcome, pnl_price
