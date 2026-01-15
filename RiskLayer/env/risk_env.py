@@ -140,6 +140,8 @@ class RiskTradingEnv(gym.Env):
         self.trades_taken = 0
         self.trades_skipped = 0
         self.winning_trades = 0
+        self.signals_processed = 0 # Robust counter for logging
+        self.period_signals = 0    # Signals in current 5000 block
 
     def _load_data(self):
         """Load labeled market data with Alpha signals, ensuring OHLCV columns exist."""
@@ -385,6 +387,35 @@ class RiskTradingEnv(gym.Env):
 
         return obs
 
+    def _update_logging(self, reward):
+        """Robust logging that works for both blocked and taken trades."""
+        self.period_reward += reward
+        self.total_reward += reward
+        self.period_signals += 1
+        self.signals_processed += 1
+
+        # Log every 5000 signals instead of steps
+        if self.period_signals >= 5000 and not self.is_training:
+            avg_reward = self.period_reward / self.period_signals
+            win_rate = (self.period_wins / self.period_trades) if self.period_trades > 0 else 0.0
+            skip_rate = self.period_skipped / self.period_signals
+            
+            log_line = f"{datetime.now()},{self.signals_processed},{self.current_asset},{avg_reward:.4f},{win_rate:.4f},{self.period_pnl:.4f},{self.period_trades},{self.period_skipped},{skip_rate:.2f}\n"
+            
+            try:
+                with open(self.reward_log_file, "a") as f:
+                    f.write(log_line)
+            except Exception as e:
+                logging.error(f"Failed to write to log: {e}")
+            
+            # Reset period trackers
+            self.period_reward = 0.0
+            self.period_trades = 0
+            self.period_wins = 0
+            self.period_pnl = 0.0
+            self.period_skipped = 0
+            self.period_signals = 0
+
     def step(self, action):
         # 1. Parse Action
         sl_norm = action[0]
@@ -412,8 +443,7 @@ class RiskTradingEnv(gym.Env):
             # Tracking
             self.trades_skipped += 1
             self.period_skipped += 1
-            self.period_reward += reward
-            self.total_reward += reward
+            self._update_logging(reward)
             
             info = {
                 'action': 'BLOCK',
@@ -519,13 +549,13 @@ class RiskTradingEnv(gym.Env):
 
         # Tracking Update
         self.trades_taken += 1
-        self.period_reward += reward
-        self.total_reward += reward
         self.period_trades += 1
         if r_multiple > 0:
             self.period_wins += 1
             self.winning_trades += 1
         self.period_pnl += r_multiple
+        
+        self._update_logging(reward)
 
         info = {
             'action': 'OPEN',
@@ -540,23 +570,6 @@ class RiskTradingEnv(gym.Env):
             'max_fav': max_favorable,
             'max_adv': max_adverse
         }
-
-        # Logging (Every 5000 steps)
-        if self.current_step % 5000 == 0 and not self.is_training:
-            avg_reward = self.period_reward / 5000
-            win_rate = (self.period_wins / self.period_trades) if self.period_trades > 0 else 0.0
-            skip_rate = self.period_skipped / (self.period_trades + self.period_skipped + 1)
-            log_line = f"{datetime.now()},{self.current_step},{self.current_asset},{avg_reward:.4f},{win_rate:.4f},{self.period_pnl:.4f},{self.period_trades},{self.period_skipped},{skip_rate:.2f}\n"
-            try:
-                with open(self.reward_log_file, "a") as f:
-                    f.write(log_line)
-            except Exception as e:
-                logging.error(f"Failed to write to log: {e}")
-            self.period_reward = 0.0
-            self.period_trades = 0
-            self.period_wins = 0
-            self.period_pnl = 0.0
-            self.period_skipped = 0
 
         # Advance State
         self.current_step += 1
