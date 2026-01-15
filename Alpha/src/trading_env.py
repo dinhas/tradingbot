@@ -288,50 +288,52 @@ class TradingEnv(gym.Env):
             )
 
     def _load_data(self):
-        """Load market data for all assets."""
+        """Load market data for all assets, prioritizing 2025 files."""
         data = {}
-        data_dir_path = Path(self.data_dir)
+        # Prioritize backtest/data for 2025 files
+        backtest_data_dir = Path("backtest/data")
+        shared_data_dir = Path("data")
+        
         for asset in self.assets:
-            file_path = data_dir_path / f"{asset}_5m.parquet"
-            file_path_2025 = data_dir_path / f"{asset}_5m_2025.parquet"
+            # 1. Try 2025 specific files in backtest/data
+            file_2025 = backtest_data_dir / f"{asset}_5m_2025.parquet"
+            # 2. Try standard files in backtest/data
+            file_backtest = backtest_data_dir / f"{asset}_5m.parquet"
+            # 3. Try standard files in shared data
+            file_shared = shared_data_dir / f"{asset}_5m.parquet"
 
             df = None
-            try:
-                df = pd.read_parquet(file_path)
-                logging.info(f"Loaded {asset} from {file_path}")
-            except FileNotFoundError:
-                try:
-                    df = pd.read_parquet(file_path_2025)
-                    logging.info(f"Loaded {asset} from {file_path_2025}")
-                except FileNotFoundError:
-                    logging.error(
-                        f"Data file not found: {file_path} or {file_path_2025}"
-                    )
-                    logging.warning(
-                        f"Using dummy data for {asset} - BACKTEST WILL NOT BE ACCURATE!"
-                    )
+            for path in [file_2025, file_backtest, file_shared]:
+                if path.exists():
+                    try:
+                        df = pd.read_parquet(path)
+                        logging.info(f"Loaded {asset} from {path} ({len(df)} rows)")
+                        break
+                    except Exception as e:
+                        logging.error(f"Error loading {path}: {e}")
 
-                    # FIX: Use realistic default prices for different assets
-                    default_prices = {
-                        "EURUSD": 1.1000,
-                        "GBPUSD": 1.3000,
-                        "USDJPY": 150.00,
-                        "USDCHF": 0.9000,
-                        "XAUUSD": 2000.00,
-                    }
-                    base_price = default_prices.get(asset, 1.0000)
+            if df is None:
+                logging.error(f"No data file found for {asset}")
+                logging.warning(f"Using dummy data for {asset} - BACKTEST WILL NOT BE ACCURATE!")
 
-                    # FIX: Use raw column names, _align_data will add prefixes
-                    dates = pd.date_range(start="2024-01-01", periods=1000, freq="5min")
-                    df = pd.DataFrame(index=dates)
-                    df["open"] = base_price
-                    df["high"] = base_price * 1.001
-                    df["low"] = base_price * 0.999
-                    df["close"] = base_price
-                    df["volume"] = 100
-                    df["atr_14"] = (
-                        self.MIN_ATR_MULTIPLIER * base_price
-                    )  # Default small ATR
+                # FIX: Use realistic default prices for different assets
+                default_prices = {
+                    "EURUSD": 1.1000,
+                    "GBPUSD": 1.3000,
+                    "USDJPY": 150.00,
+                    "USDCHF": 0.9000,
+                    "XAUUSD": 2000.00,
+                }
+                base_price = default_prices.get(asset, 1.0000)
+
+                dates = pd.date_range(start="2025-01-01", periods=1000, freq="5min")
+                df = pd.DataFrame(index=dates)
+                df["open"] = base_price
+                df["high"] = base_price * 1.001
+                df["low"] = base_price * 0.999
+                df["close"] = base_price
+                df["volume"] = 100
+                df["atr_14"] = self.MIN_ATR_MULTIPLIER * base_price
 
             data[asset] = df
         return data

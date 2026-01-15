@@ -3,6 +3,7 @@ import numpy as np
 import logging
 from collections import deque
 from Alpha.src.feature_engine import FeatureEngine as AlphaFeatureEngine
+from RiskLayer.src.feature_engine import RiskFeatureEngine
 
 class FeatureManager:
     """
@@ -12,6 +13,7 @@ class FeatureManager:
         self.logger = logging.getLogger("LiveExecution")
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         self.alpha_fe = AlphaFeatureEngine()
+        self.risk_fe = RiskFeatureEngine()
         
         # History buffers for each asset
         self.history = {asset: pd.DataFrame() for asset in self.assets}
@@ -24,6 +26,7 @@ class FeatureManager:
         # Cache for performance
         self.last_preprocessed_ts = None
         self.cached_normalized_df = None
+        self.cached_risk_df = None
 
     def push_candle(self, asset, candle_data):
         """
@@ -151,33 +154,59 @@ class FeatureManager:
         latest_features = normalized_df.iloc[-1].to_dict()
         return self.alpha_fe.get_observation(latest_features, portfolio_state, asset)
 
-    def get_risk_observation(self, asset, alpha_obs, portfolio_state):
+    def get_risk_observation(self, asset, alpha_signal, portfolio_state):
         """
-        Constructs the 45-feature vector for Risk model.
-        (40 Alpha features + 5 Account features)
+        Constructs the 86-feature vector for Risk model.
+        (81 Market features + 5 Account features)
         """
-        # 1. Market State (40) - alpha_obs passed in
+        # 1. Preprocess data using RiskFeatureEngine
+        latest_ts = max(df.index.max() for df in self.history.values() if not df.empty)
         
-        # 2. Account State (5)
-        # Match RiskManagementEnv._get_observation logic
-        equity = portfolio_state.get('equity', 10.0)
-        initial_equity = portfolio_state.get('initial_equity', 10.0)
+        if self.last_preprocessed_ts == latest_ts and self.cached_risk_df is not None:
+             risk_df = self.cached_risk_df
+        else:
+             data_dict = {a: df.copy() for a, df in self.history.items() if not df.empty}
+             # Inject the current alpha signal into the dataframe for the engine
+             for a in self.assets:
+                  if a == asset:
+                       data_dict[a]['alpha_signal'] = alpha_signal
+                       data_dict[a]['alpha_conf'] = 1.0 # Placeholder
+                  else:
+                       data_dict[a]['alpha_signal'] = 0.0
+                       data_dict[a]['alpha_conf'] = 0.0
+             
+             risk_df = self.risk_fe.preprocess_data(data_dict)
+             self.cached_risk_df = risk_df
+             
+        # 2. Extract features for target asset
+        # Get only columns for this asset
+        asset_cols = [c for c in risk_df.columns if c.startswith(f"{asset}_")]
+        # RiskTradingEnv uses a specific order, which RiskFeatureEngine.preprocess_data now preserves
+        # But let's be safe and just take them in order they appear in the df for that asset
+        market_obs = risk_df.iloc[-1][asset_cols].values.astype(np.float32)
+        
+        # 3. Account State (5)
+        equity = portfolio_state.get('equity', 10000.0)
+        initial_equity = portfolio_state.get('initial_equity', 10000.0)
         peak_equity = portfolio_state.get('peak_equity', initial_equity)
         
-        drawdown = 1.0 - (equity / peak_equity) if peak_equity > 0 else 0
-        equity_norm = equity / initial_equity if initial_equity > 0 else 1.0
+        drawdown = np.clip(1.0 - (equity / peak_equity) if peak_equity > 0 else 0, 0.0, 1.0)
+        equity_norm = np.clip(equity / initial_equity if initial_equity > 0 else 1.0, 0.0, 6.0)
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
         
+        spread_val = 0.0001 # TODO: Get real spread
+        asset_id = float(self.assets.index(asset))
+        
         account_obs = np.array([
+            spread_val,
+            asset_id,
             equity_norm,
             drawdown,
-            0.0, # Leverage placeholder
-            risk_cap_mult,
-            0.0  # Padding
+            risk_cap_mult
         ], dtype=np.float32)
         
-        # Total 40 (alpha) + 5 (account) = 45
-        return np.concatenate([alpha_obs, account_obs])
+        # Total 81 (market) + 5 (account) = 86
+        return np.concatenate([market_obs, account_obs])
 
     def is_ready(self):
         """Checks if enough history is collected for all assets."""

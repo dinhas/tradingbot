@@ -152,11 +152,12 @@ class CombinedBacktest:
             for asset in self.env.assets
         }
         
-        # Position sizing parameters (match TradingEnv)
-        self.MAX_MARGIN_PER_TRADE_PCT = 0.25
-        self.MAX_LEVERAGE = 30.0
+        # Position sizing parameters (match RiskManagementEnv/RiskTradingEnv)
+        self.MAX_MARGIN_PER_TRADE_PCT = 0.80
+        self.MAX_LEVERAGE = 400.0
         self.MIN_LOTS = 0.01
         self.MAX_POS_SIZE_PCT = 0.50
+        self.MAX_RISK_PER_TRADE = 0.40
         
         self.equity = initial_equity
         self.peak_equity = initial_equity
@@ -209,19 +210,33 @@ class CombinedBacktest:
         spread = self.spreads.get(asset, 0.0)
         asset_id = self.asset_ids.get(asset, -1.0)
         
-        obs = np.concatenate([obs, [spread, asset_id]])
+        # Account State Features
+        peak_safe = max(self.peak_equity, 1e-9)
+        drawdown = 1.0 - (self.equity / peak_safe)
+        equity_norm = self.equity / self.initial_equity
+        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+        
+        obs = np.concatenate([obs, [spread, asset_id, equity_norm, drawdown, risk_cap_mult]])
             
         # Debug injection
         if current_step % 1000 == 0 or current_step < 10:
-             logger.info(f"  [DEBUG] Injecting into {asset}: SigIdx={sig_idx}, ConfIdx={conf_idx} | Vals: {alpha_signal}, {alpha_conf} | Added Spread={spread}, ID={asset_id}")
+             logger.info(f"  [DEBUG] Injecting into {asset}: SigIdx={sig_idx}, ConfIdx={conf_idx} | Vals: {alpha_signal}, {alpha_conf} | Added Spread={spread}, ID={asset_id} | Account: {equity_norm:.2f}, {drawdown:.2f}, {risk_cap_mult:.2f}")
              if sig_idx != -1:
                  logger.info(f"    > Verified Injected Sig: {obs[sig_idx]}")
+             logger.info(f"  [DEBUG] Obs shape before norm: {obs.shape}")
 
         # Handle NaNs
         if np.isnan(obs).any():
             obs = np.nan_to_num(obs)
             
         if self.risk_norm_env is not None:
+            # FIX: Ensure we have exactly 88 features before normalizing
+            if obs.shape[0] != 88:
+                logger.warning(f"Observation shape mismatch: {obs.shape[0]} vs expected 88. Padding with zeros.")
+                padded_obs = np.zeros(88, dtype=np.float32)
+                padded_obs[:min(len(obs), 88)] = obs[:min(len(obs), 88)]
+                obs = padded_obs
+                
             obs_normalized = self.risk_norm_env.normalize_obs(obs.reshape(1, -1)).flatten()
             return obs_normalized
             
@@ -240,15 +255,17 @@ class CombinedBacktest:
         return exec_conf, sl_mult, tp_mult
     
     def calculate_position_size(self, asset, entry_price, atr, sl_mult, tp_mult, risk_raw, direction):
-        """Calculate position size from risk percentage"""
-        if risk_raw < 1e-3:
-            return 0.0, None
+        """Calculate position size from risk percentage (match RiskManagementEnv/RiskTradingEnv)"""
+        # [0.0 - 1.0] Risk knob (action[2])
+        # Dead-zone blocking is handled in run_backtest
         
         drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
-        actual_risk_pct = risk_raw * risk_cap_mult
         
-        sl_dist_price = sl_mult * atr
+        # Actual Risk % (MATCH RiskTradingEnv)
+        actual_risk_pct = risk_raw * self.MAX_RISK_PER_TRADE * risk_cap_mult
+        
+        sl_dist_price = max(sl_mult * atr, 1e-9)
         min_sl_dist = max(0.0001 * entry_price, 0.2 * atr)
         if sl_dist_price < min_sl_dist:
             sl_dist_price = min_sl_dist
@@ -279,36 +296,38 @@ class CombinedBacktest:
         max_lots_leverage = max_position_value / (lot_value_usd + 1e-9)
         lots = min(lots, max_lots_leverage)
         
+        # If lots < 0.01, we should skip (handled by return None)
         if lots < self.MIN_LOTS:
-            min_lot_value_usd = self.MIN_LOTS * lot_value_usd / (entry_price if is_usd_quote else 1.0)
-            margin_required_min = min_lot_value_usd / self.MAX_LEVERAGE
-            
-            if self.equity > (margin_required_min * 1.05):
-                lots = self.MIN_LOTS
-            else:
-                return 0.0, None
+            return 0.0, None
         
         lots = np.clip(lots, self.MIN_LOTS, 100.0)
         
-        # Convert to Alpha's size_pct
-        if is_usd_quote:
-            notional_value = lots * contract_size * entry_price
-        else:
-            notional_value = lots * contract_size
-            
-        margin_required = notional_value / self.MAX_LEVERAGE
-        MAX_POS_SIZE_PCT = 0.50
-        size_pct = margin_required / (MAX_POS_SIZE_PCT * self.equity + 1e-9)
-        size_pct = np.clip(size_pct, 0.0, 1.0)
+        # Convert to Alpha's size_pct (which is normalized to self.env.MAX_POS_SIZE_PCT)
+        # However, for combined backtest, we might want to override self.env._execute_trades
+        # with direct position management if needed.
+        # For now, we scale it so TradingEnv creates the right lot size.
         
-        position_size = size_pct * MAX_POS_SIZE_PCT * self.equity
+        # TradingEnv calculates position_size = size_pct * MAX_POS_SIZE_PCT * equity
+        # and then lots = position_size / (sl_dist * contract)
+        # So we want size_pct * MAX_POS_SIZE_PCT * equity = lots * sl_dist * contract
+        
+        if is_usd_quote:
+            required_position_size = lots * sl_dist_price * contract_size
+        elif is_usd_base:
+            required_position_size = (lots * sl_dist_price * contract_size) / entry_price
+        else:
+            required_position_size = lots * sl_dist_price * contract_size
+            
+        size_pct = required_position_size / (self.env.MAX_POS_SIZE_PCT * self.equity + 1e-9)
+        size_pct = np.clip(size_pct, 0.0, 1.0)
         
         return size_pct, {
             'sl_mult': sl_mult,
             'tp_mult': tp_mult,
             'risk_raw': risk_raw,
             'lots': lots,
-            'position_size': position_size
+            'position_size': required_position_size,
+            'actual_risk_pct': actual_risk_pct
         }
     
     def run_backtest(self, episodes=1, max_steps=None):
@@ -378,20 +397,49 @@ class CombinedBacktest:
                     risk_obs = self.build_risk_observation(asset, self.env.current_step, direction, alpha_val)
                     risk_action, _ = self.risk_model.predict(risk_obs, deterministic=True)
                     
-                    exec_conf, sl_mult, tp_mult = self.parse_risk_action(risk_action)
+                    # risk_action is [exec_conf, sl_norm, tp_norm]
+                    # But our RiskManagementEnv used [sl_norm, tp_norm, risk_raw]
+                    # Let's check the env code again: action[2] was risk_raw
+                    # Wait, our RiskTradingEnv.step says: action[0]=sl_norm, [1]=tp_norm, [2]=risk_raw
                     
-                    # Risk Decision: ALWAYS OPEN (Blocking Disabled)
+                    sl_norm = risk_action[0]
+                    tp_norm = risk_action[1]
+                    risk_raw = (risk_action[2] + 1) / 2 # 0.0 to 1.0
+                    
+                    # Sniper Blocking Logic
+                    BLOCK_THRESHOLD = 0.10
+                    if risk_raw < BLOCK_THRESHOLD:
+                        risk_blocked_count += 1
+                        continue
+                        
                     risk_approvals_count += 1
-                    combined_actions[asset] = {
-                        'direction': direction,
-                        'size': 0.5, # Fixed size placeholder (could use sizing logic)
-                        'sl_mult': sl_mult,
-                        'tp_mult': tp_mult
-                    }
                     
-                    # Debug: Log if it WOULD have been blocked
-                    # if exec_conf <= self.EXECUTION_THRESHOLD:
-                    #     logger.debug(f"Trade forced (Confidence {exec_conf:.2f} <= {self.EXECUTION_THRESHOLD})")
+                    # Rescale risk for sizing
+                    risk_raw_scaled = (risk_raw - BLOCK_THRESHOLD) / (1.0 - BLOCK_THRESHOLD)
+                    
+                    # Map SL/TP
+                    sl_mult = self._map_range(sl_norm, -1, 1, self.ATR_SL_MIN, self.ATR_SL_MAX)
+                    tp_mult = self._map_range(tp_norm, -1, 1, self.ATR_TP_MIN, self.ATR_TP_MAX)
+                    
+                    # Calculate Position Size
+                    price_bid = current_prices[asset]
+                    spread = self.spreads.get(asset, 0.0)
+                    entry_price = (price_bid + spread) if direction == 1 else price_bid
+                    
+                    size_pct, size_info = self.calculate_position_size(
+                        asset, entry_price, atrs[asset], sl_mult, tp_mult, risk_raw_scaled, direction
+                    )
+                    
+                    if size_info:
+                        combined_actions[asset] = {
+                            'direction': direction,
+                            'size': size_pct,
+                            'sl_mult': sl_mult,
+                            'tp_mult': tp_mult,
+                            'lots': size_info['lots']
+                        }
+                    else:
+                        risk_blocked_count += 1
                 
                 # 2. Execute trades based on Alpha Signal + Risk Model Approval
                 for asset in self.env.assets:
@@ -443,6 +491,11 @@ class CombinedBacktest:
                 step_count += 1
                 done = self.env.current_step >= self.env.max_steps
                 
+                # Terminal Equity Check (Margin Call)
+                if self.equity < 10.0:
+                    logger.warning(f"MARGIN CALL at step {step_count}. Equity: ${self.equity:.2f}")
+                    done = True
+                
                 if step_count % 1000 == 0:
                     logger.info(f"Step {step_count} | Equity ${self.equity:.0f} | Trades: {len(metrics_tracker.trades)}")
             
@@ -451,7 +504,7 @@ class CombinedBacktest:
             logger.info("RISK FILTER SUMMARY")
             logger.info(f"Total Alpha Signals:  {alpha_signals_count}")
             logger.info(f"Risk Approved:        {risk_approvals_count}")
-            logger.info(f"Risk Blocking:        DISABLED")
+            logger.info(f"Risk Blocking:        {risk_blocked_count}")
             logger.info("-"*30 + "\n")
         
         return metrics_tracker

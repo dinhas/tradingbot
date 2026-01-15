@@ -72,7 +72,7 @@ class RiskFeatureEngine:
     def preprocess_data(self, data_dict):
         """
         Main pipeline to preprocess data.
-        Optimized to reduce memory fragmentation.
+        Optimized to reduce memory fragmentation and ensure deterministic column order.
         """
         # 1. Align Data
         aligned_df = self._align_data(data_dict)
@@ -84,13 +84,23 @@ class RiskFeatureEngine:
                 all_returns[a] = aligned_df[f"{a}_close"].pct_change()
         
         # 3. Add Features per Asset
-        # To avoid fragmentation, we collect ALL new features for ALL assets first
         all_new_features = []
         
         for asset in self.assets:
             # Collect features for this asset in a list
             asset_features_list = []
             
+            # Group 0: Essential OHLCV (Ensure these are always present and first)
+            ohlcv_cols = ['open', 'high', 'low', 'close', 'volume']
+            ohlcv_df = pd.DataFrame(index=aligned_df.index)
+            for col in ohlcv_cols:
+                col_name = f"{asset}_{col}"
+                if col_name in aligned_df.columns:
+                    ohlcv_df[col_name] = aligned_df[col_name]
+                else:
+                    ohlcv_df[col_name] = 0.0
+            asset_features_list.append(ohlcv_df)
+
             # Group 1: Market Pressure & Flow
             asset_features_list.append(self._add_market_pressure_features(aligned_df, asset))
             
@@ -104,15 +114,20 @@ class RiskFeatureEngine:
             asset_features_list.append(self._add_regime_features(aligned_df, asset))
             
             # Group 5: Alpha/Cross-Asset
+            # Note: _add_alpha_features handles alpha_signal and alpha_conf
             asset_features_list.append(self._add_alpha_features(aligned_df, asset, all_returns))
             
             # Concatenate all features for this asset
             asset_features_df = pd.concat(asset_features_list, axis=1)
+            
+            # Remove duplicate columns if any (e.g. if signals were in aligned_df)
+            asset_features_df = asset_features_df.loc[:, ~asset_features_df.columns.duplicated()]
+            
             all_new_features.append(asset_features_df)
 
         # 4. Final Concatenation
-        # Combine original data with all new features at once
-        final_df = pd.concat([aligned_df] + all_new_features, axis=1)
+        # We only take the timestamp index from aligned_df, as OHLCV is now inside all_new_features
+        final_df = pd.concat(all_new_features, axis=1)
         
         return final_df
 

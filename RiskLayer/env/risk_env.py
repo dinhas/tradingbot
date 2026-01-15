@@ -142,6 +142,10 @@ class RiskTradingEnv(gym.Env):
         self.winning_trades = 0
         self.signals_processed = 0 # Robust counter for logging
         self.period_signals = 0    # Signals in current 5000 block
+        
+        # Performance capping to prevent "Infinite Money" bug in training stats
+        self.MAX_EQUITY_MULT = 5.0 # Terminate if 5x profit
+        self.MIN_EQUITY_MULT = 0.3 # Terminate if 70% loss
 
     def _load_data(self):
         """Load labeled market data with Alpha signals, ensuring OHLCV columns exist."""
@@ -379,8 +383,8 @@ class RiskTradingEnv(gym.Env):
 
         # Account State Features
         peak_safe = max(self.peak_equity, 1e-9)
-        drawdown = 1.0 - (self.equity / peak_safe)
-        equity_norm = self.equity / self.initial_equity
+        drawdown = np.clip(1.0 - (self.equity / peak_safe), 0.0, 1.0)
+        equity_norm = np.clip(self.equity / self.initial_equity, 0.0, self.MAX_EQUITY_MULT + 1.0)
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
 
         obs = np.concatenate([obs, [spread, asset_id, equity_norm, drawdown, risk_cap_mult]])
@@ -575,11 +579,16 @@ class RiskTradingEnv(gym.Env):
         self.current_step += 1
         has_next = self._find_next_signal()
         terminated = False
-        if self.equity < (self.initial_equity * 0.3):
+        
+        # Termination conditions
+        if self.equity < (self.initial_equity * self.MIN_EQUITY_MULT):
             terminated = True
             reward -= 50.0
-            reward = np.clip(reward, -100.0, 100.0)
-
+        elif self.equity > (self.initial_equity * self.MAX_EQUITY_MULT):
+            terminated = True
+            reward += 50.0 # Reward for "winning" the simulation
+            
+        reward = np.clip(reward, -100.0, 100.0)
         truncated = not has_next or self.current_step >= max(10, self.max_steps - 100)
         
         return self._get_observation(), reward, terminated, truncated, info
