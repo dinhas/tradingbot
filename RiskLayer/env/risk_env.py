@@ -130,6 +130,10 @@ class RiskTradingEnv(gym.Env):
         self.max_steps = len(self.processed_data) - 1
         self.equity = 10000.0
         self.initial_equity = 10000.0  # Track initial for hypothesis E
+        self.peak_equity = 10000.0
+        self.MAX_RISK_PER_TRADE = 0.40  # 40% Max Risk per trade (Agressive)
+        self.SLIPPAGE_MIN_PIPS = 0.5
+        self.SLIPPAGE_MAX_PIPS = 1.5
 
         # Tracking
         self.total_reward = 0
@@ -256,13 +260,13 @@ class RiskTradingEnv(gym.Env):
         numeric_cols = self.processed_data.select_dtypes(include=[np.number]).columns
         asset_cols = [c for c in numeric_cols if c.startswith(f"{asset}_")]
 
-        # +2 for Spread and Asset ID
-        self.obs_dim = len(asset_cols) + 2
+        # +2 for Spread and Asset ID, +3 for Account State (Equity, Drawdown, RiskCap)
+        self.obs_dim = len(asset_cols) + 2 + 3
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
         )
         logging.info(
-            f"Observation Dimension: {self.obs_dim} (Features: {len(asset_cols)} + Spread + ID)"
+            f"Observation Dimension: {self.obs_dim} (Features: {len(asset_cols)} + Spread + ID + 3 Account Features)"
         )
 
     def reset(self, seed=None, options=None):
@@ -308,6 +312,8 @@ class RiskTradingEnv(gym.Env):
 
         self.trades_taken = 0
         self.trades_skipped = 0
+        self.equity = self.initial_equity
+        self.peak_equity = self.initial_equity
 
         return self._get_observation(), {}
 
@@ -369,266 +375,277 @@ class RiskTradingEnv(gym.Env):
         spread = self.spreads[self.current_asset]
         asset_id = self.asset_ids[self.current_asset]
 
-        obs = np.concatenate([obs, [spread, asset_id]])
+        # Account State Features
+        peak_safe = max(self.peak_equity, 1e-9)
+        drawdown = 1.0 - (self.equity / peak_safe)
+        equity_norm = self.equity / self.initial_equity
+        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+
+        obs = np.concatenate([obs, [spread, asset_id, equity_norm, drawdown, risk_cap_mult]])
 
         return obs
 
     def step(self, action):
         # 1. Parse Action
-        execution_trig = action[0]
-        sl_norm = action[1]  # [-1, 1]
-        tp_norm = action[2]  # [-1, 1]
+        sl_norm = action[0]
+        tp_norm = action[1]
+        risk_raw = np.clip((action[2] + 1) / 2, 0.0, 1.0) # 0.0 to 1.0
 
         # Map SL/TP to multipliers
         sl_mult = self._map_range(sl_norm, -1, 1, self.ATR_SL_MIN, self.ATR_SL_MAX)
         tp_mult = self._map_range(tp_norm, -1, 1, self.ATR_TP_MIN, self.ATR_TP_MAX)
 
         # 2. Determine Direction from Alpha Signal
-        # The direction is FIXED by the environment's current state signal.
         current_signal = self.signal_arrays[self.current_asset][self.current_step]
         direction = 1 if current_signal > 0 else -1
 
-        # 3. Determine Execution
-        # Always execute - no skip decision
-        decision = "OPEN"
+        # 3. Compute Oracle values for blocking evaluation
+        max_favorable, max_adverse = self._get_oracle_values(direction)
 
-        # 4. Calculate Reward
-        # =====================
-        # EQUITY PERCENTAGE REWARD STRUCTURE
-        # =====================
-        reward = 0.0
-        info = {
-            "action": decision,
-            "direction": "LONG" if direction == 1 else "SHORT",
-            "sl": sl_mult,
-            "tp": tp_mult,
-            "pnl": 0.0,
-            "outcome": "OPEN",
-        }
+        # 4. Check for Block/Skip
+        BLOCK_THRESHOLD = 0.10
+        is_blocked = (risk_raw < BLOCK_THRESHOLD)
+        
+        if is_blocked:
+            reward, block_type = self._evaluate_block_reward(max_favorable, max_adverse)
+            
+            # Tracking
+            self.trades_skipped += 1
+            self.period_skipped += 1
+            self.period_reward += reward
+            self.total_reward += reward
+            
+            info = {
+                'action': 'BLOCK',
+                'pnl': 0.0,
+                'outcome': 'BLOCKED',
+                'block_type': block_type,
+                'is_blocked': True,
+                'max_fav': max_favorable,
+                'max_adv': max_adverse
+            }
+            
+            # Advance to next signal
+            self.current_step += 1
+            has_next = self._find_next_signal()
+            terminated = False
+            truncated = not has_next or self.current_step >= max(10, self.max_steps - 100)
+            
+            return self._get_observation(), reward, terminated, truncated, info
 
-        # Simulate Outcome
+        # 5. Normal Trade Execution
+        # Apply Random Adverse Slippage on Entry
+        asset = self.current_asset
+        bid_current = self.price_arrays[asset]["close"][self.current_step]
+        spread = self.spreads.get(asset, 0.0)
+        
+        # Approximate 1 pip as 0.01% of price for robust scaling
+        slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
+        slippage_price = slippage_pips * 0.0001 * bid_current
+        
+        # Slippage moves entry AGAINST us (Long buy higher, Short sell lower)
+        if direction == 1:
+            entry_price = bid_current + spread + slippage_price
+        else:
+            entry_price = bid_current - slippage_price
+
+        # Rescale risk to allow full range after threshold
+        risk_raw_scaled = (risk_raw - BLOCK_THRESHOLD) / (1.0 - BLOCK_THRESHOLD)
+        
+        # Calculate Risk and Position Size
+        peak_safe = max(self.peak_equity, 1e-9)
+        drawdown = 1.0 - (self.equity / peak_safe)
+        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+        
+        # Actual Risk %
+        actual_risk_pct = risk_raw_scaled * self.MAX_RISK_PER_TRADE * risk_cap_mult
+        risk_amount = self.equity * actual_risk_pct
+
+        # Simulate Outcome (Passing the slippage-adjusted entry)
         r_multiple, bars, outcome_type, pnl_price = self._simulate_trade(
-            direction, sl_mult, tp_mult
+            direction, sl_mult, tp_mult, entry_price_override=entry_price
         )
 
-        # Calculate dollar PnL based on position sizing
-        # Assume 1% risk per trade as standard
-        asset = self.current_asset
         atr = self.atr_arrays[asset][self.current_step]
-        idx = self.current_step
-        bid_current = self.price_arrays[asset]["close"][idx]
-        spread = self.spreads.get(asset, 0.0)
+        sl_dist = max(sl_mult * atr, 1e-9)
 
-        sl_dist = sl_mult * atr
-        risk_amount = self.equity * 0.15  # Risk 15% per trade
-
-        # Calculate position size based on asset type
+        # Calculate position size
         contract_size = 100 if asset == "XAUUSD" else 100000
         is_usd_quote = asset in ["EURUSD", "GBPUSD", "XAUUSD"]
         is_usd_base = asset in ["USDJPY", "USDCHF"]
 
-        # Calculate lots needed to risk 1%
         if sl_dist > 0:
             if is_usd_quote:
                 lots = risk_amount / (sl_dist * contract_size)
             elif is_usd_base:
-                lots = (risk_amount * bid_current) / (sl_dist * contract_size)
+                lots = (risk_amount * entry_price) / (sl_dist * contract_size)
             else:
                 lots = risk_amount / (sl_dist * contract_size)
         else:
             lots = 0.01
+            
+        lots = np.clip(lots, 0.01, 100.0)
 
         # Convert price PnL to dollar PnL
         if is_usd_quote:
             pnl = pnl_price * lots * contract_size
         elif is_usd_base:
-            pnl = (pnl_price * lots * contract_size) / bid_current
+            # For USD-base, exit price is used for conversion
+            exit_price = entry_price + (pnl_price * direction)
+            pnl = (pnl_price * lots * contract_size) / exit_price
         else:
             pnl = pnl_price * lots * contract_size
 
-        # =====================
-        # OPEN TRADE REWARDS
-        # =====================
-        self.trades_taken += 1
-        info["pnl"] = pnl
-        info["outcome"] = outcome_type
-
-        # Main reward: equity change percentage based on current equity
-        equity_change_pct = (pnl / self.equity) * 100
-        reward = equity_change_pct
-
-        # Update current equity
+        # Reward Calculation
+        prev_equity = self.equity
+        prev_dd = 1.0 - (prev_equity / peak_safe)
+        
         self.equity += pnl
+        self.peak_equity = max(self.peak_equity, self.equity)
+        
+        new_dd = 1.0 - (self.equity / peak_safe)
+        dd_increase = max(0.0, new_dd - prev_dd)
+        dd_penalty = -(dd_increase ** 2) * 50.0
+        
+        pnl_ratio = pnl / max(prev_equity, 1e-6)
+        pnl_reward = np.clip(pnl_ratio * 100.0, -300.0, 300.0)
+        
+        tp_bonus = 0.0
+        if outcome_type == 'TP':
+            tp_bonus = 0.5 * (tp_mult / 8.0)
+            
+        reward = pnl_reward + tp_bonus + dd_penalty
+        reward = np.clip(reward, -100.0, 100.0)
 
-        # Risk:Reward Structure Bonus/Penalty
-        rr_ratio = tp_mult / sl_mult
-        if rr_ratio >= 2.0:
-            reward += 0.3  # Bonus for good RR structure
-        elif rr_ratio < self.MIN_RR:
-            reward -= 0.5  # Penalty for bad RR
-
-            # #region agent log
-            # HYPOTHESIS C: Reward amplification of spread losses
-            if self.current_step % 5000 == 0 and not self.is_training:
-                try:
-                    import json
-                    import os
-
-                    log_path = r"e:\tradingbot\.cursor\debug.log"
-                    with open(log_path, "a") as f:
-                        f.write(
-                            json.dumps(
-                                {
-                                    "id": f"log_{self.current_step}_{self.current_asset}_reward",
-                                    "timestamp": int(__import__("time").time() * 1000),
-                                    "location": "risk_env.py:step:reward",
-                                    "message": "Reward calculation",
-                                    "data": {
-                                        "asset": self.current_asset,
-                                        "decision": decision,
-                                        "r_multiple": float(r_multiple),
-                                        "reward": float(reward),
-                                        "outcome": outcome_type,
-                                        "rr_ratio": float(rr_ratio),
-                                        "hypothesisId": "C",
-                                    },
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                }
-                            )
-                            + "\n"
-                        )
-                except:
-                    pass
-            # #endregion agent log
-
-        # =====================
-        # TRACKING UPDATE
-        # =====================
+        # Tracking Update
+        self.trades_taken += 1
         self.period_reward += reward
         self.total_reward += reward
-
         self.period_trades += 1
         if r_multiple > 0:
             self.period_wins += 1
             self.winning_trades += 1
         self.period_pnl += r_multiple
 
-        # #region agent log
-        # HYPOTHESIS E: No equity tracking with spreads
-        if self.current_step % 5000 == 0 and not self.is_training:
-            try:
-                import json
+        info = {
+            'action': 'OPEN',
+            'direction': "LONG" if direction == 1 else "SHORT",
+            'sl': sl_mult,
+            'tp': tp_mult,
+            'pnl': pnl,
+            'outcome': outcome_type,
+            'lots': lots,
+            'equity': self.equity,
+            'is_blocked': False,
+            'max_fav': max_favorable,
+            'max_adv': max_adverse
+        }
 
-                log_path = r"e:\tradingbot\.cursor\debug.log"
-                with open(log_path, "a") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "id": f"log_{self.current_step}_{self.current_asset}_equity",
-                                "timestamp": int(__import__("time").time() * 1000),
-                                "location": "risk_env.py:step:equity",
-                                "message": "Equity tracking check",
-                                "data": {
-                                    "asset": self.current_asset,
-                                    "equity": float(self.equity),
-                                    "initial_equity": float(self.initial_equity),
-                                    "equity_change_pct": float(
-                                        (self.equity - self.initial_equity)
-                                        / self.initial_equity
-                                        * 100
-                                    ),
-                                    "r_multiple": float(r_multiple),
-                                    "total_reward": float(self.total_reward),
-                                    "trades_taken": int(self.trades_taken),
-                                    "hypothesisId": "E",
-                                },
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                            }
-                        )
-                        + "\n"
-                    )
-            except:
-                pass
-        # #endregion agent log
-
-        # --- Logging (Every 5000 steps) ---
+        # Logging (Every 5000 steps)
         if self.current_step % 5000 == 0 and not self.is_training:
             avg_reward = self.period_reward / 5000
-            win_rate = (
-                (self.period_wins / self.period_trades)
-                if self.period_trades > 0
-                else 0.0
-            )
-            skip_rate = self.period_skipped / (
-                self.period_trades + self.period_skipped + 1
-            )
-
+            win_rate = (self.period_wins / self.period_trades) if self.period_trades > 0 else 0.0
+            skip_rate = self.period_skipped / (self.period_trades + self.period_skipped + 1)
             log_line = f"{datetime.now()},{self.current_step},{self.current_asset},{avg_reward:.4f},{win_rate:.4f},{self.period_pnl:.4f},{self.period_trades},{self.period_skipped},{skip_rate:.2f}\n"
-
             try:
                 with open(self.reward_log_file, "a") as f:
                     f.write(log_line)
             except Exception as e:
                 logging.error(f"Failed to write to log: {e}")
-
-            # Reset period trackers
             self.period_reward = 0.0
             self.period_trades = 0
             self.period_wins = 0
             self.period_pnl = 0.0
             self.period_skipped = 0
 
-        # 5. Advance State to NEXT SIGNAL
+        # Advance State
         self.current_step += 1
         has_next = self._find_next_signal()
-
         terminated = False
-        truncated = False
+        if self.equity < (self.initial_equity * 0.3):
+            terminated = True
+            reward -= 50.0
+            reward = np.clip(reward, -100.0, 100.0)
 
-        # Use a dynamic threshold for truncation to avoid immediate termination on small datasets
-        truncation_threshold = max(10, self.max_steps - 100)
-        if not has_next or self.current_step >= truncation_threshold:
-            truncated = True
-
-        # Get next observation
-        next_obs = self._get_observation()
-
-        return next_obs, reward, terminated, truncated, info
+        truncated = not has_next or self.current_step >= max(10, self.max_steps - 100)
+        
+        return self._get_observation(), reward, terminated, truncated, info
 
     def _map_range(self, x, in_min, in_max, out_min, out_max):
         return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
 
-    def _simulate_trade(self, direction, sl_mult, tp_mult):
+    def _evaluate_block_reward(self, max_favorable, max_adverse):
+        """
+        Helper to calculate reward for blocked/skipped trades using Oracle.
+        Implements Tiered Blocking Rewards (Loss Avoidance) vs Scaled Win-Miss Penalties.
+        """
+        # 1. Tiered Blocking Rewards (Loss Avoidance)
+        if max_adverse < -0.03:
+            return 200.0, "BLOCKED_CATASTROPHIC"
+        
+        if max_adverse < -0.015:
+             return 50.0, "BLOCKED_MAJOR_LOSS"
+             
+        # 2. Scaled Win-Miss Penalties (Opportunity Cost)
+        if max_favorable > 0.02:
+             return -300.0, "MISSED_HUGE_WIN"
+             
+        if max_favorable > 0.01:
+             return -100.0, "MISSED_BIG_WIN"
+             
+        if max_favorable > 0.0:
+             return -30.0, "MISSED_SMALL_WIN"
+             
+        # 3. Minor Loss / Noise
+        return 5.0, "BLOCKED_MINOR_LOSS"
+
+    def _get_oracle_values(self, direction):
+        """
+        Look ahead to find max potential profit/loss for oracle rewards.
+        """
+        asset = self.current_asset
+        idx = self.current_step
+        spread = self.spreads.get(asset, 0.0)
+        
+        bid_current = self.price_arrays[asset]["close"][idx]
+        ask_current = bid_current + spread
+        entry_price = ask_current if direction == 1 else bid_current
+        
+        horizon = 500
+        start = idx + 1
+        end = min(start + horizon, len(self.price_arrays[asset]["close"]))
+        
+        if start >= end:
+            return 0.0, 0.0
+            
+        lows_bid = self.price_arrays[asset]["low"][start:end]
+        highs_bid = self.price_arrays[asset]["high"][start:end]
+        
+        if direction == 1: # LONG
+            max_fav = (highs_bid.max() - entry_price) / entry_price
+            max_adv = (lows_bid.min() - entry_price) / entry_price
+        else: # SHORT
+            # Short exit price is Ask (Bid + Spread)
+            max_fav = (entry_price - (lows_bid.min() + spread)) / entry_price
+            max_adv = (entry_price - (highs_bid.max() + spread)) / entry_price
+            
+        return max(0.0, max_fav), min(0.0, max_adv)
+
+    def _simulate_trade(self, direction, sl_mult, tp_mult, entry_price_override=None):
         """
         Simulate trade outcome using realistic Bid/Ask spreads.
-        Assumes cached prices (High, Low, Close) are BID prices.
-
-        Logic:
-        - LONG: Enter at ASK (Bid + Spread). Exit at BID.
-          SL Trigger: Low (Bid) <= SL.
-          TP Trigger: High (Bid) >= TP.
-        - SHORT: Enter at BID. Exit at ASK (Bid + Spread).
-          SL Trigger: High (Ask) >= SL -> (High_Bid + Spread) >= SL.
-          TP Trigger: Low (Ask) <= TP -> (Low_Bid + Spread) <= TP.
         """
-        # #region agent log
-        import json
-        import os
-
-        log_path = r"e:\tradingbot\.cursor\debug.log"
-        # #endregion agent log
-
         asset = self.current_asset
         idx = self.current_step
         spread = self.spreads.get(asset, 0.0)
 
-        # Price at current step (Signal Candle)
-        # We assume trade is entered at the CLOSE of the signal candle (or Open of next).
-        # Using CLOSE of current step for simplicity and consistency with previous logic.
         bid_current = self.price_arrays[asset]["close"][idx]
         ask_current = bid_current + spread
+
+        if entry_price_override is not None:
+            entry_price = entry_price_override
+        else:
+            entry_price = ask_current if direction == 1 else bid_current
 
         atr = self.atr_arrays[asset][idx]
         if atr <= 0:
@@ -637,13 +654,11 @@ class RiskTradingEnv(gym.Env):
         sl_dist = sl_mult * atr
         tp_dist = tp_mult * atr
 
-        # Determine Entry and Triggers
+        # Determine Triggers (SL/TP are calculated from Entry)
         if direction == 1:  # Long
-            entry_price = ask_current  # Buy at Ask
             sl_price = entry_price - sl_dist
             tp_price = entry_price + tp_dist
         else:  # Short
-            entry_price = bid_current  # Sell at Bid
             sl_price = entry_price + sl_dist
             tp_price = entry_price - tp_dist
 
