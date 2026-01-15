@@ -384,10 +384,14 @@ class RiskFeatureEngine:
         ret = close.pct_change()
         
         # 1. Alpha Signal (Preserve if exists)
-        if f"{asset}_alpha_signal" not in df.columns:
+        if f"{asset}_alpha_signal" in df.columns:
+            features[f"{asset}_alpha_signal"] = df[f"{asset}_alpha_signal"]
+        else:
             features[f"{asset}_alpha_signal"] = 0.0
             
-        if f"{asset}_alpha_conf" not in df.columns:
+        if f"{asset}_alpha_conf" in df.columns:
+            features[f"{asset}_alpha_conf"] = df[f"{asset}_alpha_conf"]
+        else:
             features[f"{asset}_alpha_conf"] = 0.0
             
         # 2. Correlations
