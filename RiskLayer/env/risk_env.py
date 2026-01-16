@@ -512,13 +512,22 @@ class RiskTradingEnv(gym.Env):
         actual_risk_pct = risk_raw * self.MAX_RISK_PER_TRADE
         risk_amount = self.equity * actual_risk_pct
 
+        # Calculate ATR and apply spread protection BEFORE position sizing
+        # This ensures position sizing uses the SAME sl_dist as simulation
+        atr = self.atr_arrays[asset][self.current_step]
+        if atr <= 0:
+            atr = max(bid_current * 0.0001, 1e-5)
+        
+        # CRITICAL FIX: Apply spread protection to sl_dist BEFORE position sizing
+        # This matches the calculation in _simulate_trade() to prevent oversized positions
+        sl_dist_raw = sl_mult * atr
+        min_sl_dist = max(spread * 6.0, 0.0005) if asset != "USDJPY" else max(spread * 6.0, 0.05)
+        sl_dist = max(sl_dist_raw, min_sl_dist)
+
         # Simulate Outcome (Passing the slippage-adjusted entry)
         r_multiple, bars, outcome_type, pnl_price = self._simulate_trade(
             direction, sl_mult, tp_mult, entry_price_override=entry_price
         )
-
-        atr = self.atr_arrays[asset][self.current_step]
-        sl_dist = max(sl_mult * atr, 1e-9)
 
         # Calculate position size
         contract_size = 100 if asset == "XAUUSD" else 100000
@@ -745,7 +754,8 @@ class RiskTradingEnv(gym.Env):
             sl_hits = lows_bid <= sl_price
             tp_hits = highs_bid >= tp_price
         else:  # Short Checks (Exit at Ask)
-            # Short hits if Ask (Bid + Spread) matches SL or TP
+            # Using bid-only arrays, check if ASK (Bid + Spread) reaches SL/TP level
+            # Algebraically equivalent to: highs_bid >= sl_price - spread
             sl_hits = (highs_bid + spread) >= sl_price
             tp_hits = (lows_bid + spread) <= tp_price
 
@@ -761,19 +771,25 @@ class RiskTradingEnv(gym.Env):
             outcome = "TIMEOUT"
             bars = horizon
             close_bid = self.price_arrays[asset]["close"][end - 1]
-            # Exit at market rates
+            # Exit at market rates (already correct: LONG at BID, SHORT at ASK)
             actual_exit_price = close_bid if direction == 1 else (close_bid + spread)
 
         elif first_sl < first_tp:
             outcome = "SL"
             bars = first_sl + 1
-            # Fill at SL price (assume slippage is already in entry)
-            actual_exit_price = sl_price 
+            # CRITICAL FIX: For SHORT, exit at ASK (bid + spread) when buying back
+            if direction == 1:  # LONG: Exit at BID
+                actual_exit_price = sl_price
+            else:  # SHORT: Exit at ASK (buy back at bid + spread)
+                actual_exit_price = sl_price + spread 
         else:
             outcome = "TP"
             bars = first_tp + 1
-            # Fill at TP price
-            actual_exit_price = tp_price
+            # CRITICAL FIX: For SHORT, exit at ASK (bid + spread) when buying back
+            if direction == 1:  # LONG: Exit at BID
+                actual_exit_price = tp_price
+            else:  # SHORT: Exit at ASK (buy back at bid + spread)
+                actual_exit_price = tp_price + spread
 
         # SPREAD-AWARE PnL
         if direction == 1:
