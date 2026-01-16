@@ -118,7 +118,6 @@ class CombinedBacktest:
         self.ATR_SL_MAX = 7.0
         self.ATR_TP_MIN = 1.0
         self.ATR_TP_MAX = 15.0
-        self.EXECUTION_THRESHOLD = 0.2
         
         # Spreads (match RiskTradingEnv)
         if self.use_spreads:
@@ -419,18 +418,8 @@ class CombinedBacktest:
                     sl_norm = risk_action[1]
                     tp_norm = risk_action[2]
                     
-                    # Determine direction from exec_conf (NO BLOCKING - always execute)
-                    if exec_conf > 0:
-                        risk_direction = 1  # LONG
-                        risk_raw = exec_conf  # Use raw confidence as risk (0 to 1)
-                    else:
-                        risk_direction = -1  # SHORT
-                        risk_raw = abs(exec_conf)  # Use absolute value as risk (0 to 1)
-                    
-                    # Verify direction matches Alpha signal
-                    if risk_direction != direction:
-                        risk_blocked_count += 1
-                        continue
+                    # Determine risk magnitude from exec_conf (NO BLOCKING - always follow Alpha direction)
+                    risk_raw = abs(exec_conf)
                         
                     risk_approvals_count += 1
                     

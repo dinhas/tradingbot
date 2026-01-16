@@ -295,13 +295,13 @@ class RiskTradingEnv(gym.Env):
         numeric_cols = self.processed_data.select_dtypes(include=[np.number]).columns
         asset_cols = [c for c in numeric_cols if c.startswith(f"{asset}_")]
 
-        # +2 for Spread and Asset ID, +3 for Account State (Equity, Drawdown, RiskCap)
+        # +2 for Spread/ATR and Asset ID, +3 for Account State (Equity, Drawdown, RiskCap)
         self.obs_dim = len(asset_cols) + 2 + 3
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
         )
         logging.info(
-            f"Observation Dimension: {self.obs_dim} (Features: {len(asset_cols)} + Spread + ID + 3 Account Features)"
+            f"Observation Dimension: {self.obs_dim} (Features: {len(asset_cols)} + Spread/ATR + ID + 3 Account Features)"
         )
 
     def reset(self, seed=None, options=None):
@@ -389,8 +389,15 @@ class RiskTradingEnv(gym.Env):
         if np.isnan(obs).any():
             obs = np.nan_to_num(obs)
 
-        # Append Static Features (Spread, Asset ID)
-        spread = self.spreads[self.current_asset]
+        # Append Static Features (Spread/ATR Ratio, Asset ID)
+        # Normalize spread by ATR to reduce cross-asset variance
+        spread_raw = self.spreads[self.current_asset]
+        atr = self.atr_arrays[self.current_asset][self.current_step]
+        if atr > 0:
+            spread_normalized = spread_raw / atr
+        else:
+            # Fallback if ATR is invalid
+            spread_normalized = 0.0
         asset_id = self.asset_ids[self.current_asset]
 
         # Account State Features
@@ -399,7 +406,7 @@ class RiskTradingEnv(gym.Env):
         equity_norm = np.clip(self.equity / self.initial_equity, 0.0, self.MAX_EQUITY_MULT + 1.0)
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
 
-        obs = np.concatenate([obs, [spread, asset_id, equity_norm, drawdown, risk_cap_mult]])
+        obs = np.concatenate([obs, [spread_normalized, asset_id, equity_norm, drawdown, risk_cap_mult]])
 
         return obs
 
@@ -463,16 +470,11 @@ class RiskTradingEnv(gym.Env):
         bid_current = self.price_arrays[asset]["close"][self.current_step]
         spread = self.spreads.get(asset, 0.0)
         
-        # Scalable Slippage (Bug 7: JPY Support)
-        slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-        pip_size = 0.01 if 'JPY' in asset else 0.0001
-        slippage_price = slippage_pips * pip_size
-        
-        # Slippage moves entry AGAINST us (Long buy higher, Short sell lower)
+        # FIX: Removed slippage entirely per user request to maximize SNR
         if direction == 1:
-            entry_price = bid_current + spread + slippage_price
+            entry_price = bid_current + spread  # Entry at ASK
         else:
-            entry_price = bid_current - slippage_price
+            entry_price = bid_current           # Entry at BID
 
         # Actual Risk % (Comment matches implementation now)
         actual_risk_pct = risk_raw * self.MAX_RISK_PER_TRADE
@@ -484,11 +486,13 @@ class RiskTradingEnv(gym.Env):
         if atr <= 0:
             atr = max(bid_current * 0.0001, 1e-5)
         
-        # CRITICAL FIX: Apply spread protection to sl_dist BEFORE position sizing
-        # This matches the calculation in _simulate_trade() to prevent oversized positions
-        sl_dist_raw = sl_mult * atr
-        min_sl_dist = max(spread * 6.0, 0.0005) if asset != "USDJPY" else max(spread * 6.0, 0.05)
-        sl_dist = max(sl_dist_raw, min_sl_dist)
+        # Calculate SL distance directly from model's action - NO OVERRIDE
+        # Let the model learn the true relationship between its actions and outcomes
+        sl_dist = sl_mult * atr
+        
+        # Safety check: ensure ATR is valid
+        if sl_dist <= 0:
+            sl_dist = 0.0001 if asset != "USDJPY" else 0.01
 
         # Simulate Outcome (Passing the slippage-adjusted entry)
         r_multiple, bars, outcome_type, pnl_price = self._simulate_trade(
@@ -603,7 +607,8 @@ class RiskTradingEnv(gym.Env):
             terminated = True
             reward += 50.0 # Reward for "winning" the simulation
             
-        reward = np.clip(reward, -100.0, 100.0)
+        # Increased clipping range to preserve gradient signal from multi-component rewards
+        reward = np.clip(reward, -200.0, 200.0)
         truncated = not has_next
         
         return self._get_observation(), reward, terminated, truncated, info
@@ -654,12 +659,11 @@ class RiskTradingEnv(gym.Env):
         bid_current = self.price_arrays[asset]["close"][idx]
         ask_current = bid_current + spread
         
-        # Entry logic with estimated slippage to match simulation (Bug 5)
-        slippage_est = spread * 0.5
+        # Entry logic (spread only, no slippage)
         if direction == 1: # LONG
-            entry_price = ask_current + slippage_est
+            entry_price = ask_current
         else: # SHORT
-            entry_price = bid_current - slippage_est
+            entry_price = bid_current
         
         horizon = 500
         start = idx + 1
@@ -710,12 +714,13 @@ class RiskTradingEnv(gym.Env):
             # Bug 4 Safety: Minimum ATR as at least a healthy floor
             atr = max(bid_current * 0.0001, 1e-5)
 
-        # SPREAD PROTECTION: (Bug 3)
-        # Calculate sl_dist but ensure it's at least 6x the spread to prevent ultra-tight stops
-        # Also ensure a hard minimum distance (e.g. 5 pips) for stability
-        sl_dist_raw = sl_mult * atr
-        min_sl_dist = max(spread * 6.0, 0.0005) if asset != "USDJPY" else max(spread * 6.0, 0.05)
-        sl_dist = max(sl_dist_raw, min_sl_dist)
+        # Calculate SL distance directly from multiplier - NO OVERRIDE
+        # Let the model learn optimal SL placement without artificial constraints
+        sl_dist = sl_mult * atr
+        
+        # Safety check: ensure valid distance
+        if sl_dist <= 0:
+            sl_dist = 0.0001 if asset != "USDJPY" else 0.01
         
         tp_dist = tp_mult * atr
 
@@ -770,19 +775,15 @@ class RiskTradingEnv(gym.Env):
         elif first_sl < first_tp:
             outcome = "SL"
             bars = first_sl + 1
-            # CRITICAL FIX: For SHORT, exit at ASK (bid + spread) when buying back
-            if direction == 1:  # LONG: Exit at BID
-                actual_exit_price = sl_price
-            else:  # SHORT: Exit at ASK (buy back at bid + spread)
-                actual_exit_price = sl_price + spread 
+            # FIX: Do NOT add spread here - it's already accounted for in the trigger check
+            # Lines 752-753 check (highs_bid + spread) >= sl_price, so sl_price IS the ask-equivalent
+            # Adding spread again causes SHORT trades to pay spread TWICE (was -1 pip systematic bias)
+            actual_exit_price = sl_price
         else:
             outcome = "TP"
             bars = first_tp + 1
-            # CRITICAL FIX: For SHORT, exit at ASK (bid + spread) when buying back
-            if direction == 1:  # LONG: Exit at BID
-                actual_exit_price = tp_price
-            else:  # SHORT: Exit at ASK (buy back at bid + spread)
-                actual_exit_price = tp_price + spread
+            # FIX: Same as above - spread already in trigger check, don't double-count
+            actual_exit_price = tp_price
 
         # SPREAD-AWARE PnL
         if direction == 1:
