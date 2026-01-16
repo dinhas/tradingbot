@@ -114,7 +114,7 @@ class CombinedBacktest:
             self.risk_asset_cols[asset] = asset_cols
         
         # Risk model parameters (match RiskTradingEnv)
-        self.ATR_SL_MIN = 3.0
+        self.ATR_SL_MIN = 0.75  # Lowered for tighter stops
         self.ATR_SL_MAX = 7.0
         self.ATR_TP_MIN = 1.0
         self.ATR_TP_MAX = 15.0
@@ -263,7 +263,7 @@ class CombinedBacktest:
     
     def calculate_position_size(self, asset, entry_price, atr, sl_mult, tp_mult, risk_raw, direction):
         """Calculate position size from risk percentage (match RiskManagementEnv/RiskTradingEnv)"""
-        # [0.0 - 1.0] Risk knob (action[2])
+        # [0.0 - 1.0] Risk knob from exec_conf magnitude
         # Dead-zone blocking is handled in run_backtest
         
         drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
@@ -272,10 +272,12 @@ class CombinedBacktest:
         # Actual Risk % (MATCH RiskTradingEnv)
         actual_risk_pct = risk_raw * self.MAX_RISK_PER_TRADE * risk_cap_mult
         
-        sl_dist_price = max(sl_mult * atr, 1e-9)
-        min_sl_dist = max(0.0001 * entry_price, 0.2 * atr)
-        if sl_dist_price < min_sl_dist:
-            sl_dist_price = min_sl_dist
+        # CRITICAL FIX: Apply spread protection to sl_dist BEFORE position sizing
+        # This matches the fix in RiskTradingEnv to prevent oversized positions
+        spread = self.spreads.get(asset, 0.0)
+        sl_dist_raw = sl_mult * atr
+        min_sl_dist = max(spread * 6.0, 0.0005) if asset != "USDJPY" else max(spread * 6.0, 0.05)
+        sl_dist_price = max(sl_dist_raw, min_sl_dist)
         
         contract_size = 100 if asset == 'XAUUSD' else 100000
         is_usd_quote = asset in ['EURUSD', 'GBPUSD', 'XAUUSD']
@@ -409,25 +411,32 @@ class CombinedBacktest:
                     risk_obs = self.build_risk_observation(asset, self.env.current_step, direction, alpha_val)
                     risk_action, _ = self.risk_model.predict(risk_obs, deterministic=True)
                     
-                    # risk_action is [exec_conf, sl_norm, tp_norm]
-                    # But our RiskManagementEnv used [sl_norm, tp_norm, risk_raw]
-                    # Let's check the env code again: action[2] was risk_raw
-                    # Wait, our RiskTradingEnv.step says: action[0]=sl_norm, [1]=tp_norm, [2]=risk_raw
+                    # NO BLOCKING: RiskTradingEnv action space is [direction/risk, sl_norm, tp_norm]
+                    # action[0] = Direction/Risk (>0 LONG, <0 SHORT, magnitude = risk %)
+                    # action[1] = SL Multiplier (normalized)
+                    # action[2] = TP Multiplier (normalized)
+                    exec_conf = risk_action[0]
+                    sl_norm = risk_action[1]
+                    tp_norm = risk_action[2]
                     
-                    sl_norm = risk_action[0]
-                    tp_norm = risk_action[1]
-                    risk_raw = (risk_action[2] + 1) / 2 # 0.0 to 1.0
+                    # Determine direction from exec_conf (NO BLOCKING - always execute)
+                    if exec_conf > 0:
+                        risk_direction = 1  # LONG
+                        risk_raw = exec_conf  # Use raw confidence as risk (0 to 1)
+                    else:
+                        risk_direction = -1  # SHORT
+                        risk_raw = abs(exec_conf)  # Use absolute value as risk (0 to 1)
                     
-                    # Sniper Blocking Logic
-                    BLOCK_THRESHOLD = 0.10
-                    if risk_raw < BLOCK_THRESHOLD:
+                    # Verify direction matches Alpha signal
+                    if risk_direction != direction:
                         risk_blocked_count += 1
                         continue
                         
                     risk_approvals_count += 1
                     
-                    # Rescale risk for sizing
-                    risk_raw_scaled = (risk_raw - BLOCK_THRESHOLD) / (1.0 - BLOCK_THRESHOLD)
+                    # Risk is already in [0, 1] range (from exec_conf magnitude)
+                    # But we clip it to reasonable range for position sizing
+                    risk_raw_scaled = np.clip(risk_raw, 0.0, 1.0)
                     
                     # Map SL/TP
                     sl_mult = self._map_range(sl_norm, -1, 1, self.ATR_SL_MIN, self.ATR_SL_MAX)
@@ -545,12 +554,17 @@ class CombinedBacktest:
                 high_ask = high_bid + spread
                 low_ask = low_bid + spread
                 
-                # SL hit if High Ask >= SL
-                if high_ask >= pos['sl']:
-                    self.env._close_position(asset, pos['sl'])
-                # TP hit if Low Ask <= TP
-                elif low_ask <= pos['tp']:
-                    self.env._close_position(asset, pos['tp'])
+                # CRITICAL FIX: For SHORT, SL/TP prices are calculated from bid-based entry
+                # But when we exit (buy back), we must pay ASK (bid + spread)
+                # So we check if BID reaches the SL/TP level, then exit at ASK
+                # SL hit if High Bid >= SL level, then exit at SL + spread
+                if high_bid >= pos['sl']:
+                    exit_price = pos['sl'] + spread  # Buy back at ASK
+                    self.env._close_position(asset, exit_price)
+                # TP hit if Low Bid <= TP level, then exit at TP + spread
+                elif low_bid <= pos['tp']:
+                    exit_price = pos['tp'] + spread  # Buy back at ASK
+                    self.env._close_position(asset, exit_price)
 
 
 def run_combined_backtest(args):

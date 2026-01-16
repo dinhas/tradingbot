@@ -24,10 +24,10 @@ class RiskTradingEnv(gym.Env):
     3. If TAKE, decides SL and TP placement.
 
     Action Space (Continuous, size 3):
-    - [0] Execution Confidence/Direction:
-        * <-0.2: SHORT (Magnitude = Risk %)
-        * > +0.2: LONG (Magnitude = Risk %)
-        * -0.2 to 0.2: SKIP
+    - [0] Direction/Risk: 
+        * > 0: LONG (Magnitude = Risk %)
+        * < 0: SHORT (Magnitude = Risk %)
+        * Always executes (no blocking)
     - [1] SL Multiplier (normalized)
     - [2] TP Multiplier (normalized)
     """
@@ -69,11 +69,11 @@ class RiskTradingEnv(gym.Env):
             logging.warning(f"Config not found at {config_path}, using defaults.")
 
         # Configuration
-        self.EXECUTION_THRESHOLD = config.get("execution_threshold", 0.2)
+        self.EXECUTION_THRESHOLD = config.get("execution_threshold", 0.0)  # Unused - no blocking
         self.MIN_RR = config.get("min_rr", 1.5)
-        self.ATR_SL_MIN = config.get("atr_sl_min", 3.0)
+        self.ATR_SL_MIN = config.get("atr_sl_min", 0.75)  # Lowered for tighter stops
         self.ATR_SL_MAX = config.get("atr_sl_max", 7.0)
-        self.ATR_TP_MIN = config.get("atr_tp_min", 1.0)
+        self.ATR_TP_MIN = config.get("atr_tp_min", 2.0)  # Lowered to allow more TP opportunities
         self.ATR_TP_MAX = config.get("atr_tp_max", 15.0)
         self.MAX_RISK_PER_TRADE = config.get("max_risk_per_trade", 0.40)
         self.SLIPPAGE_MIN_PIPS = config.get("slippage_min_pips", 0.5)
@@ -443,55 +443,21 @@ class RiskTradingEnv(gym.Env):
         prev_equity = self.equity
         prev_dd = 1.0 - (prev_equity / peak_at_start)
 
-        # 2. Determine Direction and Risk from Action (Bug 2)
-        # Agent now HAS control over direction. 
-        # > Threshold = LONG, < -Threshold = SHORT, else SKIP
-        if conf_raw > self.EXECUTION_THRESHOLD:
+        # 2. Determine Direction and Risk from Action
+        # REMOVED BLOCKING: Always execute trades, focus on profit maximization
+        # > 0 = LONG, < 0 = SHORT, magnitude = risk percentage
+        if conf_raw > 0:
             direction = 1
-            risk_raw = conf_raw # Uses raw confidence as risk (avoiding Bug 10 compression)
-        elif conf_raw < -self.EXECUTION_THRESHOLD:
-            direction = -1
-            risk_raw = abs(conf_raw)
+            risk_raw = conf_raw  # Use raw confidence as risk (0 to 1)
         else:
-            direction = 0 # SKIP
+            direction = -1
+            risk_raw = abs(conf_raw)  # Use absolute value as risk (0 to 1)
 
         # Map SL/TP to multipliers
         sl_mult = self._map_range(sl_norm, -1, 1, self.ATR_SL_MIN, self.ATR_SL_MAX)
         tp_mult = self._map_range(tp_norm, -1, 1, self.ATR_TP_MIN, self.ATR_TP_MAX)
 
-        # 3. Compute Oracle values for blocking evaluation
-        max_favorable, max_adverse = self._get_oracle_values(direction if direction != 0 else 1)
-
-        # 4. Check for Block/Skip
-        is_blocked = (direction == 0)
-        
-        if is_blocked:
-            reward, block_type = self._evaluate_block_reward(max_favorable, max_adverse)
-            
-            # Tracking
-            self.trades_skipped += 1
-            self.period_skipped += 1
-            self._update_logging(reward)
-            
-            info = {
-                'action': 'BLOCK',
-                'pnl': 0.0,
-                'outcome': 'BLOCKED',
-                'block_type': block_type,
-                'is_blocked': True,
-                'max_fav': max_favorable,
-                'max_adv': max_adverse
-            }
-            
-            # Advance to next signal
-            self.current_step += 1
-            has_next = self._find_next_signal()
-            terminated = False
-            truncated = not has_next # Logic simplified, horizon check moved to _find_next_signal
-            
-            return self._get_observation(), reward, terminated, truncated, info
-
-        # 5. Normal Trade Execution
+        # 3. Trade Execution (ALWAYS EXECUTE - NO BLOCKING)
         # Apply Random Adverse Slippage on Entry
         asset = self.current_asset
         bid_current = self.price_arrays[asset]["close"][self.current_step]
@@ -556,22 +522,50 @@ class RiskTradingEnv(gym.Env):
         else:
             pnl = pnl_price * lots * contract_size
 
-        # Reward Calculation (Bug 2: Consistent Reference)
+        # Reward Calculation - FOCUS ON PROFIT MAXIMIZATION & LOSS MINIMIZATION
         self.equity += pnl
         self.peak_equity = max(self.peak_equity, self.equity)
         
+        # PnL Reward (Primary Focus - Maximize Profits)
+        pnl_ratio = pnl / max(prev_equity, 1e-6)
+        # Amplify profits, penalize losses more
+        if pnl > 0:
+            pnl_reward = pnl_ratio * 150.0  # Increased reward for profits
+        else:
+            pnl_reward = pnl_ratio * 200.0  # Stronger penalty for losses
+        
+        # Drawdown Penalty (Minimize Losses)
         new_dd = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
         dd_increase = max(0.0, new_dd - prev_dd)
-        dd_penalty = -(dd_increase ** 2) * 50.0
+        dd_penalty = -(dd_increase ** 2) * 30.0  # Reduced from 50.0 to allow more risk-taking
         
-        pnl_ratio = pnl / max(prev_equity, 1e-6)
-        pnl_reward = np.clip(pnl_ratio * 100.0, -300.0, 300.0)
-        
+        # Profit Maximization Bonuses
         tp_bonus = 0.0
+        rr_bonus = 0.0
+        
         if outcome_type == 'TP':
-            tp_bonus = 0.5 * (tp_mult / 8.0)
+            # Reward TP hits more aggressively
+            tp_bonus = 1.0 * (tp_mult / 8.0)  # Increased from 0.5
+            # Reward high R-multiple trades
+            if r_multiple >= 2.0:
+                rr_bonus = 2.0  # Bonus for 2R+ trades
+            elif r_multiple >= 1.5:
+                rr_bonus = 1.0  # Bonus for 1.5R+ trades
+        
+        # Loss Minimization Penalties
+        loss_penalty = 0.0
+        if outcome_type == 'SL':
+            # Penalize losses more, especially large ones
+            if r_multiple <= -2.0:
+                loss_penalty = -3.0  # Heavy penalty for large losses
+            elif r_multiple <= -1.0:
+                loss_penalty = -1.5  # Medium penalty
             
-        reward = pnl_reward + tp_bonus + dd_penalty
+        # Equity Growth Bonus (Encourage account growth)
+        equity_growth = (self.equity - self.initial_equity) / self.initial_equity
+        growth_bonus = min(equity_growth * 0.1, 5.0)  # Small bonus for overall growth
+        
+        reward = pnl_reward + tp_bonus + rr_bonus + dd_penalty + loss_penalty + growth_bonus
 
         # Tracking Update
         self.trades_taken += 1
@@ -593,8 +587,7 @@ class RiskTradingEnv(gym.Env):
             'lots': lots,
             'equity': self.equity,
             'is_blocked': False,
-            'max_fav': max_favorable,
-            'max_adv': max_adverse
+            'r_multiple': r_multiple
         }
 
         # Advance State
