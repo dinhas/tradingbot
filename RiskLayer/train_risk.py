@@ -164,7 +164,11 @@ def make_env(rank, seed=0):
         return env
     return _init
 
-def train():
+def train(dataset_path=None):
+    if dataset_path:
+        global DATASET_PATH
+        DATASET_PATH = dataset_path
+
     print(f"Starting High-Performance Training...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Device: {device}")
@@ -174,26 +178,35 @@ def train():
 
     # 0. Pre-generate Cache (Sequentially) to avoid race conditions
     print("Pre-validating dataset cache...")
-    temp_env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
-    del temp_env
+    try:
+        temp_env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
+        del temp_env
+    except Exception as e:
+        print(f"Failed to validate dataset: {e}")
+        sys.exit(1)
+        
     print("Cache validated. Starting parallel environments...")
 
     # 1. Create Vectorized Environment (Parallel)
     # SubprocVecEnv runs each env in a separate process
-    env_fns = [make_env(i) for i in range(N_ENVS)]
-    vec_env = SubprocVecEnv(env_fns)
-    
-    # CRITICAL: Normalize observations. 
-    # Financial features are on vastly different scales (Prices vs Slopes vs PnL)
-    vec_env = VecNormalize(
-        vec_env,
-        norm_obs=True,
-        norm_reward=True,
-        clip_obs=10.0,
-        clip_reward=10.0,
-    )
-    
-    vec_env = VecMonitor(vec_env, LOG_DIR) # Monitor wrapper for logging
+    try:
+        env_fns = [make_env(i) for i in range(N_ENVS)]
+        vec_env = SubprocVecEnv(env_fns)
+        
+        # CRITICAL: Normalize observations. 
+        # Financial features are on vastly different scales (Prices vs Slopes vs PnL)
+        vec_env = VecNormalize(
+            vec_env,
+            norm_obs=True,
+            norm_reward=True,
+            clip_obs=10.0,
+            clip_reward=10.0,
+        )
+        
+        vec_env = VecMonitor(vec_env, LOG_DIR) # Monitor wrapper for logging
+    except Exception as e:
+        print(f"Failed to initialize vectorized environments: {e}")
+        sys.exit(1)
 
     # Network Architecture (Expert Recommended: Larger for 165 features)
     policy_kwargs = dict(
@@ -206,26 +219,30 @@ def train():
     )
 
     # 2. Define Model (PPO)
-    model = PPO(
-        "MlpPolicy",
-        vec_env,
-        learning_rate=LEARNING_RATE,
-        n_steps=N_STEPS,
-        batch_size=BATCH_SIZE,
-        n_epochs=N_EPOCHS,
-        gamma=GAMMA,
-        gae_lambda=GAE_LAMBDA,
-        clip_range=CLIP_RANGE,
-        ent_coef=ENT_COEF,
-        vf_coef=VF_COEF,
-        max_grad_norm=MAX_GRAD_NORM,
-        policy_kwargs=policy_kwargs,
-        verbose=1,
-        tensorboard_log=LOG_DIR,
-        device=device
-    )
+    try:
+        model = PPO(
+            "MlpPolicy",
+            vec_env,
+            learning_rate=LEARNING_RATE,
+            n_steps=N_STEPS,
+            batch_size=BATCH_SIZE,
+            n_epochs=N_EPOCHS,
+            gamma=GAMMA,
+            gae_lambda=GAE_LAMBDA,
+            clip_range=CLIP_RANGE,
+            ent_coef=ENT_COEF,
+            vf_coef=VF_COEF,
+            max_grad_norm=MAX_GRAD_NORM,
+            policy_kwargs=policy_kwargs,
+            verbose=1,
+            tensorboard_log=LOG_DIR,
+            device=device
+        )
+    except Exception as e:
+        print(f"Failed to define model: {e}")
+        vec_env.close()
+        sys.exit(1)
 
-    # 3. Callbacks
     # 3. Callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=500_000 // N_ENVS, # Roughly 500k steps (adjusted for parallel envs)
@@ -258,12 +275,20 @@ def train():
         vec_env.close()
         print("Saved interrupted model.")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error during training: {e}")
+        import traceback
+        traceback.print_exc()
         vec_env.close()
+        sys.exit(1)
 
 if __name__ == "__main__":
     # Windows requires this
     multiprocessing.freeze_support()
+    
+    import argparse
+    parser = argparse.ArgumentParser(description="Train Risk Agent")
+    parser.add_argument("--dataset", type=str, help="Path to risk_dataset.parquet")
+    args = parser.parse_args()
     
     # Setup logging to file - capture all terminal output
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -274,11 +299,12 @@ if __name__ == "__main__":
     
     try:
         print(f"All terminal output will be saved to: {log_file}")
-        train()
+        train(dataset_path=args.dataset)
     except Exception as e:
         import traceback
         traceback.print_exc()
         print(f"CRITICAL ERROR: {e}")
+        sys.exit(1)
     finally:
         tee.close()
         print(f"Log saved to: {log_file}")

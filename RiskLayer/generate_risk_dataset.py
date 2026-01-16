@@ -133,27 +133,35 @@ def generate_dataset_batched(model_path, data_dir, output_file):
     
     if not os.path.exists(model_path):
         logger.error(f"Model not found at {model_path}")
-        return
+        sys.exit(1)
 
     logger.info(f"Loading Alpha Model from {model_path}...")
-    model = PPO.load(model_path, device='cpu')
+    try:
+        model = PPO.load(model_path, device='cpu')
+    except Exception as e:
+        logger.error(f"Failed to load model: {e}")
+        sys.exit(1)
 
     logger.info(f"Loading and preprocessing data from {data_dir}...")
     try:
         env = TradingEnv(data_dir=data_dir, stage=1, is_training=False)
     except Exception as e:
         logger.error(f"Failed to initialize environment: {e}")
-        return
+        sys.exit(1)
         
     df = env.processed_data
+    if df is None or len(df) == 0:
+        logger.error("No data loaded or processed data is empty.")
+        sys.exit(1)
+
     total_rows = len(df)
     assets = env.assets
     start_idx = 500
     end_idx = total_rows - LOOKAHEAD_STEPS
     
     if start_idx >= end_idx:
-        logger.error("Data too short.")
-        return
+        logger.error(f"Data too short. Total rows: {total_rows}, needed > {start_idx + LOOKAHEAD_STEPS}")
+        sys.exit(1)
 
     close_arrays = {a: env.close_arrays[a] for a in assets}
     high_arrays = {a: env.high_arrays[a] for a in assets}
@@ -176,7 +184,11 @@ def generate_dataset_batched(model_path, data_dir, output_file):
         logger.info(f"Processing asset: {asset}...")
         
         # 1. Build 40-dim observation matrix for this asset
-        obs_matrix = build_asset_obs_matrix(df, asset, assets, start_idx, end_idx)
+        try:
+            obs_matrix = build_asset_obs_matrix(df, asset, assets, start_idx, end_idx)
+        except Exception as e:
+            logger.error(f"Error building observation matrix for {asset}: {e}")
+            continue
         
         # 2. Batch Inference
         batch_starts = np.arange(0, num_rows, BATCH_SIZE)
@@ -238,6 +250,7 @@ def generate_dataset_batched(model_path, data_dir, output_file):
         pd.DataFrame(all_results).to_parquet(output_file, index=False)
     else:
         logger.warning("No signals generated.")
+        sys.exit(1) # Should fail if no data was generated
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate Risk Dataset (40-dim Single Pair)")
@@ -259,5 +272,6 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         logger.error(f"Error: {e}")
+        sys.exit(1)
     finally:
         tee.close()
