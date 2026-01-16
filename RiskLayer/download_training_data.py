@@ -196,8 +196,7 @@ class DataFetcherTraining:
                         close = (bar.low + bar.deltaClose) / DIVISOR
                         
                         bars_data.append({
-                            'open': open_p, 'high': high, 'low': low, 'close': close, 'volume': bar.volume,
-                            'pair': asset_name
+                            'open': open_p, 'high': high, 'low': low, 'close': close, 'volume': bar.volume
                         })
                     
                     if not bars_data:
@@ -237,7 +236,7 @@ class DataFetcherTraining:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default="data", help="Output directory")
+    parser.add_argument("--output", default="Alpha/data", help="Output directory")
     parser.add_argument("--force", action="store_true", help="Force redownload even if files exist")
     parser.add_argument("--log_dir", type=str, default=None, help="Log directory (default: logs in script directory)")
     args = parser.parse_args()

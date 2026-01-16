@@ -313,26 +313,26 @@ class Orchestrator:
             if direction == 0:
                 return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold', 'alpha_val': alpha_val}
             
-            # 3. Get Risk Observation (45)
+            # 3. Get Risk Observation (65)
             risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs, self.portfolio_state)
             
-            # 4. Risk Prediction (Returns [SL_Mult, TP_Mult])
+            # 4. Risk Prediction (Returns [SL_Mult, TP_Mult, Risk_Factor])
             risk_action = self.ml.get_risk_action(risk_obs)
             
             # Parse Risk Action (Match RiskManagementEnv scaling)
-            # sl_mult: 0.2-2.0, tp_mult: 0.5-4.0
-            sl_mult = np.clip((risk_action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)
+            # sl_mult: 0.75-2.5, tp_mult: 0.5-4.0, risk_raw: 0.0-1.0
+            sl_mult = np.clip((risk_action[0] + 1) / 2 * 1.75 + 0.75, 0.75, 2.5)
             tp_mult = np.clip((risk_action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
+            risk_raw = np.clip((risk_action[2] + 1) / 2, 0.0, 1.0)
             
-            # FIXED RISK: 2% per trade as per new model design
-            # (In backtest it was 0.02, but we can scale it to actual cash risk)
-            risk_raw = 0.02 
+            # BLOCKING LOGIC (Match RiskManagementEnv: action < 0.10 is a BLOCK)
+            BLOCK_THRESHOLD = 0.10
+            if risk_raw < BLOCK_THRESHOLD:
+                self.logger.info(f"Risk model BLOCKED trade for {asset_name} (risk_factor: {risk_raw:.4f})")
+                return {'action': 0, 'allowed': False, 'reason': 'Risk Blocked', 'alpha_val': alpha_val}
             
-            # Blocking Logic (Optional: if Alpha confidence is too low or other filters)
-            # Since new Risk model doesn't have confidence, we rely on Alpha threshold.
-            
-            # Rescale Risk (Not applicable for fixed risk, but we keep the logic flow)
-            risk_raw_scaled = 1.0 # Logic assumes the full 2% risk
+            # Rescale Risk Factor for lot calculation
+            risk_raw_scaled = (risk_raw - BLOCK_THRESHOLD) / (1.0 - BLOCK_THRESHOLD)
             
             # 5. Calculate Sizing & SL/TP Prices
             digits = self.symbol_digits.get(asset_name, 5)
@@ -347,7 +347,6 @@ class Orchestrator:
             tp_price = round(current_price + (direction * tp_dist), digits)
             
             # Round distances to symbol's precision to avoid 'invalid precision' errors
-            # This ensures the SL/TP price levels are mathematically valid for the broker
             pip_unit = 10 ** -digits
             sl_dist = round(sl_dist / pip_unit) * pip_unit
             tp_dist = round(tp_dist / pip_unit) * pip_unit
@@ -356,7 +355,7 @@ class Orchestrator:
             relative_sl = int(round(sl_dist * 100000))
             relative_tp = int(round(tp_dist * 100000))
             
-            # Lot Calculation (Match Backtest calculate_position_size)
+            # Lot Calculation (Match RiskManagementEnv exactly)
             equity = self.portfolio_state.get('equity', 10.0)
             balance = self.portfolio_state.get('balance', 0)
             
@@ -365,7 +364,8 @@ class Orchestrator:
                 lots = 0.01
                 self.logger.info(f"Balance ${balance:.2f} < $30. Using hardcoded lot size: 0.01")
             else:
-                MAX_RISK_PER_TRADE = 0.80
+                # MATCH RiskManagementEnv: MAX_RISK_PER_TRADE = 0.40
+                MAX_RISK_PER_TRADE = 0.40
                 drawdown = 1.0 - (equity / max(self.portfolio_state.get('peak_equity', equity), 1e-9))
                 risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
                 

@@ -1,49 +1,123 @@
 import subprocess
 import sys
 import os
-import logging
+import time
 from datetime import datetime
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-def run_command(command, description):
-    logging.info(f"--- Starting: {description} ---")
-    start_time = datetime.now()
+class Tee:
+    """Redirect stdout/stderr to both console and file."""
+    def __init__(self, file_path):
+        self.file = open(file_path, 'w', encoding='utf-8')
+        self.stdout = sys.stdout
+        self.stderr = sys.stderr
+        sys.stdout = self
+        sys.stderr = TeeStderr(self.file, self.stderr)
     
+    def write(self, text):
+        self.file.write(text)
+        self.file.flush()
+        self.stdout.write(text)
+        self.stdout.flush()
+    
+    def flush(self):
+        self.file.flush()
+        self.stdout.flush()
+    
+    def close(self):
+        sys.stdout = self.stdout
+        sys.stderr = self.stderr
+        self.file.close()
+
+class TeeStderr:
+    """Handle stderr separately."""
+    def __init__(self, file, stderr):
+        self.file = file
+        self.stderr = stderr
+    
+    def write(self, text):
+        self.file.write(text)
+        self.file.flush()
+        self.stderr.write(text)
+        self.stderr.flush()
+    
+    def flush(self):
+        self.file.flush()
+        self.stderr.flush()
+
+def run_step(step_name, script_name, cwd):
+    print(f"\n{'='*50}")
+    print(f"STEP: {step_name}")
+    print(f"Script: {script_name}")
+    print(f"{'='*50}\n")
+
+    start_time = time.time()
+    
+    script_path = os.path.join(cwd, script_name)
+    if not os.path.exists(script_path):
+        print(f"❌ Error: Script not found -> {script_path}")
+        return False
+
     try:
-        # Use shell=True for Windows compatibility with python command if needed, 
-        # but list format is safer. Assumes 'python' is in PATH.
-        # process = subprocess.run(command, shell=True, check=True) # If command is a string
-        process = subprocess.run(command, check=True) # If command is a list
+        # Run using the same python interpreter
+        result = subprocess.run(
+            [sys.executable, script_name], 
+            cwd=cwd,
+            check=True,
+            text=True
+        )
         
-        duration = datetime.now() - start_time
-        logging.info(f"--- Completed: {description} (Duration: {duration}) ---")
+        duration = time.time() - start_time
+        print(f"\n✅ {step_name} COMPLETED successfully in {duration:.2f}s")
         return True
+        
     except subprocess.CalledProcessError as e:
-        logging.error(f"!!! Failed: {description} (Exit Code: {e.returncode}) !!!")
+        print(f"\n❌ {step_name} FAILED with exit code {e.returncode}")
+        return False
+    except Exception as e:
+        print(f"\n❌ {step_name} FAILED with error: {e}")
         return False
 
 def main():
-    # 1. Download Training Data
-    # Note: Using defaults (output to 'data' dir)
-    cmd_download = [sys.executable, "RiskLayer/download_training_data.py"]
-    if not run_command(cmd_download, "Download Raw Training Data"):
-        return
+    # Use relative path if possible, or dot
+    base_dir = os.path.dirname(__file__)
+    if not base_dir:
+        base_dir = "."
+    
+    print("STARTING RISK LAYER PIPELINE")
+    print(f"Working Directory: {base_dir}")
+    
+    # 1. Fetch Data
+    if not run_step("Fetch Training Data", "download_training_data.py", base_dir):
+        sys.exit(1)
+        
+    # 2. Generate Dataset
+    if not run_step("Generate Risk Dataset", "generate_risk_dataset.py", base_dir):
+        sys.exit(1)
+        
+    # 3. Train Model
+    # Note: train_risk.py is configured for 'MAX SPEED'
+    if not run_step("Train Risk Agent", "train_risk.py", base_dir):
+        sys.exit(1)
 
-    # 2. Generate Alpha Signals
-    # This reads from 'data/' and writes to 'data/' with alpha labels
-    cmd_signals = [sys.executable, "RiskLayer/src/generate_alpha_signals.py"]
-    if not run_command(cmd_signals, "Generate Alpha Signals"):
-        return
-
-    # 3. Train Risk Model
-    # Reads config from RiskLayer/config/ppo_config.yaml
-    cmd_train = [sys.executable, "RiskLayer/train/train_risk_model.py"]
-    if not run_command(cmd_train, "Train Risk Model (TradeGuard)"):
-        return
-
-    logging.info("=== Full Pipeline Completed Successfully ===")
+    print("\n" + "="*50)
+    print("ALL PIPELINE STEPS COMPLETED SUCCESSFULLY")
+    print("="*50)
 
 if __name__ == "__main__":
-    main()
+    # Setup logging to file - capture all terminal output
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(BASE_DIR, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"run_pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    tee = Tee(log_file)
+    
+    try:
+        print(f"All terminal output will be saved to: {log_file}")
+        main()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"CRITICAL ERROR: {e}")
+    finally:
+        tee.close()
+        print(f"Log saved to: {log_file}")

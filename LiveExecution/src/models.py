@@ -60,10 +60,10 @@ class ModelLoader:
             if self.alpha_norm:
                 self.logger.info("Alpha VecNormalize stats loaded.")
             
-            # 2. Risk Model (45-dim Refactored)
+            # 2. Risk Model (65-dim Refactored)
             risk_dir = checkpoint_dir / "risk"
-            risk_path = risk_dir / "10M.zip"
-            risk_norm_path = risk_dir / "10M.pkl"
+            risk_path = risk_dir / "risk_model_final.zip"
+            risk_norm_path = risk_dir / "vec_normalize.pkl"
             
             self.logger.info(f"Loading Risk model from {risk_path}...")
             self.risk_model = PPO.load(risk_path)
@@ -93,7 +93,7 @@ class ModelLoader:
         return action
 
     def get_risk_action(self, observation):
-        """Predicts position risk parameters (SL, TP)."""
+        """Predicts position risk parameters (SL, TP, Risk)."""
         if self.risk_model is None:
             raise RuntimeError("Risk model not loaded.")
         
@@ -102,6 +102,6 @@ class ModelLoader:
             observation = self.risk_norm.normalize_obs(observation.reshape(1, -1)).flatten()
             
         action, _ = self.risk_model.predict(observation, deterministic=True)
-        # Should return (2,) array for [SL_Mult, TP_Mult]
+        # Should return (3,) array for [SL_Mult, TP_Mult, Risk_Pct]
         return action
 

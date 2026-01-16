@@ -154,59 +154,48 @@ class FeatureManager:
         latest_features = normalized_df.iloc[-1].to_dict()
         return self.alpha_fe.get_observation(latest_features, portfolio_state, asset)
 
-    def get_risk_observation(self, asset, alpha_signal, portfolio_state):
+    def get_risk_observation(self, asset, alpha_obs, portfolio_state):
         """
-        Constructs the 86-feature vector for Risk model.
-        (81 Market features + 5 Account features)
+        Constructs the 65-feature vector for Risk model.
+        (40 Alpha/Market features + 5 Account features + 20 History features)
         """
-        # 1. Preprocess data using RiskFeatureEngine
+        # 1. Get the 40-feature alpha/market vector for the specific asset
+        # We use the cached preprocessed risk_df
         latest_ts = max(df.index.max() for df in self.history.values() if not df.empty)
         
         if self.last_preprocessed_ts == latest_ts and self.cached_risk_df is not None:
              risk_df = self.cached_risk_df
         else:
              data_dict = {a: df.copy() for a, df in self.history.items() if not df.empty}
-             # Inject the current alpha signal into the dataframe for the engine
-             for a in self.assets:
-                  if a == asset:
-                       data_dict[a]['alpha_signal'] = alpha_signal
-                       data_dict[a]['alpha_conf'] = 1.0 # Placeholder
-                  else:
-                       data_dict[a]['alpha_signal'] = 0.0
-                       data_dict[a]['alpha_conf'] = 0.0
-             
-             risk_df = self.risk_fe.preprocess_data(data_dict)
+             risk_df, _ = self.risk_fe.preprocess_data(data_dict)
              self.cached_risk_df = risk_df
              
-        # 2. Extract features for target asset
-        # Get only columns for this asset
-        asset_cols = [c for c in risk_df.columns if c.startswith(f"{asset}_")]
-        # RiskTradingEnv uses a specific order, which RiskFeatureEngine.preprocess_data now preserves
-        # But let's be safe and just take them in order they appear in the df for that asset
-        market_obs = risk_df.iloc[-1][asset_cols].values.astype(np.float32)
+        latest_row = risk_df.iloc[-1]
+        market_obs = self.risk_fe.get_observation(latest_row, portfolio_state, asset)
         
-        # 3. Account State (5)
-        equity = portfolio_state.get('equity', 10000.0)
-        initial_equity = portfolio_state.get('initial_equity', 10000.0)
+        # 2. Account State (5)
+        equity = portfolio_state.get('equity', 10.0)
+        initial_equity = portfolio_state.get('initial_equity', 10.0)
         peak_equity = portfolio_state.get('peak_equity', initial_equity)
         
         drawdown = np.clip(1.0 - (equity / peak_equity) if peak_equity > 0 else 0, 0.0, 1.0)
         equity_norm = np.clip(equity / initial_equity if initial_equity > 0 else 1.0, 0.0, 6.0)
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
         
-        spread_val = 0.0001 # TODO: Get real spread
-        asset_id = float(self.assets.index(asset))
-        
         account_obs = np.array([
-            spread_val,
-            asset_id,
             equity_norm,
             drawdown,
-            risk_cap_mult
+            0.0, # Leverage (placeholder)
+            risk_cap_mult,
+            0.0 # Padding
         ], dtype=np.float32)
         
-        # Total 81 (market) + 5 (account) = 86
-        return np.concatenate([market_obs, account_obs])
+        # 3. History (20)
+        hist_pnl = np.array(self.risk_pnl_history[asset], dtype=np.float32)
+        hist_acts = np.array(self.risk_action_history[asset], dtype=np.float32).flatten()
+        
+        # Total 40 (market) + 5 (account) + 20 (history) = 65
+        return np.concatenate([market_obs, account_obs, hist_pnl, hist_acts])
 
     def is_ready(self):
         """Checks if enough history is collected for all assets."""
