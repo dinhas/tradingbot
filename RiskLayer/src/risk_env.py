@@ -20,7 +20,7 @@ class RiskManagementEnv(gym.Env):
         
     Action Space (3):
         0: SL Multiplier (0.75x - 2.5x ATR)
-        1: TP Multiplier (0.5x - 4.0x ATR)
+        1: TP Multiplier (0.5x - 6.0x ATR)
         2: Risk Factor (0.01% - 100% of Max Risk) -> Scaled to Actual Risk %
     """
     metadata = {'render_modes': ['human']}
@@ -42,20 +42,6 @@ class RiskManagementEnv(gym.Env):
         self.TRADING_COST_PCT = 0.0002  # ~2 pips/ticks roundtrip cost
         self.MIN_LOTS = 0.01
         self.CONTRACT_SIZE = 100000     # Standard Lot
-        
-        # Slippage Configuration (Realistic Execution Model)
-        # Slippage is modeled as 0.5 - 1.5 pips adverse movement on entry
-        self.SLIPPAGE_MIN_PIPS = 0.5    # Minimum slippage in pips
-        self.SLIPPAGE_MAX_PIPS = 1.5    # Maximum slippage in pips
-        self.ENABLE_SLIPPAGE = True     # Toggle for A/B testing
-        
-        # Spread Configuration (Bid/Ask Simulation)
-        # Spread is modeled as a percentage of ATR for cross-asset compatibility
-        # Typical FX spread: 0.5-2 pips (~10-40% of ATR on M15)
-        # This creates the "spread gap" the model must overcome before profiting
-        self.SPREAD_ATR_PCT_MIN = 0.20  # Minimum spread as % of ATR (20%)
-        self.SPREAD_ATR_PCT_MAX = 0.30  # Maximum spread as % of ATR (30%)
-        self.ENABLE_SPREAD = True       # Toggle for A/B testing
         
         # BLOCKING REWARD PARAMS
         self.BLOCK_REWARD_SCALE = 100.0  # Scale for avoided loss
@@ -315,7 +301,7 @@ class RiskManagementEnv(gym.Env):
         # --- 1. Parse Action ---
         # Clip actions to valid ranges (SCALPING ADJUSTED)
         sl_mult = np.clip((action[0] + 1) / 2 * 1.75 + 0.75, 0.75, 2.5)   # 0.75 - 2.5 ATR
-        tp_mult = np.clip((action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)   # 0.5 - 4.0 ATR
+        tp_mult = np.clip((action[1] + 1) / 2 * 5.5 + 0.5, 0.5, 6.0)     # 0.5 - 6.0 ATR
         risk_raw = np.clip((action[2] + 1) / 2, 0.0, 1.0)              # 0.0 - 1.0 (Percentage of MAX_RISK)
 
         # --- 2. Get Trade Data (Moved Before Logic) ---
@@ -330,32 +316,7 @@ class RiskManagementEnv(gym.Env):
         is_usd_quote = self.is_usd_quote_arr[global_idx]
         is_usd_base = self.is_usd_base_arr[global_idx]
         
-        # --- Spread Calculation ---
-        spread = 0.0
-        if self.ENABLE_SPREAD:
-            # Spread as % of ATR (Dynamic)
-            spread_pct_atr = np.random.uniform(self.SPREAD_ATR_PCT_MIN, self.SPREAD_ATR_PCT_MAX)
-            spread = spread_pct_atr * atr
-            
-        # --- Slippage Calculation ---
-        slippage = 0.0
-        if self.ENABLE_SLIPPAGE:
-            slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-            # 1 pip approx 0.0001 or 0.01 depending on asset, but here using pct approximation
-            slippage = slippage_pips * 0.0001 * entry_price_raw
-
-        # --- Determine Execution Prices (Model vs Reality) ---
-        # User Rule: Longs enter at Ask (Base+Spread), Shorts enter at Bid (Base)
-        # Note: Slippage is always adverse (added to cost)
-        
         real_entry_price = entry_price_raw
-        
-        if direction == 1: # LONG
-            # Buy at Ask (+Spread) + Slippage (Price moves up)
-            real_entry_price = entry_price_raw + spread + slippage
-        else: # SHORT
-            # Sell at Bid (Base) - Slippage (Price moves down)
-            real_entry_price = entry_price_raw - slippage
 
         # Use pre-loaded Arrays for Shadow Simulation
         max_favorable = self.max_profit_pcts[global_idx] 
@@ -488,9 +449,9 @@ class RiskManagementEnv(gym.Env):
         decoded_action = np.array([sl_mult, tp_mult, actual_risk_pct], dtype=np.float32)
         self.history_actions.append(decoded_action)
 
-        # --- 5. Simulate Outcome with SPREAD ---
+        # --- 5. Simulate Outcome ---
         # IMPORTANT: Model sets SL/TP relative to its "Entry" (Real Entry)
-        # But Market moves based on Raw Price (Bid/Mid).
+        # But Market moves based on Raw Price (Mid/Bid).
         
         real_tp_dist = tp_mult * atr
         real_sl_dist = sl_dist_price # Already calc'd
@@ -501,59 +462,47 @@ class RiskManagementEnv(gym.Env):
         # Normalizing to % of ENTRY for comparison with dataset max_fav/adv
         # Avoid div by zero
         denom = max(entry_price_raw, 1e-9)
-        spread_pct = spread / denom
-        slippage_pct = slippage / denom
-        
         sl_pct_dist = real_sl_dist / denom
         tp_pct_dist = real_tp_dist / denom
         
         if direction == 1: # LONG
-             # Enter at Ask (Raw + Spread + Slip). Exit at Bid (Raw).
-             # SL (Bid) = Entry_Ask - SL_Dist
-             # Stop Trigger: Raw_Low <= (Raw_Entry + Spread + Slip) - SL_Dist
-             #              Raw_Low - Raw_Entry <= Spread + Slip - SL_Dist
-             #              max_adverse <= (Spread_Pct + Slip_Pct - SL_Pct)
+             # SL = Entry - SL_Dist
+             # Stop Trigger: Raw_Low <= Raw_Entry - SL_Dist
+             #              Raw_Low - Raw_Entry <= - SL_Pct
              
-             sl_thresh = spread_pct + slippage_pct - sl_pct_dist
-             tp_thresh = spread_pct + slippage_pct + tp_pct_dist
+             sl_thresh = -sl_pct_dist
+             tp_thresh = tp_pct_dist
              
              # Check SL (Low Reaches Thresh) -> max_adverse is negative
-             # max_adverse (e.g. -0.05) <= -0.04 (Thresh). Yes.
              hit_sl = max_adverse <= sl_thresh
              
              # Check TP (High Reaches Thresh) -> max_favorable is positive
-             # max_favorable >= tp_thresh
              hit_tp = max_favorable >= tp_thresh
              
         else: # SHORT
-             # Enter at Bid (Raw - Slip). Exit at Ask (Raw + Spread).
-             # SL (Ask) = Entry_Bid + SL_Dist 
-             # TP (Ask) = Entry_Bid - TP_Dist
-             # Stop Trigger: Raw_High + Spread >= (Raw_Entry - Slip) + SL_Dist
-             #               Raw_High - Raw_Entry >= SL_Dist - Slip - Spread
-             #               max_favorable >= SL_Pct - Slip_Pct - Spread_Pct
+             # SL = Entry + SL_Dist 
+             # TP = Entry - TP_Dist
+             # Stop Trigger: Raw_High >= Raw_Entry + SL_Dist
+             #               Raw_High - Raw_Entry >= SL_Pct
              
-             sl_thresh = sl_pct_dist - slippage_pct - spread_pct
-             tp_thresh = -tp_pct_dist - slippage_pct - spread_pct
+             sl_thresh = sl_pct_dist
+             tp_thresh = -tp_pct_dist
              
              # Check SL (High Reaches Thresh) -> max_favorable is positive
              hit_sl = max_favorable >= sl_thresh
              
              # Check TP (Low Reaches Thresh) -> max_adverse is negative
-             # Raw_Low + Spread <= (Raw_Entry - Slip) - TP_Dist
-             # Raw_Low - Raw_Entry <= -TP_Dist - Slip - Spread
              hit_tp = max_adverse <= tp_thresh
 
         if hit_sl and hit_tp:
             # Determine which happened first? 
             # Heuristic: Closer one hits first usually.
-            # Long: SL_Dist vs TP_Dist (modified by spread)
             if direction == 1:
-                dist_sl = abs(spread + slippage - real_sl_dist)
-                dist_tp = abs(spread + slippage + real_tp_dist)
+                dist_sl = real_sl_dist
+                dist_tp = real_tp_dist
             else:
-                dist_sl = abs(real_sl_dist - slippage - spread)
-                dist_tp = abs(-real_tp_dist - slippage - spread)
+                dist_sl = real_sl_dist
+                dist_tp = real_tp_dist
                 
             if dist_sl < dist_tp:
                 hit_tp = False
@@ -577,16 +526,11 @@ class RiskManagementEnv(gym.Env):
             exited_on = 'TP'
         else:
             # Time Exit
-            # Long Exit at Bid (Raw Close)
-            # Short Exit at Ask (Raw Close + Spread)
             if self.has_time_limit and self.hours_to_exits[global_idx] > 24:
                 exited_on = 'TIME_LIMIT'
             
             raw_close = self.close_prices[global_idx]
-            if direction == 1:
-                real_exit_price = raw_close
-            else:
-                real_exit_price = raw_close + spread
+            real_exit_price = raw_close
             
         # --- 6. Calculate Rewards ---
         # Net PnL = (Exit - Entry) * Direction * Size
@@ -641,7 +585,7 @@ class RiskManagementEnv(gym.Env):
         
         tp_bonus = 0.0
         if exited_on == 'TP':
-            tp_bonus = 0.5 * (tp_mult / 8.0)  # Slightly increased TP bonus
+            tp_bonus = 0.5 * (tp_mult / 12.0)  # Adjusted bonus for higher TP range
         
         reward = pnl_reward + tp_bonus + dd_penalty + risk_violation_penalty
         
@@ -669,9 +613,7 @@ class RiskManagementEnv(gym.Env):
             'is_blocked': False,
             'block_reward': 0.0,
             'max_fav': max_favorable,
-            'max_adv': max_adverse,
-            'spread': spread,
-            'slippage': slippage
+            'max_adv': max_adverse
         }
         
         return self._get_observation(), reward, terminated, truncated, info
