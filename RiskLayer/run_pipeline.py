@@ -44,7 +44,7 @@ class TeeStderr:
         self.file.flush()
         self.stderr.flush()
 
-def run_step(step_name, script_name, cwd, extra_args=None):
+def run_step(step_name, script_name, cwd):
     print(f"\n{'='*50}")
     print(f"STEP: {step_name}")
     print(f"Script: {script_name}")
@@ -59,12 +59,8 @@ def run_step(step_name, script_name, cwd, extra_args=None):
 
     try:
         # Run using the same python interpreter
-        cmd = [sys.executable, script_name]
-        if extra_args:
-            cmd.extend(extra_args)
-            
         result = subprocess.run(
-            cmd, 
+            [sys.executable, script_name], 
             cwd=cwd,
             check=True,
             text=True
@@ -82,36 +78,25 @@ def run_step(step_name, script_name, cwd, extra_args=None):
         return False
 
 def main():
-    # Get absolute paths to ensure consistency
-    risk_layer_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(risk_layer_dir)
-    
-    # Consistent data directory
-    data_dir = os.path.join(project_root, "Alpha", "data")
-    risk_dataset_path = os.path.join(risk_layer_dir, "risk_dataset.parquet")
+    # Use relative path if possible, or dot
+    base_dir = os.path.dirname(__file__)
+    if not base_dir:
+        base_dir = "."
     
     print("STARTING RISK LAYER PIPELINE")
-    print(f"Project Root: {project_root}")
-    print(f"Risk Layer Dir: {risk_layer_dir}")
-    print(f"Data Directory: {data_dir}")
+    print(f"Working Directory: {base_dir}")
     
     # 1. Fetch Data
-    # download_training_data.py saves to 'Alpha/data' by default, 
-    # but we'll be explicit using absolute path.
-    if not run_step("Fetch Training Data", "download_training_data.py", risk_layer_dir, ["--output", data_dir]):
-        print("CRITICAL: Fetching training data failed. Stopping pipeline.")
+    if not run_step("Fetch Training Data", "download_training_data.py", base_dir):
         sys.exit(1)
         
     # 2. Generate Dataset
-    # We pass the same data_dir to generate_risk_dataset.py
-    if not run_step("Generate Risk Dataset", "generate_risk_dataset.py", risk_layer_dir, ["--data", data_dir, "--output", risk_dataset_path]):
-        print("CRITICAL: Generating risk dataset failed. Stopping pipeline.")
+    if not run_step("Generate Risk Dataset", "generate_risk_dataset.py", base_dir):
         sys.exit(1)
         
     # 3. Train Model
-    # We pass the generated risk_dataset.parquet path to train_risk.py
-    if not run_step("Train Risk Agent", "train_risk.py", risk_layer_dir, ["--dataset", risk_dataset_path]):
-        print("CRITICAL: Training risk agent failed. Stopping pipeline.")
+    # Note: train_risk.py is configured for 'MAX SPEED'
+    if not run_step("Train Risk Agent", "train_risk.py", base_dir):
         sys.exit(1)
 
     print("\n" + "="*50)
