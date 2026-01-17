@@ -135,26 +135,167 @@ class EntropyDecayCallback(BaseCallback):
         self.model.ent_coef = new_ent
         return True
 
-class TensorboardCallback(BaseCallback):
+class AdvancedMetricsCallback(BaseCallback):
     """
-    Custom callback for logging additional values in tensorboard.
-    Logged less frequently to save I/O.
+    Tracks detailed financial metrics (Win Rate, Sharpe, RR, Profit Factor) 
+    and logs them to the console/Tensorboard.
+    Tracks 'Best' values observed during training.
     """
-    def __init__(self, verbose=0):
-        super(TensorboardCallback, self).__init__(verbose)
+    def __init__(self, verbose=0, window_size=100):
+        super().__init__(verbose)
+        self.window_size = window_size
+        
+        # Per-Environment accumulators (handling parallel envs)
+        # We need to know N_ENVS, but we can init lazily or assume from locals
+        self.env_stats = {} 
+        
+        # history buffers (deque) for rolling averages
+        from collections import deque
+        self.episode_metrics = {
+            'win_rate': deque(maxlen=window_size),
+            'sharpe': deque(maxlen=window_size),
+            'profit_factor': deque(maxlen=window_size),
+            'avg_rr': deque(maxlen=window_size),
+            'total_pnl': deque(maxlen=window_size),
+            'drawdown': deque(maxlen=window_size)
+        }
+        
+        # Track "Best" records
+        self.best_records = {
+            'win_rate': -1.0,
+            'sharpe': -999.0,
+            'profit_factor': 0.0,
+            'avg_rr': 0.0,
+            'return': -999.0
+        }
+
+    def _init_env_stat(self, env_idx):
+        return {
+            'pnl_history': [],
+            'wins': 0,
+            'losses': 0,
+            'gross_win': 0.0,
+            'gross_loss': 0.0,
+            'equity_curve': [],
+            'blocked_count': 0,
+            'trade_count': 0
+        }
 
     def _on_step(self) -> bool:
-        # Only log every 100 steps to reduce overhead
-        if self.n_calls % 100 == 0:
-            if 'info' in self.locals and len(self.locals['info']) > 0:
-                info = self.locals['info'][0] 
-                if 'equity' in info:
-                    self.logger.record('custom/equity', info['equity'])
-                if 'pnl' in info:
-                    self.logger.record('custom/pnl', info['pnl'])
-                if 'lots' in info:
-                     self.logger.record('custom/lots', info['lots'])
+        infos = self.locals.get('infos', [])
+        dones = self.locals.get('dones', [])
+        
+        # Initialize env stats if needed
+        if not self.env_stats:
+            for i in range(len(infos)):
+                self.env_stats[i] = self._init_env_stat(i)
+
+        for i, info in enumerate(infos):
+            stat = self.env_stats[i]
+            
+            # Extract data
+            pnl = info.get('pnl', 0.0)
+            is_blocked = info.get('is_blocked', False)
+            equity = info.get('equity', 0.0)
+            
+            stat['equity_curve'].append(equity)
+            
+            if not is_blocked:
+                stat['trade_count'] += 1
+                stat['pnl_history'].append(pnl)
+                
+                if pnl > 0:
+                    stat['wins'] += 1
+                    stat['gross_win'] += pnl
+                elif pnl < 0:
+                    stat['losses'] += 1
+                    stat['gross_loss'] += abs(pnl)
+            else:
+                stat['blocked_count'] += 1
+
+            # Check if episode is done
+            if dones[i]:
+                self._process_episode_done(i)
+                self.env_stats[i] = self._init_env_stat(i)
+                
         return True
+
+    def _process_episode_done(self, env_idx):
+        stat = self.env_stats[env_idx]
+        trades = stat['trade_count']
+        
+        if trades == 0:
+            return # Skip empty episodes
+
+        # Calculate Metrics
+        win_rate = stat['wins'] / trades if trades > 0 else 0.0
+        
+        # Profit Factor
+        pf = stat['gross_win'] / stat['gross_loss'] if stat['gross_loss'] > 0 else (99.0 if stat['gross_win'] > 0 else 0.0)
+        
+        # Average Risk:Reward
+        avg_win = stat['gross_win'] / stat['wins'] if stat['wins'] > 0 else 0.0
+        avg_loss = stat['gross_loss'] / stat['losses'] if stat['losses'] > 0 else 1.0 # Avoid div/0
+        rr_ratio = avg_win / avg_loss if avg_loss > 0 else 0.0
+        
+        # Sharpe (Simplified - using trade PnL volatility)
+        pnl_arr = np.array(stat['pnl_history'])
+        if len(pnl_arr) > 1 and np.std(pnl_arr) > 1e-9:
+            sharpe = np.mean(pnl_arr) / np.std(pnl_arr)
+        else:
+            sharpe = 0.0
+            
+        # Drawdown
+        eq_curve = np.array(stat['equity_curve'])
+        if len(eq_curve) > 0:
+            peak = np.maximum.accumulate(eq_curve)
+            dd = (peak - eq_curve) / peak
+            max_dd = np.max(dd)
+        else:
+            max_dd = 0.0
+            
+        total_pnl = np.sum(pnl_arr)
+
+        # Store in rolling history
+        self.episode_metrics['win_rate'].append(win_rate)
+        self.episode_metrics['sharpe'].append(sharpe)
+        self.episode_metrics['profit_factor'].append(pf)
+        self.episode_metrics['avg_rr'].append(rr_ratio)
+        self.episode_metrics['total_pnl'].append(total_pnl)
+        self.episode_metrics['drawdown'].append(max_dd)
+
+        # Update Best Records (Smoothed? No, let's track Best Episode for now, or Best Rolling Mean?)
+        # User asked for "Highest Win Rate", usually implies Best Episode or Best Rolling Average.
+        # Let's track Best Rolling Average (more robust)
+        
+        # Actually, let's log the Rolling Average to tensorboard/stdout
+        # And track the "All-Time High" of the Rolling Average
+        
+        current_roll_wr = np.mean(self.episode_metrics['win_rate'])
+        current_roll_sharpe = np.mean(self.episode_metrics['sharpe'])
+        current_roll_pf = np.mean(self.episode_metrics['profit_factor'])
+        current_roll_rr = np.mean(self.episode_metrics['avg_rr'])
+        current_roll_ret = np.mean(self.episode_metrics['total_pnl'])
+
+        if current_roll_wr > self.best_records['win_rate']: self.best_records['win_rate'] = current_roll_wr
+        if current_roll_sharpe > self.best_records['sharpe']: self.best_records['sharpe'] = current_roll_sharpe
+        if current_roll_pf > self.best_records['profit_factor']: self.best_records['profit_factor'] = current_roll_pf
+        if current_roll_rr > self.best_records['avg_rr']: self.best_records['avg_rr'] = current_roll_rr
+        if current_roll_ret > self.best_records['return']: self.best_records['return'] = current_roll_ret
+        
+        # Log to SB3 Logger
+        # This makes it print in the console table
+        self.logger.record("trading/win_rate", current_roll_wr)
+        self.logger.record("trading/sharpe", current_roll_sharpe)
+        self.logger.record("trading/profit_factor", current_roll_pf)
+        self.logger.record("trading/avg_rr", current_roll_rr)
+        self.logger.record("trading/max_drawdown", np.mean(self.episode_metrics['drawdown']))
+        
+        self.logger.record("best/win_rate", self.best_records['win_rate'])
+        self.logger.record("best/sharpe", self.best_records['sharpe'])
+        self.logger.record("best/profit_factor", self.best_records['profit_factor'])
+        self.logger.record("best/avg_rr", self.best_records['avg_rr'])
+
 
 def make_env(rank, seed=0):
     """Utility function for multiprocessed env."""
@@ -251,13 +392,13 @@ def train(dataset_path=None):
     )
     
     entropy_callback = EntropyDecayCallback(initial_ent=0.05, final_ent=0.005)
-    tb_callback = TensorboardCallback()
+    metrics_callback = AdvancedMetricsCallback(window_size=100)
 
     # 4. Train
     try:
         model.learn(
             total_timesteps=TOTAL_TIMESTEPS, 
-            callback=[checkpoint_callback, entropy_callback, tb_callback],
+            callback=[checkpoint_callback, entropy_callback, metrics_callback],
             progress_bar=True
         )
         
@@ -272,6 +413,7 @@ def train(dataset_path=None):
     except KeyboardInterrupt:
         print("\nTraining interrupted manually.")
         model.save(os.path.join(MODELS_DIR, "risk_model_interrupted"))
+        vec_env.save(os.path.join(MODELS_DIR, "vec_normalize_interrupted.pkl"))
         vec_env.close()
         print("Saved interrupted model.")
     except Exception as e:

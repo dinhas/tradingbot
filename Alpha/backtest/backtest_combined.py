@@ -64,7 +64,7 @@ initial_equity=10000.0
 class CombinedBacktest:
     """Combined backtest using Alpha model for direction and Risk model for SL/TP/sizing"""
     
-    def __init__(self, alpha_model, risk_model, data_dir, initial_equity=initial_equity, alpha_norm_env=None, risk_norm_env=None, env=None, use_spreads=False):
+    def __init__(self, alpha_model, risk_model, data_dir, initial_equity=initial_equity, alpha_norm_env=None, risk_norm_env=None, env=None, use_spreads=True):
         self.alpha_model = alpha_model
         self.risk_model = risk_model
         self.alpha_norm_env = alpha_norm_env
@@ -206,7 +206,7 @@ class CombinedBacktest:
         
         # Calculate Lots
         sl_dist_price = max(sl_mult * atr, 1e-9)
-        min_sl_dist = max(0.0001 * entry_price, 0.2 * atr)
+        min_sl_dist = max(0.0001 * entry_price, 0.20 * atr)
         if sl_dist_price < min_sl_dist: sl_dist_price = min_sl_dist
         
         risk_amount_cash = self.equity * actual_risk_pct
@@ -413,21 +413,19 @@ class CombinedBacktest:
             spread = self.spreads.get(asset, 0.0)
             
             if pos['direction'] == 1: # Long
-                # SL hit if Low Price <= SL
+                # SL hit if Bid Low <= SL
                 if low_price <= pos['sl']:
                     self.env._close_position(asset, pos['sl'])
-                # TP hit if High Price >= TP
+                # TP hit if Bid High >= TP
                 elif high_price >= pos['tp']:
                     self.env._close_position(asset, pos['tp'])
             else: # Short
-                # SL hit if High Price >= SL level, then exit at SL + spread
-                if high_price >= pos['sl']:
-                    exit_price = pos['sl'] + spread
-                    self.env._close_position(asset, exit_price)
-                # TP hit if Low Price <= TP level, then exit at TP + spread
-                elif low_price <= pos['tp']:
-                    exit_price = pos['tp'] + spread
-                    self.env._close_position(asset, exit_price)
+                # SL hit if Ask High >= SL => Bid High + Spread >= SL
+                if high_price + spread >= pos['sl']:
+                    self.env._close_position(asset, pos['sl'])
+                # TP hit if Ask Low <= TP => Bid Low + Spread <= TP
+                elif low_price + spread <= pos['tp']:
+                    self.env._close_position(asset, pos['tp'])
 
 
 def run_combined_backtest(args):
@@ -520,6 +518,9 @@ def run_combined_backtest(args):
     else:
         logger.warning(f"Risk Normalizer NOT found at {risk_norm_path}")
     
+    # Determine if we should use spreads
+    use_spreads = not args.no_spreads
+
     # Create combined backtest using the SHARED environment
     backtest = CombinedBacktest(
         alpha_model, 
@@ -529,7 +530,7 @@ def run_combined_backtest(args):
         alpha_norm_env=alpha_norm_env,
         risk_norm_env=risk_norm_env,
         env=shared_env,
-        use_spreads=args.use_spreads
+        use_spreads=use_spreads
     )
 
     # Run backtest
@@ -623,8 +624,8 @@ if __name__ == "__main__":
                         help="Number of episodes to run")
     parser.add_argument("--steps", type=int, default=None,
                         help="Limit number of steps to run (optional)")
-    parser.add_argument("--use-spreads", action="store_true",
-                        help="Enable spreads (match RiskManagementEnv) for realistic testing")
+    parser.add_argument("--no-spreads", action="store_true",
+                        help="Disable spreads for testing (default: False, spreads are ON)")
     
     args = parser.parse_args()
     
