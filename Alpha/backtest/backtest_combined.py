@@ -49,12 +49,12 @@ from Alpha.src.trading_env import TradingEnv
 from Alpha.backtest.backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
 try:
     from RiskLayer.src.risk_env import RiskManagementEnv
-    from RiskLayer.src.feature_engine import RiskFeatureEngine
+    from RiskLayer.src.feature_engine import FeatureEngine as RiskFeatureEngine
 except ImportError:
     # Fallback paths
     sys.path.append(os.path.join(project_root, "RiskLayer"))
     from RiskLayer.src.risk_env import RiskManagementEnv
-    from RiskLayer.src.feature_engine import RiskFeatureEngine
+    from RiskLayer.src.feature_engine import FeatureEngine as RiskFeatureEngine
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -167,32 +167,52 @@ class CombinedBacktest:
                 }
         
         current_row = self.risk_processed_data.iloc[current_step]
-        market_obs = self.risk_feature_engine.get_observation(current_row, portfolio_state, asset)
+        # Get full 140-dim observation
+        full_obs = self.risk_feature_engine.get_observation(current_row, portfolio_state)
+        
+        # SLICE the 40 features relevant to THIS asset
+        # Feature structure is: [Asset1(25), Asset2(25), ..., Global(15)]
+        asset_idx = self.env.assets.index(asset)
+        start_idx = asset_idx * 25
+        end_idx = start_idx + 25
+        
+        asset_feats = full_obs[start_idx:end_idx]
+        global_feats = full_obs[125:140]
+        
+        market_obs = np.concatenate([asset_feats, global_feats]) # 40 dims
         
         # 2. Account State (5)
+        # Match RiskManagementEnv._get_observation
         drawdown = 1.0 - (self.equity / self.peak_equity)
         equity_norm = self.equity / self.initial_equity
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
-        account_obs = np.array([equity_norm, drawdown, 0.0, risk_cap_mult, 0.0], dtype=np.float32)
         
-        # 3. History (20) - PER ASSET
-        hist = self.asset_histories[asset]
-        hist_pnl = np.array(hist['history_pnl'], dtype=np.float32)
-        hist_acts = np.array(hist['history_actions'], dtype=np.float32).flatten()
+        account_obs = np.array([
+            equity_norm,
+            drawdown,
+            0.0, # Leverage (placeholder)
+            risk_cap_mult,
+            0.0 # Padding
+        ], dtype=np.float32)
         
-        obs = np.concatenate([market_obs, account_obs, hist_pnl, hist_acts])
+        # 3. Final Observation (45)
+        obs = np.concatenate([market_obs, account_obs])
         
         if self.risk_norm_env is not None:
+            # VecNormalize expects (n_envs, n_features)
             obs = self.risk_norm_env.normalize_obs(obs.reshape(1, -1)).flatten()
             
         return obs
     
     def parse_risk_action(self, action):
-        """Parse risk model action (3 outputs) to SL/TP/Risk"""
+        """Parse risk model action (2 outputs) to SL/TP with Fixed Risk"""
         # Exact logic from RiskManagementEnv.step
-        sl_mult = np.clip((action[0] + 1) / 2 * 1.75 + 0.75, 0.75, 2.5)   # 0.75 - 2.5 ATR
+        # Action is (2,) array: [SL_Mult, TP_Mult]
+        sl_mult = np.clip((action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)   # 0.2 - 2.0 ATR
         tp_mult = np.clip((action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)   # 0.5 - 4.0 ATR
-        risk_raw = np.clip((action[2] + 1) / 2, 0.0, 1.0)              # 0.0 - 1.0
+        
+        # FIXED RISK: 2.0%
+        risk_raw = 0.02
         
         return sl_mult, tp_mult, risk_raw
     
@@ -202,7 +222,8 @@ class CombinedBacktest:
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
         
         # Actual Risk %
-        actual_risk_pct = risk_raw * self.MAX_RISK_PER_TRADE * risk_cap_mult
+        # Matches RiskManagementEnv logic: risk_raw is the target risk (e.g. 0.02)
+        actual_risk_pct = risk_raw * risk_cap_mult
         
         # Calculate Lots
         sl_dist_price = max(sl_mult * atr, 1e-9)
@@ -313,15 +334,11 @@ class CombinedBacktest:
                     risk_action, _ = self.risk_model.predict(risk_obs, deterministic=True)
                     sl_mult, tp_mult, risk_raw = self.parse_risk_action(risk_action)
                     
-                    # BLOCKING logic: Bottom 10% of risk knob = BLOCK
-                    if risk_raw < 0.10:
-                        risk_blocked += 1
-                        self.asset_histories[asset]['history_actions'].append(np.zeros(3))
-                        self.asset_histories[asset]['history_pnl'].append(0.0)
-                        continue
+                    # No blocking based on risk_raw since it's fixed/managed
+                    # Just use risk_raw directly
                     
                     risk_approved += 1
-                    risk_raw_scaled = (risk_raw - 0.10) / (1.0 - 0.10)
+                    risk_raw_scaled = risk_raw # Use as is
                     
                     spread = self.spreads.get(asset, 0.0)
                     entry_price = (current_prices[asset] + spread) if direction == 1 else current_prices[asset]
@@ -455,9 +472,13 @@ def run_combined_backtest(args):
         logger.error(f"Risk model file not found: {risk_model_path}")
         sys.exit(1)
     
+    # Determine if we should use spreads
+    use_spreads = not args.no_spreads
+    transaction_cost = 0.00002 if use_spreads else 0.0
+
     # Create a SINGLE TradingEnv instance to be shared
     logger.info("Initializing shared Trading Environment and preprocessing data...")
-    shared_env = TradingEnv(data_dir=data_dir_path, stage=1, is_training=False)
+    shared_env = TradingEnv(data_dir=data_dir_path, stage=1, is_training=False, transaction_cost=transaction_cost)
     dummy_vec_env = DummyVecEnv([lambda: shared_env])
 
     # Load Alpha normalizer
@@ -504,7 +525,7 @@ def run_combined_backtest(args):
                 def __init__(self, obs_space):
                     super().__init__()
                     self.observation_space = obs_space
-                    self.action_space = spaces.Box(low=-1, high=1, shape=(3,))
+                    self.action_space = spaces.Box(low=-1, high=1, shape=(2,))
                 def reset(self, seed=None): return np.zeros(self.observation_space.shape), {}
                 def step(self, action): return np.zeros(self.observation_space.shape), 0, False, False, {}
 
@@ -518,9 +539,6 @@ def run_combined_backtest(args):
     else:
         logger.warning(f"Risk Normalizer NOT found at {risk_norm_path}")
     
-    # Determine if we should use spreads
-    use_spreads = not args.no_spreads
-
     # Create combined backtest using the SHARED environment
     backtest = CombinedBacktest(
         alpha_model, 

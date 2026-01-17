@@ -24,12 +24,13 @@ class TradingEnv(gym.Env):
 
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, data_dir="data", is_training=True, data=None, stage=1):
+    def __init__(self, data_dir="data", is_training=True, data=None, stage=1, transaction_cost=0.0):
         super(TradingEnv, self).__init__()
 
         self.data_dir = data_dir
         self.is_training = is_training
         self.stage = stage
+        self.transaction_cost = transaction_cost
         self.assets = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "XAUUSD"]
 
         # Configuration Constants
@@ -576,7 +577,7 @@ class TradingEnv(gym.Env):
 
         # Transaction costs (Notional Based)
         # 0.00002 = 0.2 pips spread (applied to full volume)
-        cost = (position_size * self.leverage) * 0.00002
+        cost = (position_size * self.leverage) * self.transaction_cost
         self.equity -= cost
 
     def _close_position(self, asset, price):
@@ -599,7 +600,7 @@ class TradingEnv(gym.Env):
         self.equity += pnl
 
         # Exit transaction cost (Notional Based)
-        cost = (pos["size"] * self.leverage) * 0.00002
+        cost = (pos["size"] * self.leverage) * self.transaction_cost
         self.equity -= cost
 
         # Prevent negative equity

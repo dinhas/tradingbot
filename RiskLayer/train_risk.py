@@ -5,7 +5,7 @@ import numpy as np
 import multiprocessing
 from datetime import datetime
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize, DummyVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.utils import set_random_seed
 from torch.nn import LeakyReLU
@@ -139,6 +139,72 @@ class TensorboardCallback(BaseCallback):
                      self.logger.record('custom/lots', info['lots'])
         return True
 
+def evaluate_policy(model, env, n_eval_episodes=50):
+    print("\n--- Starting Evaluation ---")
+    episode_win_rates = []
+    episode_returns = []
+    episode_sharpes = []
+    all_trades_pnl = []
+
+    for i in range(n_eval_episodes):
+        obs = env.reset()
+        done = [False]
+        episode_pnl = []
+        
+        while not done[0]:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, rewards, done, info = env.step(action)
+            # info is a list of dicts for VecEnv
+            if 'pnl' in info[0]:
+                pnl = info[0]['pnl']
+                episode_pnl.append(pnl)
+            
+        episode_pnl = np.array(episode_pnl)
+        if len(episode_pnl) > 0:
+            all_trades_pnl.extend(episode_pnl)
+            
+            # Win Rate
+            wins = np.sum(episode_pnl > 0)
+            total = len(episode_pnl)
+            win_rate = wins / total if total > 0 else 0.0
+            episode_win_rates.append(win_rate)
+            
+            # Return
+            total_return = np.sum(episode_pnl)
+            episode_returns.append(total_return)
+            
+            # Sharpe
+            if len(episode_pnl) > 1 and np.std(episode_pnl) > 1e-9:
+                sharpe = np.mean(episode_pnl) / np.std(episode_pnl)
+            else:
+                sharpe = 0.0
+            episode_sharpes.append(sharpe)
+
+    if not episode_win_rates:
+        print("No episodes completed.")
+        return
+
+    avg_win_rate = np.mean(episode_win_rates)
+    max_win_rate = np.max(episode_win_rates)
+    
+    winning_trades = [p for p in all_trades_pnl if p > 0]
+    losing_trades = [p for p in all_trades_pnl if p <= 0]
+    
+    avg_win = np.mean(winning_trades) if winning_trades else 0.0
+    avg_loss = np.mean(losing_trades) if losing_trades else 0.0
+    
+    avg_sharpe = np.mean(episode_sharpes)
+    max_return = np.max(episode_returns)
+
+    print(f"\nEvaluation Results ({n_eval_episodes} Episodes):")
+    print(f"Highest Win Rate (Episode): {max_win_rate*100:.2f}%")
+    print(f"Average Win Rate:           {avg_win_rate*100:.2f}%")
+    print(f"Average Win:                ${avg_win:.4f}")
+    print(f"Average Loss:               ${avg_loss:.4f}")
+    print(f"Average Sharpe:             {avg_sharpe:.4f}")
+    print(f"Highest Return (Episode):   ${max_return:.2f}")
+    print("---------------------------\n")
+
 def make_env(rank, seed=0):
     """Utility function for multiprocessed env."""
     def _init():
@@ -237,6 +303,19 @@ def train():
         vec_env.save(os.path.join(MODELS_DIR, "vec_normalize.pkl"))
         print(f"Training Complete. Model saved to {final_path}")
         print(f"Normalization stats saved to {os.path.join(MODELS_DIR, 'vec_normalize.pkl')}")
+        
+        # --- 6. Evaluation ---
+        print("Running Final Evaluation...")
+        # Create a single environment for evaluation
+        # Set is_training=True to enable random episode sampling for statistical evaluation
+        eval_env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
+        eval_env = DummyVecEnv([lambda: eval_env])
+        # Load stats
+        eval_env = VecNormalize.load(os.path.join(MODELS_DIR, "vec_normalize.pkl"), eval_env)
+        eval_env.training = False 
+        eval_env.norm_reward = False 
+        
+        evaluate_policy(model, eval_env, n_eval_episodes=50)
         
     except KeyboardInterrupt:
         print("\nTraining interrupted manually.")
