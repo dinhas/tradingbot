@@ -7,7 +7,7 @@ import pandas as pd
 from collections import deque
 
 # Add project root to path for Shared import
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from Shared.execution import ExecutionEngine, TradeConfig
 
 class RiskManagementEnv(gym.Env):
