@@ -101,6 +101,10 @@ class CombinedBacktester:
         self.total_fees = 0.0
         self.total_lots = 0.0
         self.signals_log = []
+        
+        # History tracking for SAC observations (matching env behavior)
+        self.recent_pnls = deque([0.0]*5, maxlen=5)
+        self.recent_actions = deque([np.zeros(3) for _ in range(5)], maxlen=5)
 
     def _load_models(self):
         logger.info(f"Loading Alpha Model: {self.args.alpha_model}")
@@ -120,16 +124,16 @@ class CombinedBacktester:
         self.risk_norm = None
         if self.args.risk_norm and os.path.exists(self.args.risk_norm):
             logger.info(f"Loading Risk Normalizer: {self.args.risk_norm}")
-            dummy_env = DummyVecEnv([lambda: DummyEnv((45,))])
+            dummy_env = DummyVecEnv([lambda: DummyEnv((65,))])  # Updated to 65 for SAC
             self.risk_norm = VecNormalize.load(self.args.risk_norm, dummy_env)
             self.risk_norm.training = False
             self.risk_norm.norm_reward = False
 
     def build_risk_observation(self, asset_obs):
-        """Build 45-dim observation for Risk model (40 market + 5 account)"""
+        """Build 65-dim observation for Risk model (40 market + 5 account + 5 PnL history + 15 action history)"""
         drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
         equity_norm = self.equity / self.initial_equity
-        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+        risk_cap_mult = 1.0 # Fixed for consistency with training
         
         account_state = np.array([
             equity_norm,
@@ -139,7 +143,13 @@ class CombinedBacktester:
             0.0   # Padding
         ], dtype=np.float32)
         
-        return np.concatenate([asset_obs, account_state])
+        # 3. PnL History (5) - Last 5 trades normalized PnL
+        pnl_hist = np.array(list(self.recent_pnls), dtype=np.float32)
+        
+        # 4. Action History (15) - Last 5 actions flattened [SL, TP, Size] * 5
+        action_hist = np.concatenate([np.array(a, dtype=np.float32) for a in self.recent_actions])
+        
+        return np.concatenate([asset_obs, account_state, pnl_hist, action_hist])
 
     def run(self):
         logger.info(f"Starting Combined Backtest (2025 Data)... total assets: {len(self.assets)}")
@@ -183,33 +193,53 @@ class CombinedBacktester:
                     
                     risk_action, _ = self.risk_model.predict(risk_obs, deterministic=True)
                     
-                    # Decode SL/TP from Risk Model (Risk is fixed at 25% in engine)
-                    sl_mult, tp_mult = self.engine.decode_action(risk_action)
+                    # Decode SL/TP/Size from SAC Risk Model (3 actions)
+                    # SL: [-1, 1] -> [0.5, 3.0] ATR
+                    # TP: [-1, 1] -> [1.0, 10.0] ATR
+                    # Size: [-1, 1] -> [0.01, 0.10] (1% to 10%)
+                    sl_mult = np.clip((risk_action[0] + 1) / 2 * (3.0 - 0.5) + 0.5, 0.5, 3.0)
+                    tp_mult = np.clip((risk_action[1] + 1) / 2 * (10.0 - 1.0) + 1.0, 1.0, 10.0)
+                    risk_pct = np.clip((risk_action[2] + 1) / 2 * (0.10 - 0.01) + 0.01, 0.01, 0.10)
                     
-                    # 3. Position Sizing (using FIXED 25% risk)
+                    # Track action for history
+                    self.recent_actions.append(np.array([float(sl_mult), float(tp_mult), float(risk_pct)], dtype=np.float32))
+                    
+                    # 3. Position Sizing (using SAC model's risk_pct)
                     atr = self.env.atr_arrays[asset][self.env.current_step]
                     raw_price = self.env.close_arrays[asset][self.env.current_step]
                     
                     sl_dist_price = sl_mult * atr
                     
-                    # Determine Asset Type (Simplified for Backtest - assuming Quote USD for now)
-                    # Ideally Env should provide this metadata
+                    # Determine Asset Type
                     is_usd_quote = "USD" in asset and asset.endswith("USD")
                     is_usd_base = "USD" in asset and asset.startswith("USD")
                     
-                    # Fallback if neither (e.g. Cross)
                     if not is_usd_quote and not is_usd_base:
-                        is_usd_quote = True # Approximation
+                        is_usd_quote = True
                     
-                    lots = self.engine.calculate_position_size(
-                        equity=self.equity,
-                        initial_equity=self.initial_equity,
-                        entry_price=raw_price,
-                        sl_dist_price=sl_dist_price,
-                        atr=atr,
-                        is_usd_quote=is_usd_quote,
-                        is_usd_base=is_usd_base
-                    )
+                    # Calculate lots using model's risk percentage
+                    risk_amount_cash = self.equity * risk_pct
+                    
+                    if sl_dist_price > 1e-9:
+                        if is_usd_quote:
+                            lots = risk_amount_cash / (sl_dist_price * 100000)
+                        elif is_usd_base:
+                            lots = (risk_amount_cash * raw_price) / (sl_dist_price * 100000)
+                        else:
+                            lots = risk_amount_cash / (sl_dist_price * 100000)
+                    else:
+                        lots = 0.0
+                    
+                    # Leverage constraints
+                    if is_usd_quote:
+                        lot_value_usd = 100000 * raw_price
+                    else:
+                        lot_value_usd = 100000
+                    
+                    max_position_value = (self.equity * 0.80) * 400.0
+                    max_lots_leverage = max_position_value / max(lot_value_usd, 1e-9)
+                    lots = min(lots, max_lots_leverage)
+                    lots = float(np.clip(lots, 0.01, 100.0))
                     
                     if lots > 0.0:
                         # Execute Trade
@@ -250,7 +280,9 @@ class CombinedBacktester:
         # Tracking for efficiency
         max_favorable_pct = 0.0
         
+        exit_idx = idx
         for i in range(idx + 1, min(idx + max_lookahead, len(self.env.close_arrays[asset]))):
+            exit_idx = i
             high = self.env.high_arrays[asset][i]
             low = self.env.low_arrays[asset][i]
             close = self.env.close_arrays[asset][i]
@@ -283,6 +315,14 @@ class CombinedBacktester:
             
             # Update default exit to current close (will be used if Time Limit reached)
             exit_price = close
+
+        # Advance env current_step to the exit index to avoid opening overlapping trades
+        try:
+            # Clamp to valid range
+            self.env.current_step = min(exit_idx, len(self.env.close_arrays[asset]) - 1)
+        except Exception:
+            # If env arrays not available or unexpected error, leave current_step unchanged
+            pass
 
         # Calculate Fees (Spread Cost)
         # Entry Fee
@@ -324,6 +364,10 @@ class CombinedBacktester:
         denom = max(max_favorable_pct, atr / entry_price, 1e-5)
         efficiency = (realized_pct / denom) * 10.0
         self.risk_metrics.pnl_efficiency_history.append(efficiency)
+        
+        # Track PnL for history (scaled to match env expectations if needed)
+        norm_pnl = net_pnl / max(self.initial_equity, 1e-6)
+        self.recent_pnls.append(norm_pnl)
         
         self.equity += net_pnl
         self.peak_equity = max(self.peak_equity, self.equity)

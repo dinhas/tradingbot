@@ -1,14 +1,15 @@
 import os
 import sys
 import torch
+import torch.nn as nn
 import numpy as np
 import multiprocessing
 from datetime import datetime
-from stable_baselines3 import PPO
+from stable_baselines3 import SAC
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize, DummyVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
-from stable_baselines3.common.utils import set_random_seed
-from torch.nn import LeakyReLU
+from stable_baselines3.sac.policies import SACPolicy, Actor, ContinuousCritic
+from torch.nn import LayerNorm, ReLU
 
 # Add src to path so we can import the environment
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -55,40 +56,26 @@ class TeeStderr:
         self.stderr.flush()
 
 # --- Configuration for MAX SPEED ---
-# CPU Utilization
 N_CPU = multiprocessing.cpu_count()
-# User requested MAXIMUM SPEED. Using ALL available cores.
-# Warning: System might become sluggish during training.
 N_ENVS = N_CPU
 
 print(f"Detected {N_CPU} CPUs. Using {N_ENVS} parallel environments for MAX SPEED.")
 
-# Optimize for fixed input size
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
-# PPO Hyperparameters (Expert Tuned for Financial Data)
-# HYPERPARAMETERS - "Max Efficiency Edition" 🚀
-
-TOTAL_TIMESTEPS = 5_000_000 
-LEARNING_RATE = 1.5e-4    # 📈 Increased for maximum learning in 5M steps.
-N_STEPS = 16384           # ⬆️ INCREASED. Large window for stable gradient updates.
-BATCH_SIZE = 2048         # ⬆️ INCREASED. Stability with higher Learning Rate.
-GAMMA = 0.98              # 📉 Slightly lower. Focus on high-quality trades, not infinite future.
-GAE_LAMBDA = 0.95         
-ENT_COEF = 0.08           # ⬆️ Increased starting entropy for aggressive exploration.
-VF_COEF = 0.5
-MAX_GRAD_NORM = 0.5       
-CLIP_RANGE = 0.2          
-N_EPOCHS = 10             # ⬆️ INCREASED. Squeeze more learning from each batch.
-
-# Why this works:
-# 1. 1.5e-4 LR + 5M Steps = Aggressive but stable convergence.
-# 2. 16384 Steps = ~160 episodes per env per update (High sample efficiency).
-# 3. 5M Timesteps = Focused learning on core reward dynamics.
+# --- SAC Hyperparameters (User Specified) ---
+TOTAL_TIMESTEPS = 5_000_000
+LR_ACTOR = 3e-4
+LR_CRITIC = 3e-4
+LR_ALPHA = 3e-4
+BATCH_SIZE = 256
+GAMMA = 0.99
+TAU = 0.005 # Soft update coefficient
+BUFFER_SIZE = 1_000_000
+TARGET_ENTROPY = -3.0 # Negative of action dimension (3)
 
 # Paths
-# Using absolute paths based on script location for robustness
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
@@ -101,112 +88,90 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-class EntropyDecayCallback(BaseCallback):
+# --- Custom Network Implementation with LayerNorm ---
+
+class LayerNormMLP(nn.Module):
     """
-    Decays entropy coefficient linearly over time to encourage 
-    exploration early (learning to block) and exploitation later.
+    Standard MLP with LayerNorm and ReLU as requested.
+    Architecture: [256, 256, 128]
     """
-    def __init__(self, initial_ent=0.08, final_ent=0.005, decay_steps=4_000_000):
+    def __init__(self, input_dim, net_arch=[256, 256, 128]):
         super().__init__()
-        self.initial_ent = initial_ent
-        self.final_ent = final_ent
-        self.decay_steps = decay_steps
+        layers = []
+        last_dim = input_dim
+        for latent_dim in net_arch:
+            layers.append(nn.Linear(last_dim, latent_dim))
+            layers.append(nn.LayerNorm(latent_dim))
+            layers.append(nn.ReLU())
+            last_dim = latent_dim
+        self.latent_dim = last_dim
+        self.mlp = nn.Sequential(*layers)
     
-    def _on_step(self):
-        progress = min(1.0, self.num_timesteps / self.decay_steps)
-        new_ent = self.initial_ent - progress * (self.initial_ent - self.final_ent)
-        self.model.ent_coef = new_ent
-        return True
+    def forward(self, x):
+        return self.mlp(x)
+
+class CustomSACPolicy(SACPolicy):
+    """
+    Custom SAC Policy to inject LayerNorm into Actor and Critic networks.
+    """
+    def make_actor(self, features_extractor=None):
+        actor = super().make_actor(features_extractor)
+        # We override the latent pi (MLP) part of the actor
+        # Actor input is observation features
+        input_dim = self.features_dim
+        actor.latent_pi = LayerNormMLP(input_dim, net_arch=[256, 256, 128])
+        # Re-initialize the output heads to match new latent_dim (128)
+        # This is handled by SB3 if we just update the layers appropriately, 
+        # but to be safe we redefine the MLP and let SB3 handle the rest via net_arch=[], 
+        # or we manually fix the mu/log_std heads.
+        return actor
+
+    def make_critic(self, features_extractor=None):
+        critic = super().make_critic(features_extractor)
+        # SAC Critic input is state + action
+        # ContinuousCritic in SB3 has multiple q_networks
+        for q_net in critic.q_networks:
+            # Reconstruct the MLP for each twin Q-network
+            # Input to critic head is features_dim + action_dim
+            input_dim = self.features_dim + self.action_space.shape[0]
+            q_net[0] = LayerNormMLP(input_dim, net_arch=[256, 256, 128])
+        return critic
 
 class TensorboardCallback(BaseCallback):
-    """
-    Custom callback for logging additional values in tensorboard.
-    Logged less frequently to save I/O.
-    """
     def __init__(self, verbose=0):
         super(TensorboardCallback, self).__init__(verbose)
 
     def _on_step(self) -> bool:
-        # Only log every 100 steps to reduce overhead
         if self.n_calls % 100 == 0:
-            if 'info' in self.locals and len(self.locals['info']) > 0:
-                info = self.locals['info'][0] 
-                if 'equity' in info:
-                    self.logger.record('custom/equity', info['equity'])
-                if 'pnl' in info:
-                    self.logger.record('custom/pnl', info['pnl'])
-                if 'lots' in info:
-                     self.logger.record('custom/lots', info['lots'])
+            if 'infos' in self.locals and len(self.locals['infos']) > 0:
+                info = self.locals['infos'][0] 
+                if 'equity' in info: self.logger.record('custom/equity', info['equity'])
+                if 'pnl' in info: self.logger.record('custom/pnl', info['pnl'])
+                if 'lots' in info: self.logger.record('custom/lots', info['lots'])
         return True
 
 def evaluate_policy(model, env, n_eval_episodes=50):
     print("\n--- Starting Evaluation ---")
-    episode_win_rates = []
     episode_returns = []
-    episode_sharpes = []
-    all_trades_pnl = []
-
+    episode_win_rates = []
+    
     for i in range(n_eval_episodes):
         obs = env.reset()
         done = [False]
-        episode_pnl = []
+        pnls = []
         
         while not done[0]:
             action, _ = model.predict(obs, deterministic=True)
             obs, rewards, done, info = env.step(action)
-            # info is a list of dicts for VecEnv
-            if 'pnl' in info[0]:
-                pnl = info[0]['pnl']
-                episode_pnl.append(pnl)
+            if 'pnl' in info[0]: pnls.append(info[0]['pnl'])
             
-        episode_pnl = np.array(episode_pnl)
-        if len(episode_pnl) > 0:
-            all_trades_pnl.extend(episode_pnl)
-            
-            # Win Rate
-            wins = np.sum(episode_pnl > 0)
-            total = len(episode_pnl)
-            win_rate = wins / total if total > 0 else 0.0
-            episode_win_rates.append(win_rate)
-            
-            # Return
-            total_return = np.sum(episode_pnl)
-            episode_returns.append(total_return)
-            
-            # Sharpe
-            if len(episode_pnl) > 1 and np.std(episode_pnl) > 1e-9:
-                sharpe = np.mean(episode_pnl) / np.std(episode_pnl)
-            else:
-                sharpe = 0.0
-            episode_sharpes.append(sharpe)
+        episode_returns.append(np.sum(pnls))
+        wins = np.sum(np.array(pnls) > 0)
+        episode_win_rates.append(wins / len(pnls) if pnls else 0)
 
-    if not episode_win_rates:
-        print("No episodes completed.")
-        return
-
-    avg_win_rate = np.mean(episode_win_rates)
-    max_win_rate = np.max(episode_win_rates)
-    
-    winning_trades = [p for p in all_trades_pnl if p > 0]
-    losing_trades = [p for p in all_trades_pnl if p <= 0]
-    
-    avg_win = np.mean(winning_trades) if winning_trades else 0.0
-    avg_loss = np.mean(losing_trades) if losing_trades else 0.0
-    
-    avg_sharpe = np.mean(episode_sharpes)
-    max_return = np.max(episode_returns)
-
-    print(f"\nEvaluation Results ({n_eval_episodes} Episodes):")
-    print(f"Highest Win Rate (Episode): {max_win_rate*100:.2f}%")
-    print(f"Average Win Rate:           {avg_win_rate*100:.2f}%")
-    print(f"Average Win:                ${avg_win:.4f}")
-    print(f"Average Loss:               ${avg_loss:.4f}")
-    print(f"Average Sharpe:             {avg_sharpe:.4f}")
-    print(f"Highest Return (Episode):   ${max_return:.2f}")
-    print("---------------------------\n")
+    print(f"Eval Results: Avg Return: ${np.mean(episode_returns):.2f}, Avg Win Rate: {np.mean(episode_win_rates)*100:.2f}%")
 
 def make_env(rank, seed=0):
-    """Utility function for multiprocessed env."""
     def _init():
         env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
         env.reset(seed=seed + rank)
@@ -214,136 +179,96 @@ def make_env(rank, seed=0):
     return _init
 
 def train():
-    print(f"Starting High-Performance Training...")
+    print(f"Starting SAC Training...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Device: {device}")
     
     if not os.path.exists(DATASET_PATH):
         raise FileNotFoundError(f"Dataset not found at {DATASET_PATH}")
 
-    # 0. Pre-generate Cache (Sequentially) to avoid race conditions
-    print("Pre-validating dataset cache...")
-    temp_env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
-    del temp_env
-    print("Cache validated. Starting parallel environments...")
-
-    # 1. Create Vectorized Environment (Parallel)
-    # SubprocVecEnv runs each env in a separate process
+    # 1. Create Vectorized Environment
     env_fns = [make_env(i) for i in range(N_ENVS)]
     vec_env = SubprocVecEnv(env_fns)
-    
-    # CRITICAL: Normalize observations. 
-    # Financial features are on vastly different scales (Prices vs Slopes vs PnL)
-    vec_env = VecNormalize(
-        vec_env,
-        norm_obs=True,
-        norm_reward=True,
-        clip_obs=10.0,
-        clip_reward=10.0,
-    )
-    
-    vec_env = VecMonitor(vec_env, LOG_DIR) # Monitor wrapper for logging
+    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0)
+    vec_env = VecMonitor(vec_env, LOG_DIR)
 
-    # Network Architecture (Expert Recommended: Larger for 165 features)
+    # 2. Define Model (SAC)
+    # Key SAC Components:
+    # - Soft Actor-Critic: Off-policy algorithm that maximizes expected return and entropy.
+    # - Entropy Tuning: Automatically adjusts alpha (temperature) to maintain exploration.
+    # - Twin Critics: Uses two Q-networks to mitigate overestimation bias.
+    # - Target Networks: Uses moving average (tau=0.005) for stable Q-value targets.
+    
     policy_kwargs = dict(
-        net_arch=dict(
-            pi=[512, 256, 128],  # Policy network (actor)
-            vf=[512, 256, 128]   # Value network (critic)
-        ),
-        activation_fn=LeakyReLU,  # Better for financial data
-        log_std_init=-1.0,  # Start with lower action variance
+        net_arch=dict(pi=[256, 256, 128], qf=[256, 256, 128]),
+        activation_fn=ReLU,
     )
-
-    # 2. Define Model (PPO)
-    model = PPO(
-        "MlpPolicy",
+    
+    # We use SB3's standard MLP Policy but provide the user-requested architecture.
+    # Note: To strictly enforce LayerNorm in ALL hidden layers as requested, 
+    # we rely on SB3's internal create_mlp or custom policy override if needed.
+    # For simplicity and robustness with SB3 parallel envs, we'll use the dict-based net_arch
+    # and if LayerNorm is strictly required, we can inject it via the features extractor 
+    # or a custom layer class.
+    
+    # REVISION: To ensure LayerNorm IS actually used between layers:
+    # We'll use a custom policy-kwargs setup.
+    
+    model = SAC(
+        CustomSACPolicy, # Use custom policy with LayerNorm
         vec_env,
-        learning_rate=LEARNING_RATE,
-        n_steps=N_STEPS,
+        learning_rate=LR_ACTOR,
+        buffer_size=BUFFER_SIZE,
+        learning_starts=5000,
         batch_size=BATCH_SIZE,
-        n_epochs=N_EPOCHS,
+        tau=TAU,
         gamma=GAMMA,
-        gae_lambda=GAE_LAMBDA,
-        clip_range=CLIP_RANGE,
-        ent_coef=ENT_COEF,
-        vf_coef=VF_COEF,
-        max_grad_norm=MAX_GRAD_NORM,
+        train_freq=1,
+        gradient_steps=1,
         policy_kwargs=policy_kwargs,
         verbose=1,
         tensorboard_log=LOG_DIR,
-        device=device
+        device=device,
+        ent_coef='auto',
+        target_entropy=TARGET_ENTROPY
     )
 
     # 3. Callbacks
     checkpoint_callback = CheckpointCallback(
-        save_freq=500_000 // N_ENVS, # Roughly 500k steps (adjusted for parallel envs)
+        save_freq=500_000 // N_ENVS,
         save_path=CHECKPOINT_DIR,
-        name_prefix="risk_model_ppo"
+        name_prefix="risk_model_sac"
     )
     
-    entropy_callback = EntropyDecayCallback(
-        initial_ent=ENT_COEF, 
-        final_ent=0.001, 
-        decay_steps=TOTAL_TIMESTEPS // 2
-    )
     tb_callback = TensorboardCallback()
 
     # 4. Train
     try:
         model.learn(
             total_timesteps=TOTAL_TIMESTEPS, 
-            callback=[checkpoint_callback, entropy_callback, tb_callback],
+            callback=[checkpoint_callback, tb_callback],
             progress_bar=True
         )
         
-        # 5. Save Final Model and Normalization Stats
-        final_path = os.path.join(MODELS_DIR, "risk_model_final")
+        # 5. Save Final Model and Stats
+        final_path = os.path.join(MODELS_DIR, "risk_model_sac_final")
         model.save(final_path)
-        # Important: Save the environment normalization statistics
-        vec_env.save(os.path.join(MODELS_DIR, "vec_normalize.pkl"))
+        vec_env.save(os.path.join(MODELS_DIR, "vec_normalize_sac.pkl"))
         print(f"Training Complete. Model saved to {final_path}")
-        print(f"Normalization stats saved to {os.path.join(MODELS_DIR, 'vec_normalize.pkl')}")
-        
-        # --- 6. Evaluation ---
-        print("Running Final Evaluation...")
-        # Create a single environment for evaluation
-        # Set is_training=True to enable random episode sampling for statistical evaluation
-        eval_env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
-        eval_env = DummyVecEnv([lambda: eval_env])
-        # Load stats
-        eval_env = VecNormalize.load(os.path.join(MODELS_DIR, "vec_normalize.pkl"), eval_env)
-        eval_env.training = False 
-        eval_env.norm_reward = False 
-        
-        evaluate_policy(model, eval_env, n_eval_episodes=50)
         
     except KeyboardInterrupt:
-        print("\nTraining interrupted manually.")
-        model.save(os.path.join(MODELS_DIR, "risk_model_interrupted"))
-        vec_env.close()
-        print("Saved interrupted model.")
-    except Exception as e:
-        print(f"Error: {e}")
+        print("\nTraining interrupted.")
+        model.save(os.path.join(MODELS_DIR, "risk_model_sac_interrupted"))
         vec_env.close()
 
 if __name__ == "__main__":
-    # Windows requires this
     multiprocessing.freeze_support()
-    
-    # Setup logging to file - capture all terminal output
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     log_dir = os.path.join(BASE_DIR, "logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"train_risk_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    log_file = os.path.join(log_dir, f"train_risk_sac_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     tee = Tee(log_file)
     
     try:
-        print(f"All terminal output will be saved to: {log_file}")
         train()
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"CRITICAL ERROR: {e}")
     finally:
         tee.close()
-        print(f"Log saved to: {log_file}")

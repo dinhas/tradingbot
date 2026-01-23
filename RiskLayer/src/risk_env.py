@@ -12,21 +12,21 @@ from Shared.execution import ExecutionEngine, TradeConfig
 
 class RiskManagementEnv(gym.Env):
     """
-    Risk Management Environment (Sequential Episodic).
+    Risk Management Environment (Sequential Episodic) - SAC Algorithm.
     
-    The agent learns to optimize SL/TP placement over a sequence of 100 trades.
-    It receives a trade signal (from Alpha model) and decides SL and TP levels.
+    The agent learns to optimize SL/TP placement AND position sizing over a sequence of 100 trades.
+    It receives a trade signal (from Alpha model) and decides SL, TP, and position size.
     
-    IMPORTANT: Risk percentage is FIXED at 25% of account equity per trade.
-    The model does NOT control position sizing - only SL/TP placement.
-    
-    State Space (45):
+    State Space (65):
         [0..39]:    Alpha Features (25 Asset-Specific + 15 Global)
         [40..44]:   Account State (Equity, Drawdown, Leverage, RiskCap, Padding)
+        [45..49]:   PnL History (Last 5 trades normalized PnL)
+        [50..64]:   Action History (Last 5 actions: [SL, TP, Size] * 5 = 15 features)
         
-    Action Space (2):
-        0: SL Multiplier (0.2x - 2.0x ATR)
-        1: TP Multiplier (0.5x - 4.0x ATR)
+    Action Space (3):
+        0: SL Multiplier (0.5x - 3.0x ATR)
+        1: TP Multiplier (1.0x - 10.0x ATR)
+        2: Position Size (0.01 - 0.10, i.e., 1% to 10% of portfolio)
     """
     metadata = {'render_modes': ['human']}
     
@@ -51,12 +51,11 @@ class RiskManagementEnv(gym.Env):
         self._load_data()
         
         # --- Spaces ---
-        # Actions: [SL_Mult, TP_Mult] (Normalized -1 to 1)
-        # Risk is now fixed at 25% (handled in ExecutionEngine)
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+        # Actions: [SL_Mult, TP_Mult, Position_Size] (Normalized -1 to 1)
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
         
-        # Observation: 45 features (25 Asset + 15 Global + 5 Account)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(45,), dtype=np.float32)
+        # Observation: 65 features (40 Market + 5 Account + 5 PnL History + 15 Action History)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(65,), dtype=np.float32)
         
         # --- State Variables ---
         self.current_step = 0
@@ -207,9 +206,9 @@ class RiskManagementEnv(gym.Env):
         self.peak_equity = self.initial_equity_base
         self.current_step = 0
         
-        # Reset History (Zero-filled)
+        # Reset History (Zero-filled) - Now 3D actions
         self.history_pnl = deque([0.0]*5, maxlen=5)
-        self.history_actions = deque([np.zeros(2) for _ in range(5)], maxlen=5)
+        self.history_actions = deque([np.zeros(3) for _ in range(5)], maxlen=5)
         
         # Sliding Window / Non-Overlapping Sampling
         if self.is_training:
@@ -229,13 +228,11 @@ class RiskManagementEnv(gym.Env):
         # 1. Market State (40)
         global_idx = self.episode_start_idx + self.current_step
         if global_idx >= self.n_samples: global_idx = self.n_samples - 1
-        market_obs = self.features_array[global_idx] # Now already 40 dims
+        market_obs = self.features_array[global_idx] # 40 dims
         
         # 2. Account State (5)
         drawdown = 1.0 - (self.equity / self.peak_equity)
         equity_norm = self.equity / self.initial_equity_base
-        
-        # Risk is FIXED at 25% (no dynamic scaling)
         risk_cap_mult = 1.0
         
         account_obs = np.array([
@@ -246,7 +243,14 @@ class RiskManagementEnv(gym.Env):
             0.0 # Padding
         ], dtype=np.float32)
         
-        obs = np.concatenate([market_obs, account_obs])
+        # 3. PnL History (5) - Last 5 trades normalized PnL
+        pnl_hist = np.array(list(self.history_pnl), dtype=np.float32)
+        
+        # 4. Action History (15) - Last 5 actions flattened [SL, TP, Size] * 5
+        action_hist = np.concatenate([np.array(a, dtype=np.float32) for a in self.history_actions])
+        
+        # Concatenate: 40 + 5 + 5 + 15 = 65
+        obs = np.concatenate([market_obs, account_obs, pnl_hist, action_hist])
         
         # Safety check
         if np.any(np.isnan(obs)) or np.any(np.isinf(obs)):
@@ -255,9 +259,15 @@ class RiskManagementEnv(gym.Env):
         return obs
 
     def step(self, action):
-        # --- 1. Parse Action using Shared Engine ---
-        # Risk is FIXED at 25% (config.DEFAULT_RISK_PCT)
-        sl_mult, tp_mult = self.engine.decode_action(action)
+        # --- 1. Parse Action (SAC 3D: [SL, TP, Position Size]) ---
+        # Action Scaling:
+        # SL: [-1, 1] -> [0.5, 3.0] ATR
+        # TP: [-1, 1] -> [1.0, 10.0] ATR
+        # Size: [-1, 1] -> [0.01, 0.10] (1% to 10% of portfolio)
+        
+        sl_mult = np.clip((action[0] + 1) / 2 * (3.0 - 0.5) + 0.5, 0.5, 3.0)
+        tp_mult = np.clip((action[1] + 1) / 2 * (10.0 - 1.0) + 1.0, 1.0, 10.0)
+        risk_pct = np.clip((action[2] + 1) / 2 * (0.10 - 0.01) + 0.01, 0.01, 0.10)
 
         # --- 2. Get Trade Data ---
         global_idx = self.episode_start_idx + self.current_step
@@ -283,23 +293,40 @@ class RiskManagementEnv(gym.Env):
         max_favorable = self.max_profit_pcts[global_idx] 
         max_adverse = self.max_loss_pcts[global_idx]
 
-        # --- 3. Calculate Lots using Shared Engine ---
+        # --- 3. Calculate Lots using SAC Position Size Action ---
         sl_dist_price = sl_mult * atr
         
-        lots = self.engine.calculate_position_size(
-            equity=self.equity,
-            initial_equity=self.initial_equity_base,
-            entry_price=entry_price,
-            sl_dist_price=sl_dist_price,
-            atr=atr,
-            is_usd_quote=bool(is_usd_quote),
-            is_usd_base=bool(is_usd_base)
-        )
+        # Use risk_pct from action instead of fixed 25%
+        risk_amount_cash = self.equity * risk_pct
         
-        # Check Min Lots (Engine returns 0.0 if skipped)
-        if lots == 0.0:
+        # Calculate lots based on risk and SL distance
+        if sl_dist_price > 1e-9:
+            if is_usd_quote:
+                lots = risk_amount_cash / (sl_dist_price * self.config.CONTRACT_SIZE)
+            elif is_usd_base:
+                lots = (risk_amount_cash * entry_price) / (sl_dist_price * self.config.CONTRACT_SIZE)
+            else:
+                lots = risk_amount_cash / (sl_dist_price * self.config.CONTRACT_SIZE)
+        else:
+            lots = 0.0
+        
+        # Apply leverage constraints
+        if is_usd_quote:
+            lot_value_usd = self.config.CONTRACT_SIZE * entry_price
+        else:
+            lot_value_usd = self.config.CONTRACT_SIZE
+        
+        max_position_value = (self.equity * 0.80) * 400.0  # 80% margin, 1:400 leverage
+        max_lots_leverage = max_position_value / max(lot_value_usd, 1e-9)
+        lots = min(lots, max_lots_leverage)
+        
+        # Clip to min/max lots
+        lots = float(np.clip(lots, self.config.MIN_LOTS, self.config.MAX_LOTS))
+        
+        # Check Min Lots
+        if lots < self.config.MIN_LOTS:
             reward = 0.0
-            self.history_actions.append(np.array([0.0, 0.0], dtype=np.float32))
+            self.history_actions.append(np.array([0.0, 0.0, 0.0], dtype=np.float32))
             self.history_pnl.append(0.0)
             self.current_step += 1
             terminated = False
@@ -316,7 +343,7 @@ class RiskManagementEnv(gym.Env):
              
         position_val = lots * lot_value_usd
             
-        decoded_action = np.array([sl_mult, tp_mult], dtype=np.float32)
+        decoded_action = np.array([sl_mult, tp_mult, risk_pct], dtype=np.float32)
         self.history_actions.append(decoded_action)
 
         # --- 4. Simulate Outcome ---
