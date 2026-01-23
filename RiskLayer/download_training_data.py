@@ -55,7 +55,7 @@ class TeeStderr:
         
 
 
-load_dotnev()
+load_dotenv()
 
 CT_APP_ID = os.getenv("CT_APP_ID")
 CT_APP_SECRET = os.getenv("CT_APP_SECRET")
