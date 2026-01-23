@@ -10,8 +10,7 @@ The reward system focuses on **trade quality (efficiency)** and **capital preser
 ### 1. **PnL Efficiency Reward** (Primary Component)
 **Formula:**
 ```python
-atr_ratio = atr / entry_price
-denom = max(max_favorable_pct, atr_ratio, 1e-5)
+denom = max(max_favorable_pct, 1e-5)
 realized_pct = (exit_price - entry_price) / entry_price * direction
 pnl_efficiency = (realized_pct / denom) * 10.0
 ```
@@ -19,7 +18,6 @@ pnl_efficiency = (realized_pct / denom) * 10.0
 **Calculation Steps:**
 1. **Max Available Profit (Denominator):**
    - Uses the distance from entry to the best price reached during the trade (`max_favorable_pct`).
-   - Floored at the current **ATR ratio** to prevent reward explosions on tiny moves.
    - Ensures the agent is rewarded for capturing a high percentage of the *available* move.
 
 2. **Realized Performance:**
@@ -112,7 +110,8 @@ reward = clip(reward, -20.0, 20.0)  # Final safety clip
 TRADING_COST_PCT = 0.0002      # 2 pips/ticks roundtrip cost
 MIN_LOTS = 0.01                # Minimum position size
 CONTRACT_SIZE = 100000         # Standard lot size
-MAX_RISK_PER_TRADE = 0.40     # 40% max risk per trade
+DEFAULT_RISK_PCT = 0.25        # Fixed 25% risk per trade
+MAX_RISK_PER_TRADE = 0.40      # 40% max risk per trade
 MAX_MARGIN_PER_TRADE_PCT = 0.80  # 80% max margin usage
 MAX_LEVERAGE = 400.0           # 1:400 leverage
 EPISODE_LENGTH = 100           # Fixed episode length

@@ -1,7 +1,13 @@
 import logging
+import sys
+import os
 import numpy as np
 from twisted.internet.defer import inlineCallbacks, gatherResults
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATradeSide
+
+# Import Shared Execution Engine
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from Shared.execution import ExecutionEngine, TradeConfig
 
 class Orchestrator:
     """
@@ -13,6 +19,10 @@ class Orchestrator:
         self.fm = feature_manager
         self.ml = model_loader
         self.notifier = notifier
+        
+        # Initialize Shared Execution Engine (FIXED 25% risk)
+        self.engine = ExecutionEngine()
+        self.config = self.engine.config
         
         # Internal state
         self.portfolio_state = {asset: {} for asset in self.fm.assets} 
@@ -316,23 +326,11 @@ class Orchestrator:
             # 3. Get Risk Observation (65)
             risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs, self.portfolio_state)
             
-            # 4. Risk Prediction (Returns [SL_Mult, TP_Mult, Risk_Factor])
+            # 4. Risk Prediction (Returns [SL_Mult, TP_Mult])
             risk_action = self.ml.get_risk_action(risk_obs)
             
-            # Parse Risk Action (Match RiskManagementEnv scaling)
-            # sl_mult: 0.75-2.5, tp_mult: 0.5-4.0, risk_raw: 0.0-1.0
-            sl_mult = np.clip((risk_action[0] + 1) / 2 * 1.75 + 0.75, 0.75, 2.5)
-            tp_mult = np.clip((risk_action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
-            risk_raw = np.clip((risk_action[2] + 1) / 2, 0.0, 1.0)
-            
-            # BLOCKING LOGIC (Match RiskManagementEnv: action < 0.10 is a BLOCK)
-            BLOCK_THRESHOLD = 0.10
-            if risk_raw < BLOCK_THRESHOLD:
-                self.logger.info(f"Risk model BLOCKED trade for {asset_name} (risk_factor: {risk_raw:.4f})")
-                return {'action': 0, 'allowed': False, 'reason': 'Risk Blocked', 'alpha_val': alpha_val}
-            
-            # Rescale Risk Factor for lot calculation
-            risk_raw_scaled = (risk_raw - BLOCK_THRESHOLD) / (1.0 - BLOCK_THRESHOLD)
+            # Decode SL/TP using Shared Engine (Risk is FIXED at 25%)
+            sl_mult, tp_mult = self.engine.decode_action(risk_action)
             
             # 5. Calculate Sizing & SL/TP Prices
             digits = self.symbol_digits.get(asset_name, 5)
@@ -340,23 +338,23 @@ class Orchestrator:
             atr = self.fm.get_atr(asset_name)
             if atr <= 0: atr = current_price * 0.0001
             
-            sl_dist = sl_mult * atr
-            tp_dist = tp_mult * atr
+            # Get SL/TP prices using Shared Engine
+            sl_price, tp_price, sl_dist, tp_dist = self.engine.get_exit_prices(
+                entry_price=current_price,
+                direction=direction,
+                sl_mult=sl_mult,
+                tp_mult=tp_mult,
+                atr=atr,
+                digits=digits
+            )
             
-            sl_price = round(current_price - (direction * sl_dist), digits)
-            tp_price = round(current_price + (direction * tp_dist), digits)
-            
-            # Round distances to symbol's precision to avoid 'invalid precision' errors
-            pip_unit = 10 ** -digits
-            sl_dist = round(sl_dist / pip_unit) * pip_unit
-            tp_dist = round(tp_dist / pip_unit) * pip_unit
-            
-            # Calculate Relative values for API (Price Distance * 100,000)
+            # Calculate Relative values for API
             relative_sl = int(round(sl_dist * 100000))
             relative_tp = int(round(tp_dist * 100000))
             
-            # Lot Calculation (Match RiskManagementEnv exactly)
+            # Lot Calculation using Shared Engine (ADAPTIVE 25%-50% risk)
             equity = self.portfolio_state.get('equity', 10.0)
+            initial_equity = self.portfolio_state.get('initial_equity', equity)
             balance = self.portfolio_state.get('balance', 0)
             
             # USER OVERRIDE: 0.01 lots if balance < $30
@@ -364,17 +362,24 @@ class Orchestrator:
                 lots = 0.01
                 self.logger.info(f"Balance ${balance:.2f} < $30. Using hardcoded lot size: 0.01")
             else:
-                # MATCH RiskManagementEnv: MAX_RISK_PER_TRADE = 0.40
-                MAX_RISK_PER_TRADE = 0.40
-                drawdown = 1.0 - (equity / max(self.portfolio_state.get('peak_equity', equity), 1e-9))
-                risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+                # Determine asset type for position sizing
+                is_usd_quote = asset_name.endswith('USD')
+                is_usd_base = asset_name.startswith('USD') and not is_usd_quote
                 
-                actual_risk_pct = risk_raw_scaled * MAX_RISK_PER_TRADE * risk_cap_mult
-                risk_amount_cash = equity * actual_risk_pct
-                
-                contract_size = 100 if asset_name == 'XAUUSD' else 100000
-                # Simplified for USD quote pairs (EURUSD, GBPUSD, XAUUSD)
-                lots = risk_amount_cash / (sl_dist * contract_size)
+                lots = self.engine.calculate_position_size(
+                    equity=equity,
+                    initial_equity=initial_equity,
+                    entry_price=current_price,
+                    sl_dist_price=sl_dist,
+                    atr=atr,
+                    is_usd_quote=is_usd_quote,
+                    is_usd_base=is_usd_base
+                )
+            
+            # Skip if lots too small
+            if lots == 0.0:
+                self.logger.info(f"Lot size too small for {asset_name}, skipping trade")
+                return {'action': 0, 'allowed': False, 'reason': 'Insufficient Lot Size', 'alpha_val': alpha_val}
             
             lots = np.clip(lots, 0.01, 100.0)
             
