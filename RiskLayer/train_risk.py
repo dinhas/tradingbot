@@ -107,7 +107,7 @@ class LayerNormMLP(nn.Module):
         self.latent_dim = last_dim
         self.mlp = nn.Sequential(*layers)
     
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.mlp(x)
 
 class CustomSACPolicy(SACPolicy):
@@ -128,8 +128,8 @@ class CustomSACPolicy(SACPolicy):
             input_dim = int(np.prod(self.observation_space.shape))
         
         # Inject LayerNorm into the latent pi network
-        # The heads (mu/log_std) already expect 128 because of policy_kwargs['net_arch']
-        actor.latent_pi = LayerNormMLP(input_dim, net_arch=[256, 256, 128]).to(self.device)
+        # We don't call .to(self.device) here; let the model .to() handle it
+        actor.latent_pi = LayerNormMLP(input_dim, net_arch=[256, 256, 128])
         return actor
 
     def make_critic(self, features_extractor=None):
@@ -148,13 +148,16 @@ class CustomSACPolicy(SACPolicy):
         # SAC Critic input is state + action
         input_dim = f_dim + self.action_space.shape[0]
         
-        # Inject LayerNorm into each twin Q-network
-        # We replace the entire Sequential to avoid shape mismatches with original layers
-        for i in range(len(critic.q_networks)):
-            critic.q_networks[i] = nn.Sequential(
-                LayerNormMLP(input_dim, net_arch=[256, 256, 128]),
-                nn.Linear(128, 1)
-            ).to(self.device)
+        # Inject LayerNorm into EACH twin Q-network by creating a new ModuleList
+        new_q_networks = []
+        for _ in range(len(critic.q_networks)):
+            new_q_networks.append(
+                nn.Sequential(
+                    LayerNormMLP(input_dim, net_arch=[256, 256, 128]),
+                    nn.Linear(128, 1)
+                )
+            )
+        critic.q_networks = nn.ModuleList(new_q_networks)
         return critic
 
 class TensorboardCallback(BaseCallback):
@@ -193,7 +196,7 @@ def evaluate_policy(model, env, n_eval_episodes=50):
 
 def make_env(rank, seed=0):
     def _init():
-        env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
+        env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10000.0, is_training=True)
         env.reset(seed=seed + rank)
         return env
     return _init
@@ -251,6 +254,12 @@ def train():
         ent_coef='auto',
         target_entropy=TARGET_ENTROPY
     )
+
+    # 2b. Explicitly ensure everything is on the correct device
+    # This fixes issues where custom layers might stay on CPU
+    model.policy.to(device)
+    if hasattr(model, 'critic_target') and model.critic_target is not None:
+        model.critic_target.to(device)
 
     # 3. Callbacks
     checkpoint_callback = CheckpointCallback(
