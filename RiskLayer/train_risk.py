@@ -115,26 +115,34 @@ class CustomSACPolicy(SACPolicy):
     Custom SAC Policy to inject LayerNorm into Actor and Critic networks.
     """
     def make_actor(self, features_extractor=None):
+        # Use the provided features_extractor or the default one
+        if features_extractor is None:
+            features_extractor = self.features_extractor
+        
+        # Initial actor creation using standard SB3 logic
         actor = super().make_actor(features_extractor)
-        # We override the latent pi (MLP) part of the actor
-        # Actor input is observation features
-        input_dim = self.features_dim
-        actor.latent_pi = LayerNormMLP(input_dim, net_arch=[256, 256, 128])
-        # Re-initialize the output heads to match new latent_dim (128)
-        # This is handled by SB3 if we just update the layers appropriately, 
-        # but to be safe we redefine the MLP and let SB3 handle the rest via net_arch=[], 
-        # or we manually fix the mu/log_std heads.
+        
+        # Inject LayerNorm into the latent pi network
+        # The heads (mu/log_std) already expect 128 because of policy_kwargs['net_arch']
+        input_dim = features_extractor.features_dim
+        actor.latent_pi = LayerNormMLP(input_dim, net_arch=[256, 256, 128]).to(self.device)
         return actor
 
     def make_critic(self, features_extractor=None):
+        # Use the provided features_extractor or the default one
+        if features_extractor is None:
+            features_extractor = self.features_extractor
+
+        # Initial critic creation using standard SB3 logic
         critic = super().make_critic(features_extractor)
+        
         # SAC Critic input is state + action
-        # ContinuousCritic in SB3 has multiple q_networks
+        input_dim = features_extractor.features_dim + self.action_space.shape[0]
+        
+        # Inject LayerNorm into each twin Q-network
         for q_net in critic.q_networks:
-            # Reconstruct the MLP for each twin Q-network
-            # Input to critic head is features_dim + action_dim
-            input_dim = self.features_dim + self.action_space.shape[0]
-            q_net[0] = LayerNormMLP(input_dim, net_arch=[256, 256, 128])
+            # In SB3, q_net is a Sequential where the first element is the MLP
+            q_net[0] = LayerNormMLP(input_dim, net_arch=[256, 256, 128]).to(self.device)
         return critic
 
 class TensorboardCallback(BaseCallback):
