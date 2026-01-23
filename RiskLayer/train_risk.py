@@ -115,29 +115,38 @@ class CustomSACPolicy(SACPolicy):
     Custom SAC Policy to inject LayerNorm into Actor and Critic networks.
     """
     def make_actor(self, features_extractor=None):
-        # Use the provided features_extractor or the default one
-        if features_extractor is None:
-            features_extractor = self.features_extractor
-        
         # Initial actor creation using standard SB3 logic
         actor = super().make_actor(features_extractor)
         
+        # Safely get features dimension from the created actor
+        if features_extractor is not None:
+            input_dim = features_extractor.features_dim
+        elif hasattr(actor, "features_extractor") and actor.features_extractor is not None:
+            input_dim = actor.features_extractor.features_dim
+        else:
+            # Fallback to observation space shape for flat vectors
+            input_dim = int(np.prod(self.observation_space.shape))
+        
         # Inject LayerNorm into the latent pi network
         # The heads (mu/log_std) already expect 128 because of policy_kwargs['net_arch']
-        input_dim = features_extractor.features_dim
         actor.latent_pi = LayerNormMLP(input_dim, net_arch=[256, 256, 128]).to(self.device)
         return actor
 
     def make_critic(self, features_extractor=None):
-        # Use the provided features_extractor or the default one
-        if features_extractor is None:
-            features_extractor = self.features_extractor
-
         # Initial critic creation using standard SB3 logic
         critic = super().make_critic(features_extractor)
         
+        # Safely get features dimension from the created critic
+        if features_extractor is not None:
+            f_dim = features_extractor.features_dim
+        elif hasattr(critic, "features_extractor") and critic.features_extractor is not None:
+            f_dim = critic.features_extractor.features_dim
+        else:
+            # Fallback to observation space shape for flat vectors
+            f_dim = int(np.prod(self.observation_space.shape))
+            
         # SAC Critic input is state + action
-        input_dim = features_extractor.features_dim + self.action_space.shape[0]
+        input_dim = f_dim + self.action_space.shape[0]
         
         # Inject LayerNorm into each twin Q-network
         for q_net in critic.q_networks:
