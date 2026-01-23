@@ -149,9 +149,12 @@ class CustomSACPolicy(SACPolicy):
         input_dim = f_dim + self.action_space.shape[0]
         
         # Inject LayerNorm into each twin Q-network
-        for q_net in critic.q_networks:
-            # In SB3, q_net is a Sequential where the first element is the MLP
-            q_net[0] = LayerNormMLP(input_dim, net_arch=[256, 256, 128]).to(self.device)
+        # We replace the entire Sequential to avoid shape mismatches with original layers
+        for i in range(len(critic.q_networks)):
+            critic.q_networks[i] = nn.Sequential(
+                LayerNormMLP(input_dim, net_arch=[256, 256, 128]),
+                nn.Linear(128, 1)
+            ).to(self.device)
         return critic
 
 class TensorboardCallback(BaseCallback):
