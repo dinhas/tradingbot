@@ -197,9 +197,9 @@ class ExecutionEngine:
         
         lots = min(lots, max_lots_leverage)
         
-        # Final Clip
+        # Final Clip: ensure minimum lots so trades are never skipped
         if lots < self.config.MIN_LOTS:
-            return 0.0  # Signal to skip
+            lots = float(self.config.MIN_LOTS)
             
         return float(np.clip(lots, self.config.MIN_LOTS, self.config.MAX_LOTS))
 
