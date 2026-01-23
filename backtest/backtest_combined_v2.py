@@ -11,6 +11,16 @@ from collections import deque
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+class NpEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NpEncoder, self).default(obj)
+
 # Add project root to sys.path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
@@ -88,6 +98,8 @@ class CombinedBacktester:
         # Metrics
         self.risk_metrics = RiskMetrics()
         self.trades = []
+        self.total_fees = 0.0
+        self.total_lots = 0.0
         self.signals_log = []
 
     def _load_models(self):
@@ -176,7 +188,7 @@ class CombinedBacktester:
                     
                     # 3. Position Sizing (using FIXED 25% risk)
                     atr = self.env.atr_arrays[asset][self.env.current_step]
-                    entry_price = self.env.close_arrays[asset][self.env.current_step]
+                    raw_price = self.env.close_arrays[asset][self.env.current_step]
                     
                     sl_dist_price = sl_mult * atr
                     
@@ -192,7 +204,7 @@ class CombinedBacktester:
                     lots = self.engine.calculate_position_size(
                         equity=self.equity,
                         initial_equity=self.initial_equity,
-                        entry_price=entry_price,
+                        entry_price=raw_price,
                         sl_dist_price=sl_dist_price,
                         atr=atr,
                         is_usd_quote=is_usd_quote,
@@ -201,7 +213,10 @@ class CombinedBacktester:
                     
                     if lots > 0.0:
                         # Execute Trade
-                        self._execute_trade(asset, direction, entry_price, sl_mult, tp_mult, lots, atr, alpha_signal)
+                        # Calculate Actual Entry Price (Spread + Slippage)
+                        entry_price = self.engine.get_entry_price(raw_price, direction, atr)
+                        
+                        self._execute_trade(asset, direction, entry_price, raw_price, sl_mult, tp_mult, lots, atr, alpha_signal, is_usd_quote, is_usd_base)
                         self.risk_metrics.approved_trades += 1
                         
                         self.risk_metrics.sl_mult_history.append(sl_mult)
@@ -221,16 +236,13 @@ class CombinedBacktester:
 
         self._finalize()
 
-    def _execute_trade(self, asset, direction, entry_price, sl_mult, tp_mult, lots, atr, alpha_conf):
-        """Simulate a single trade outcome based on ATR-relative exits"""
+    def _execute_trade(self, asset, direction, entry_price, raw_entry_price, sl_mult, tp_mult, lots, atr, alpha_conf, is_usd_quote, is_usd_base):
+        """Simulate a single trade outcome based on ATR-relative exits using Shared Execution Engine"""
         idx = self.env.current_step
         max_lookahead = 576  # 48 hours
         
-        sl_pct_dist = sl_mult * (atr / entry_price)
-        tp_pct_dist = tp_mult * (atr / entry_price)
-        
-        sl_price = entry_price * (1.0 - (direction * sl_pct_dist))
-        tp_price = entry_price * (1.0 + (direction * tp_pct_dist))
+        # Use Engine for Exit Prices
+        sl_price, tp_price, _, _ = self.engine.get_exit_prices(entry_price, direction, sl_mult, tp_mult, atr)
         
         exit_price = entry_price
         exit_reason = 'TIME_LIMIT'
@@ -268,18 +280,44 @@ class CombinedBacktester:
                     exit_price = tp_price
                     exit_reason = 'TP'
                     break
+            
+            # Update default exit to current close (will be used if Time Limit reached)
             exit_price = close
 
-        # Calculate P&L using Config Constants
-        pnl_ticks = (exit_price - entry_price) * direction
+        # Calculate Fees (Spread Cost)
+        # Entry Fee
+        entry_fee_dist = abs(entry_price - raw_entry_price)
         
-        # Simplified USD Calc (assuming Quote USD for broad backtest compatibility)
-        # To be perfectly accurate, this should match Engine's logic exactly, 
-        # but simulation loop already has exit_price.
+        # Exit Fee
+        if exit_reason == 'TIME_LIMIT':
+            # We exited at close_price +/- spread
+            # exit_price was set to 'close' (mid) then modified by get_close_price
+            # So we need to calculate the actual execution price first
+            exit_mid = exit_price
+            exit_price = self.engine.get_close_price(exit_mid, direction, atr)
+            exit_fee_dist = abs(exit_price - exit_mid)
+        else:
+            # SL/TP Hit
+            # We assume exit_price (Trigger) was the execution price
+            # The mid price would have been Trigger +/- Spread
+            # So fee is just the spread at that price
+            # Note: SL/TP prices in Shared/execution.py are the EXECUTION prices (e.g. Bid for Long SL)
+            # So we effectively paid the spread to get there.
+            exit_fee_dist = self.engine.get_spread(exit_price, atr)
+
+        # Convert Fee Distance to USD
+        # We use calculate_pnl logic: Price Delta * Lots * Contract * [Conversion]
+        # Treat fee distance as a "profit" to get the magnitude in USD
+        # We pass direction=1 always to get absolute value
+        entry_fee_usd = self.engine.calculate_pnl(0, entry_fee_dist, lots, 1, is_usd_quote, is_usd_base)
+        exit_fee_usd = self.engine.calculate_pnl(0, exit_fee_dist, lots, 1, is_usd_quote, is_usd_base)
         
-        gross_pnl = pnl_ticks * lots * self.config.CONTRACT_SIZE
-        costs = (entry_price * lots * self.config.CONTRACT_SIZE) * self.config.TRADING_COST_PCT
-        net_pnl = gross_pnl - costs
+        total_fee_usd = entry_fee_usd + exit_fee_usd
+        self.total_fees += total_fee_usd
+        self.total_lots += lots
+
+        # Calculate P&L using Engine
+        net_pnl = self.engine.calculate_pnl(entry_price, exit_price, lots, direction, is_usd_quote, is_usd_base)
         
         # Efficiency Metric (matching REWARD_SYSTEM.md)
         realized_pct = (exit_price - entry_price) / entry_price * direction
@@ -297,6 +335,7 @@ class CombinedBacktester:
             'exit': exit_price,
             'reason': exit_reason,
             'pnl': net_pnl,
+            'fee': total_fee_usd,
             'efficiency': efficiency,
             'lots': lots,
             'sl_mult': sl_mult,
@@ -318,7 +357,7 @@ class CombinedBacktester:
         out_path.mkdir(parents=True, exist_ok=True)
         
         with open(out_path / f"metrics_combined_v2_{ts}.json", 'w') as f:
-            json.dump(results, f, indent=2)
+            json.dump(results, f, indent=2, cls=NpEncoder)
             
         # Save Trades CSV
         if self.trades:
@@ -338,6 +377,9 @@ class CombinedBacktester:
         
         return {
             'total_pnl': total_pnl,
+            'total_fees': self.total_fees,
+            'avg_fee': self.total_fees / len(self.trades) if self.trades else 0.0,
+            'avg_lots': self.total_lots / len(self.trades) if self.trades else 0.0,
             'win_rate': win_rate,
             'profit_factor': profit_factor,
             'final_equity': self.equity,

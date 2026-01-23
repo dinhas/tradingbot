@@ -30,7 +30,7 @@ class RiskManagementEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
     
-    def __init__(self, dataset_path, initial_equity=10.0, is_training=True):
+    def __init__(self, dataset_path, initial_equity=10000.0, is_training=True):
         super(RiskManagementEnv, self).__init__()
         
         self.dataset_path = dataset_path
@@ -42,7 +42,7 @@ class RiskManagementEnv(gym.Env):
         self.config = self.engine.config
         
         # Simulation Toggles
-        self.ENABLE_SLIPPAGE = True 
+        self.ENABLE_SLIPPAGE = False 
         
         # --- Configuration ---
         self.EPISODE_LENGTH = 100

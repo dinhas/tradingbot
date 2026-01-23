@@ -59,7 +59,7 @@ class ExecutionEngine:
         SHORT: Sell at Bid (Mid - Slippage)
         """
         spread = self.get_spread(mid_price, atr)
-        slippage = self.get_slippage(mid_price) if enable_slippage else 0.0
+        slippage = 0.0
         
         if direction == 1: # LONG
             return mid_price + spread + slippage
@@ -72,7 +72,7 @@ class ExecutionEngine:
         Close SHORT: Buy at ASK (Mid + Spread + Slippage)
         """
         spread = self.get_spread(mid_price, atr)
-        slippage = self.get_slippage(mid_price) if enable_slippage else 0.0
+        slippage = 0.0
 
         if direction == 1: # Close LONG
             return mid_price - slippage
