@@ -1,7 +1,7 @@
 # Risk Management Environment - Reward System Documentation
 
 ## Overview
-The reward system focuses on **trade quality (efficiency)** and **capital preservation**. All rewards are clipped to the range **[-20, 20]** to ensure training stability and prevent gradient explosions.
+The reward system focuses on **trade quality (efficiency)** and **capital preservation**. All rewards are clipped to the range **[-100, 100]** to ensure training stability and prevent gradient explosions.
 
 ---
 
@@ -33,7 +33,19 @@ pnl_efficiency = (realized_pct / denom) * 10.0
 
 ---
 
-### 2. **Bullet Dodger Bonus** (Capital Preservation)
+### 2. **Whipsaw Penalty** (Premature Stop Loss)
+**Condition:**
+- Exited on **SL**
+- Price eventually went **> 2.0 * ATR** in the favorable direction (from entry)
+
+**Modification:**
+- `pnl_efficiency = pnl_efficiency * 1.5`
+
+**Purpose:** Increases the penalty (since efficiency is negative on loss) when the agent sets a Stop Loss that is too tight, causing it to miss a significant profitable move.
+
+---
+
+### 3. **Bullet Dodger Bonus** (Capital Preservation)
 **Formula:**
 ```python
 if exited_on == 'SL':
@@ -53,7 +65,7 @@ if exited_on == 'SL':
 
 ---
 
-### 3. **Risk Violation Penalty**
+### 4. **Risk Violation Penalty**
 **Formula:**
 ```python
 if actual_risk_cash > intended_risk_cash * 2.0 and intended_risk > 1e-9:
@@ -82,7 +94,7 @@ reward = pnl_efficiency + bullet_bonus + risk_violation_penalty
 reward = clip(reward, -20.0, 20.0)  # Final safety clip
 ```
 
-**Final Range:** [-20.0, 20.0]
+**Final Range:** [-100.0, 100.0]
 
 ---
 
@@ -100,7 +112,7 @@ reward = clip(reward, -20.0, 20.0)  # Final safety clip
 **Condition:** `equity < initial_equity * 0.3` (70% drawdown)
 **Penalty:** `-20.0`
 **Result:** Episode terminates immediately
-**Final Reward:** `clip(reward - 20.0, -20.0, 20.0)`
+**Final Reward:** `clip(reward - 20.0, -100.0, 100.0)`
 
 ---
 
@@ -121,7 +133,7 @@ EPISODE_LENGTH = 100           # Fixed episode length
 
 ## Reward Scaling Rationale
 
-### Why Clip to [-20, 20]?
+### Why Clip to [-100, 100]?
 1. **Value Function Stability:** Extreme rewards break value function learning (causes negative explained variance).
 2. **Gradient Stability:** Prevents gradient explosions in PPO.
 3. **Training Stability:** Keeps loss curves smooth and predictable.

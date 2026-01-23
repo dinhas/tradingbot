@@ -396,6 +396,13 @@ class RiskManagementEnv(gym.Env):
         # --- NEW REWARD LOGIC ---
         denom = max(max_favorable, 1e-5)
         pnl_efficiency = (realized_pct / denom) * 10.0
+
+        # --- Whipsaw Penalty ---
+        # If SL hit but price went in wanted direction (2 * ATR), increase penalty
+        if exited_on == 'SL':
+             atr_2x_pct = (2.0 * atr) / entry_price
+             if max_favorable >= atr_2x_pct:
+                 pnl_efficiency *= 1.5
         
         bullet_bonus = 0.0
         
@@ -411,7 +418,7 @@ class RiskManagementEnv(gym.Env):
                 bullet_bonus = min(saved_ratio, 3.0) * 2.0
         
         reward = pnl_efficiency + bullet_bonus
-        reward = np.clip(reward, -20.0, 20.0)
+        reward = np.clip(reward, -100.0, 100.0)
         
         self.history_pnl.append(net_pnl / max(prev_equity, 1e-6))
         
@@ -423,7 +430,7 @@ class RiskManagementEnv(gym.Env):
         if self.equity < (self.initial_equity_base * 0.3): 
             terminated = True
             reward -= 20.0
-            reward = np.clip(reward, -20.0, 20.0)
+            reward = np.clip(reward, -100.0, 100.0)
             
         info = {
             'pnl': net_pnl,
