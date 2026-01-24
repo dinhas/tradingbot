@@ -11,3 +11,4 @@ tqdm
 lightgbm
 scikit-learn
 python-dotenv
+pyarrow
