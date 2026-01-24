@@ -35,6 +35,7 @@ if not hasattr(np, "_core"):
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from Alpha.src.trading_env import TradingEnv
+from RiskLayer.train_risk import CustomPPOPolicy
 import gymnasium as gym
 from gymnasium import spaces
 
@@ -197,10 +198,10 @@ class CombinedBacktester:
                     
                     risk_action, _ = self.risk_model.predict(risk_obs, deterministic=True)
                     
-                    # Decode SL/TP/Size from SAC Risk Model (3 actions)
+                    # Decoding logic from RiskManagementEnv.step (RiskLayer/src/risk_env.py)
                     # SL: [-1, 1] -> [0.5, 3.0] ATR
                     # TP: [-1, 1] -> [1.0, 10.0] ATR
-                    # Size: [-1, 1] -> [0.01, 0.10] (1% to 10%)
+                    # Size: [-1, 1] -> [0.01, 0.10] (1% to 10% of portfolio)
                     sl_mult = np.clip((risk_action[0] + 1) / 2 * (3.0 - 0.5) + 0.5, 0.5, 3.0)
                     tp_mult = np.clip((risk_action[1] + 1) / 2 * (10.0 - 1.0) + 1.0, 1.0, 10.0)
                     risk_pct = np.clip((risk_action[2] + 1) / 2 * (0.10 - 0.01) + 0.01, 0.01, 0.10)
