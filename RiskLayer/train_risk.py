@@ -65,7 +65,7 @@ if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
 # --- SAC Hyperparameters (User Specified) ---
-TOTAL_TIMESTEPS = 5_000_000
+TOTAL_TIMESTEPS = 750_000
 LR_ACTOR = 3e-4
 LR_CRITIC = 3e-4
 LR_ALPHA = 3e-4
