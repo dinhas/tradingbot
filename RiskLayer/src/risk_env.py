@@ -81,7 +81,7 @@ class RiskManagementEnv(gym.Env):
         cache_valid = True
         required_files = ['features.npy', 'metadata.npy', 'entry_prices.npy', 'atrs.npy', 
                          'directions.npy', 'max_profit_pcts.npy', 'max_loss_pcts.npy', 
-                         'close_prices.npy', 'is_usd_quote.npy', 'is_usd_base.npy']
+                         'close_prices.npy', 'is_usd_quote.npy', 'is_usd_base.npy', 'contract_sizes.npy']
                          
         for f in required_files:
             fp = os.path.join(cache_dir, f)
@@ -129,16 +129,19 @@ class RiskManagementEnv(gym.Env):
                     print("WARNING: Missing features column. Using zeros.")
                     features_array = np.zeros((len(self.df), 40), dtype=np.float32)
 
-                # Metadata checking for non-USDs
+                # Metadata checking for non-USDs and Contract Sizes
                 if 'pair' in self.df.columns:
                      pairs = self.df['pair'].astype(str).str.upper()
                      is_usd_quote = pairs.str.endswith('USD').values
                      is_usd_base = (pairs.str.startswith('USD') & ~is_usd_quote).values
+                     # Vectorized check for XAUUSD
+                     contract_sizes = np.where(pairs == 'XAUUSD', 100, 100000).astype(np.float32)
                 else:
                      # Fallback
                      n = len(self.df)
                      is_usd_quote = np.ones(n, dtype=bool)
                      is_usd_base = np.zeros(n, dtype=bool)
+                     contract_sizes = np.full(n, 100000, dtype=np.float32)
 
                 # Save arrays
                 np.save(os.path.join(cache_dir, 'features.npy'), features_array)
@@ -150,6 +153,7 @@ class RiskManagementEnv(gym.Env):
                 np.save(os.path.join(cache_dir, 'close_prices.npy'), self.df['close_1000_price'].values.astype(np.float32))
                 np.save(os.path.join(cache_dir, 'is_usd_quote.npy'), is_usd_quote)
                 np.save(os.path.join(cache_dir, 'is_usd_base.npy'), is_usd_base)
+                np.save(os.path.join(cache_dir, 'contract_sizes.npy'), contract_sizes)
                 
                 # Optional time limit
                 if 'hours_to_exit' in self.df.columns:
@@ -181,6 +185,7 @@ class RiskManagementEnv(gym.Env):
             self.close_prices = np.load(os.path.join(cache_dir, 'close_prices.npy'), mmap_mode='r')
             self.is_usd_quote_arr = np.load(os.path.join(cache_dir, 'is_usd_quote.npy'), mmap_mode='r')
             self.is_usd_base_arr = np.load(os.path.join(cache_dir, 'is_usd_base.npy'), mmap_mode='r')
+            self.contract_sizes = np.load(os.path.join(cache_dir, 'contract_sizes.npy'), mmap_mode='r')
             
             p_time = os.path.join(cache_dir, 'hours_to_exits.npy')
             if os.path.exists(p_time):
@@ -280,6 +285,7 @@ class RiskManagementEnv(gym.Env):
         
         is_usd_quote = self.is_usd_quote_arr[global_idx]
         is_usd_base = self.is_usd_base_arr[global_idx]
+        contract_size = self.contract_sizes[global_idx]
         
         # --- ENTRY SIMULATION (Shared Engine Source of Truth) ---
         entry_price = self.engine.get_entry_price(
@@ -302,19 +308,19 @@ class RiskManagementEnv(gym.Env):
         # Calculate lots based on risk and SL distance
         if sl_dist_price > 1e-9:
             if is_usd_quote:
-                lots = risk_amount_cash / (sl_dist_price * self.config.CONTRACT_SIZE)
+                lots = risk_amount_cash / (sl_dist_price * contract_size)
             elif is_usd_base:
-                lots = (risk_amount_cash * entry_price) / (sl_dist_price * self.config.CONTRACT_SIZE)
+                lots = (risk_amount_cash * entry_price) / (sl_dist_price * contract_size)
             else:
-                lots = risk_amount_cash / (sl_dist_price * self.config.CONTRACT_SIZE)
+                lots = risk_amount_cash / (sl_dist_price * contract_size)
         else:
             lots = 0.0
         
         # Apply leverage constraints
         if is_usd_quote:
-            lot_value_usd = self.config.CONTRACT_SIZE * entry_price
+            lot_value_usd = contract_size * entry_price
         else:
-            lot_value_usd = self.config.CONTRACT_SIZE
+            lot_value_usd = contract_size
         
         max_position_value = (self.equity * 0.80) * 400.0  # 80% margin, 1:400 leverage
         max_lots_leverage = max_position_value / max(lot_value_usd, 1e-9)
@@ -323,24 +329,8 @@ class RiskManagementEnv(gym.Env):
         # Clip to min/max lots
         lots = float(np.clip(lots, self.config.MIN_LOTS, self.config.MAX_LOTS))
         
-        # Check Min Lots
-        if lots < self.config.MIN_LOTS:
-            reward = 0.0
-            self.history_actions.append(np.array([0.0, 0.0, 0.0], dtype=np.float32))
-            self.history_pnl.append(0.0)
-            self.current_step += 1
-            terminated = False
-            truncated = (self.current_step >= self.EPISODE_LENGTH)
-            return self._get_observation(), reward, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED_SMALL', 'lots': 0.0, 'equity': self.equity}
-
-        # Calculate Position Value (for info only)
-        if is_usd_quote:
-             lot_value_usd = self.config.CONTRACT_SIZE * entry_price
-        elif is_usd_base:
-             lot_value_usd = self.config.CONTRACT_SIZE * 1.0 
-        else:
-             lot_value_usd = self.config.CONTRACT_SIZE * 1.0
-             
+        # Position sizing is handled by clipping lots to MIN_LOTS above, 
+        # so every trade is now taken and managed.
         position_val = lots * lot_value_usd
             
         decoded_action = np.array([sl_mult, tp_mult, risk_pct], dtype=np.float32)
@@ -406,7 +396,8 @@ class RiskManagementEnv(gym.Env):
             lots=lots,
             direction=direction,
             is_usd_quote=bool(is_usd_quote),
-            is_usd_base=bool(is_usd_base)
+            is_usd_base=bool(is_usd_base),
+            contract_size=int(contract_size)
         )
         
         # --- REWARD CALCULATION ---

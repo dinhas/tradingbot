@@ -32,7 +32,7 @@ from Shared.execution import ExecutionEngine, TradeConfig
 if not hasattr(np, "_core"):
     sys.modules["numpy._core"] = np.core
 
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from Alpha.src.trading_env import TradingEnv
 import gymnasium as gym
@@ -119,7 +119,11 @@ class CombinedBacktester:
             self.alpha_norm.norm_reward = False
 
         logger.info(f"Loading Risk Model: {self.args.risk_model}")
-        self.risk_model = PPO.load(self.args.risk_model, device='cpu')
+        if "sac" in self.args.risk_model.lower():
+            logger.info("Detected SAC model from filename.")
+            self.risk_model = SAC.load(self.args.risk_model, device='cpu')
+        else:
+            self.risk_model = PPO.load(self.args.risk_model, device='cpu')
         
         self.risk_norm = None
         if self.args.risk_norm and os.path.exists(self.args.risk_norm):
@@ -217,24 +221,27 @@ class CombinedBacktester:
                     if not is_usd_quote and not is_usd_base:
                         is_usd_quote = True
                     
+                    # Determine Contract Size (XAUUSD=100, Forex=100,000)
+                    contract_size = 100 if asset == "XAUUSD" else 100000
+                    
                     # Calculate lots using model's risk percentage
                     risk_amount_cash = self.equity * risk_pct
                     
                     if sl_dist_price > 1e-9:
                         if is_usd_quote:
-                            lots = risk_amount_cash / (sl_dist_price * 100000)
+                            lots = risk_amount_cash / (sl_dist_price * contract_size)
                         elif is_usd_base:
-                            lots = (risk_amount_cash * raw_price) / (sl_dist_price * 100000)
+                            lots = (risk_amount_cash * raw_price) / (sl_dist_price * contract_size)
                         else:
-                            lots = risk_amount_cash / (sl_dist_price * 100000)
+                            lots = risk_amount_cash / (sl_dist_price * contract_size)
                     else:
                         lots = 0.0
                     
                     # Leverage constraints
                     if is_usd_quote:
-                        lot_value_usd = 100000 * raw_price
+                        lot_value_usd = contract_size * raw_price
                     else:
-                        lot_value_usd = 100000
+                        lot_value_usd = contract_size
                     
                     max_position_value = (self.equity * 0.80) * 400.0
                     max_lots_leverage = max_position_value / max(lot_value_usd, 1e-9)
@@ -246,7 +253,7 @@ class CombinedBacktester:
                         # Calculate Actual Entry Price (Spread + Slippage)
                         entry_price = self.engine.get_entry_price(raw_price, direction, atr)
                         
-                        self._execute_trade(asset, direction, entry_price, raw_price, sl_mult, tp_mult, lots, atr, alpha_signal, is_usd_quote, is_usd_base)
+                        self._execute_trade(asset, direction, entry_price, raw_price, sl_mult, tp_mult, lots, atr, alpha_signal, is_usd_quote, is_usd_base, contract_size)
                         self.risk_metrics.approved_trades += 1
                         
                         self.risk_metrics.sl_mult_history.append(sl_mult)
@@ -266,7 +273,7 @@ class CombinedBacktester:
 
         self._finalize()
 
-    def _execute_trade(self, asset, direction, entry_price, raw_entry_price, sl_mult, tp_mult, lots, atr, alpha_conf, is_usd_quote, is_usd_base):
+    def _execute_trade(self, asset, direction, entry_price, raw_entry_price, sl_mult, tp_mult, lots, atr, alpha_conf, is_usd_quote, is_usd_base, contract_size):
         """Simulate a single trade outcome based on ATR-relative exits using Shared Execution Engine"""
         idx = self.env.current_step
         max_lookahead = 576  # 48 hours
@@ -338,26 +345,37 @@ class CombinedBacktester:
             exit_fee_dist = abs(exit_price - exit_mid)
         else:
             # SL/TP Hit
-            # We assume exit_price (Trigger) was the execution price
-            # The mid price would have been Trigger +/- Spread
-            # So fee is just the spread at that price
             # Note: SL/TP prices in Shared/execution.py are the EXECUTION prices (e.g. Bid for Long SL)
-            # So we effectively paid the spread to get there.
             exit_fee_dist = self.engine.get_spread(exit_price, atr)
 
         # Convert Fee Distance to USD
-        # We use calculate_pnl logic: Price Delta * Lots * Contract * [Conversion]
-        # Treat fee distance as a "profit" to get the magnitude in USD
-        # We pass direction=1 always to get absolute value
-        entry_fee_usd = self.engine.calculate_pnl(0, entry_fee_dist, lots, 1, is_usd_quote, is_usd_base)
-        exit_fee_usd = self.engine.calculate_pnl(0, exit_fee_dist, lots, 1, is_usd_quote, is_usd_base)
+        # Calculate fee in Quote Currency first
+        entry_fee_quote = entry_fee_dist * lots * contract_size
+        exit_fee_quote = exit_fee_dist * lots * contract_size
+        
+        if is_usd_quote:
+            # Quote is USD, no conversion needed
+            entry_fee_usd = entry_fee_quote
+            exit_fee_usd = exit_fee_quote
+        elif is_usd_base:
+            # Quote is Base (e.g. JPY in USDJPY), convert to USD by dividing by Price
+            entry_fee_usd = entry_fee_quote / max(raw_entry_price, 1e-9)
+            exit_fee_usd = exit_fee_quote / max(exit_price, 1e-9)
+        else:
+            entry_fee_usd = entry_fee_quote
+            exit_fee_usd = exit_fee_quote
         
         total_fee_usd = entry_fee_usd + exit_fee_usd
         self.total_fees += total_fee_usd
         self.total_lots += lots
 
-        # Calculate P&L using Engine
+        # Calculate Gross P&L using Engine
+        # NOTE: Engine uses hardcoded 100k, so we adjust manually if needed
         net_pnl = self.engine.calculate_pnl(entry_price, exit_price, lots, direction, is_usd_quote, is_usd_base)
+        if contract_size != 100000:
+            # Adjust PnL if contract size differs from Engine default (100k)
+            # PnL is linear to contract size.
+            net_pnl = (net_pnl / 100000) * contract_size
         
         # Efficiency Metric (matching REWARD_SYSTEM.md)
         realized_pct = (exit_price - entry_price) / entry_price * direction
@@ -416,12 +434,18 @@ class CombinedBacktester:
         
         pnls = [t['pnl'] for t in self.trades]
         total_pnl = sum(pnls)
-        win_rate = len([p for p in pnls if p > 0]) / len(pnls)
+        
+        winning_trades = len([p for p in pnls if p > 0])
+        losing_trades = len([p for p in pnls if p <= 0])
+        
+        win_rate = winning_trades / len(pnls)
         profit_factor = sum([p for p in pnls if p > 0]) / abs(sum([p for p in pnls if p < 0])) if any(p < 0 for p in pnls) else float('inf')
         
         return {
             'total_pnl': total_pnl,
             'total_fees': self.total_fees,
+            'winning_trades': winning_trades,
+            'losing_trades': losing_trades,
             'avg_fee': self.total_fees / len(self.trades) if self.trades else 0.0,
             'avg_lots': self.total_lots / len(self.trades) if self.trades else 0.0,
             'win_rate': win_rate,

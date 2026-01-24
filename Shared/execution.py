@@ -78,19 +78,27 @@ class ExecutionEngine:
             return mid_price - slippage
         return mid_price + spread + slippage # Close SHORT
 
+    def get_contract_size(self, asset: str) -> int:
+        """Returns contract size based on asset name."""
+        if asset and "XAU" in asset.upper():
+            return 100
+        return self.config.CONTRACT_SIZE
+
     def calculate_pnl(self, 
                       entry_price: float, 
                       exit_price: float, 
                       lots: float, 
                       direction: int, 
                       is_usd_quote: bool = True,
-                      is_usd_base: bool = False) -> float:
+                      is_usd_base: bool = False,
+                      contract_size: Optional[int] = None) -> float:
         """
         Calculates Net P&L in USD including currency conversion.
         """
+        c_size = contract_size if contract_size is not None else self.config.CONTRACT_SIZE
         price_change = exit_price - entry_price
         # Quote P&L
-        gross_pnl_quote = price_change * lots * self.config.CONTRACT_SIZE * direction
+        gross_pnl_quote = price_change * lots * c_size * direction
         
         # Currency Conversion to USD
         if is_usd_quote:
@@ -133,7 +141,8 @@ class ExecutionEngine:
                               sl_dist_price: float, 
                               atr: float,
                               is_usd_quote: bool = True,
-                              is_usd_base: bool = False) -> float:
+                              is_usd_base: bool = False,
+                              contract_size: Optional[int] = None) -> float:
         """
         Calculates lot size using ADAPTIVE risk (25%-50%) to maintain signal strength.
         
@@ -156,6 +165,8 @@ class ExecutionEngine:
         Returns:
             Lot size (0.0 if insufficient equity/too risky)
         """
+        c_size = contract_size if contract_size is not None else self.config.CONTRACT_SIZE
+        
         # ADAPTIVE RISK SCALING: Increase risk when equity drops to maintain signal strength
         # Formula: risk_multiplier = initial / max(current, initial * 0.3)
         # This ensures:
@@ -178,19 +189,19 @@ class ExecutionEngine:
         if effective_sl_dist > 1e-9:
             if is_usd_quote:
                 # EURUSD: Risk / (SL * 100000)
-                lots = risk_amount_cash / (effective_sl_dist * self.config.CONTRACT_SIZE)
+                lots = risk_amount_cash / (effective_sl_dist * c_size)
             elif is_usd_base:
                 # USDJPY: (Risk * Price) / (SL * 100000)
-                lots = (risk_amount_cash * entry_price) / (effective_sl_dist * self.config.CONTRACT_SIZE)
+                lots = (risk_amount_cash * entry_price) / (effective_sl_dist * c_size)
             else:
                 # Cross pairs (approximate as USD Quote)
-                lots = risk_amount_cash / (effective_sl_dist * self.config.CONTRACT_SIZE)
+                lots = risk_amount_cash / (effective_sl_dist * c_size)
         
         # Leverage Clamping
         if is_usd_quote:
-            lot_value_usd = self.config.CONTRACT_SIZE * entry_price
+            lot_value_usd = c_size * entry_price
         else:
-            lot_value_usd = self.config.CONTRACT_SIZE
+            lot_value_usd = c_size
             
         max_position_value = (equity * self.config.MAX_MARGIN_PER_TRADE_PCT) * self.config.MAX_LEVERAGE
         max_lots_leverage = max_position_value / max(lot_value_usd, 1e-9)

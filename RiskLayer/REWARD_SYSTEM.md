@@ -100,13 +100,10 @@ reward = clip(reward, -20.0, 20.0)  # Final safety clip
 
 ## Special Cases
 
-### 1. **Skipped Trades** (Low Risk Request)
-**Condition:** `risk_raw < 1e-3` (agent requests < 0.1% risk)
-**Reward:** `0.0`
-
-### 2. **Skipped Small Positions**
-**Condition:** Calculated lots < MIN_LOTS (0.01)
-**Reward:** `0.0`
+### 1. **Forced Participation**
+**Status:** Skipping is disabled.
+**Logic:** Even if the agent requests a tiny position size or if the calculated lots are below `MIN_LOTS`, the environment clips the size to `MIN_LOTS` and executes the trade.
+**Goal:** Forces the agent to manage every signal provided by the Alpha model, preventing it from "hiding" behind a 0.0 reward for skipping difficult trades.
 
 ### 3. **Terminal Penalty** (Equity Drop)
 **Condition:** `equity < initial_equity * 0.3` (70% drawdown)

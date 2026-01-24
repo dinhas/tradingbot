@@ -1,0 +1,1 @@
+python backtest/backtest_combined_v2.py --risk-model models/risk/risk_model_sac_final.zip --risk-norm models/risk/vec_normalize_sac.pkl --max-steps 5000

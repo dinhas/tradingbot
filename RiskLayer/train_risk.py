@@ -57,7 +57,7 @@ class TeeStderr:
 
 # --- Configuration for MAX SPEED ---
 N_CPU = multiprocessing.cpu_count()
-N_ENVS = N_CPU
+N_ENVS = min(N_CPU, 16) # Cap at 16 to prevent excessive overhead
 
 print(f"Detected {N_CPU} CPUs. Using {N_ENVS} parallel environments for MAX SPEED.")
 
@@ -92,10 +92,10 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 class LayerNormMLP(nn.Module):
     """
-    Standard MLP with LayerNorm and ReLU as requested.
-    Architecture: [256, 256, 128]
+    Standard MLP with LayerNorm and ReLU.
+    Reduced Architecture: [128, 128] (0.5x size to reduce overfitting)
     """
-    def __init__(self, input_dim, net_arch=[256, 256, 128]):
+    def __init__(self, input_dim, net_arch=[128, 128]):
         super().__init__()
         layers = []
         last_dim = input_dim
@@ -128,8 +128,7 @@ class CustomSACPolicy(SACPolicy):
             input_dim = int(np.prod(self.observation_space.shape))
         
         # Inject LayerNorm into the latent pi network
-        # We don't call .to(self.device) here; let the model .to() handle it
-        actor.latent_pi = LayerNormMLP(input_dim, net_arch=[256, 256, 128])
+        actor.latent_pi = LayerNormMLP(input_dim, net_arch=[128, 128])
         return actor
 
     def make_critic(self, features_extractor=None):
@@ -153,12 +152,51 @@ class CustomSACPolicy(SACPolicy):
         for _ in range(len(critic.q_networks)):
             new_q_networks.append(
                 nn.Sequential(
-                    LayerNormMLP(input_dim, net_arch=[256, 256, 128]),
+                    LayerNormMLP(input_dim, net_arch=[128, 128]),
                     nn.Linear(128, 1)
                 )
             )
         critic.q_networks = nn.ModuleList(new_q_networks)
         return critic
+
+class ConsoleLoggingCallback(BaseCallback):
+    """
+    Custom callback to mimic PPO-style logging for SAC (Off-Policy).
+    Calculates pseudo-explained variance and tracks reward trends.
+    """
+    def __init__(self, check_freq=1000, verbose=1):
+        super(ConsoleLoggingCallback, self).__init__(verbose)
+        self.check_freq = check_freq
+        self.episode_rewards = []
+        self.value_losses = []
+        
+    def _on_step(self) -> bool:
+        # Track rewards from infos if available
+        if 'infos' in self.locals and len(self.locals['infos']) > 0:
+            for info in self.locals['infos']:
+                if 'episode' in info:
+                    self.episode_rewards.append(info['episode']['r'])
+
+        if self.n_calls % self.check_freq == 0:
+            # Retrieve training logs
+            if hasattr(self.model, "logger"):
+                logs = self.model.logger.name_to_value
+                actor_loss = logs.get("train/actor_loss", 0.0)
+                critic_loss = logs.get("train/critic_loss", 0.0)
+                ent_coef = logs.get("train/ent_coef", 0.0)
+            
+            # Calculate stats
+            mean_rew = np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0.0
+            
+            # Print PPO-like summary
+            print(f"\n--- Step {self.num_timesteps} ---")
+            print(f"  Mean Reward (100 ep): {mean_rew:.2f}")
+            print(f"  Actor Loss:           {actor_loss:.4f}")
+            print(f"  Critic Loss (Val):    {critic_loss:.4f} (Proxy for Value Loss)")
+            print(f"  Entropy Coef:         {ent_coef:.4f}")
+            print(f"---------------------------")
+            
+        return True
 
 class TensorboardCallback(BaseCallback):
     def __init__(self, verbose=0):
@@ -172,27 +210,6 @@ class TensorboardCallback(BaseCallback):
                 if 'pnl' in info: self.logger.record('custom/pnl', info['pnl'])
                 if 'lots' in info: self.logger.record('custom/lots', info['lots'])
         return True
-
-def evaluate_policy(model, env, n_eval_episodes=50):
-    print("\n--- Starting Evaluation ---")
-    episode_returns = []
-    episode_win_rates = []
-    
-    for i in range(n_eval_episodes):
-        obs = env.reset()
-        done = [False]
-        pnls = []
-        
-        while not done[0]:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, rewards, done, info = env.step(action)
-            if 'pnl' in info[0]: pnls.append(info[0]['pnl'])
-            
-        episode_returns.append(np.sum(pnls))
-        wins = np.sum(np.array(pnls) > 0)
-        episode_win_rates.append(wins / len(pnls) if pnls else 0)
-
-    print(f"Eval Results: Avg Return: ${np.mean(episode_returns):.2f}, Avg Win Rate: {np.mean(episode_win_rates)*100:.2f}%")
 
 def make_env(rank, seed=0):
     def _init():
@@ -215,29 +232,18 @@ def train():
     vec_env = VecMonitor(vec_env, LOG_DIR)
 
     # 2. Define Model (SAC)
-    # Key SAC Components:
-    # - Soft Actor-Critic: Off-policy algorithm that maximizes expected return and entropy.
-    # - Entropy Tuning: Automatically adjusts alpha (temperature) to maintain exploration.
-    # - Twin Critics: Uses two Q-networks to mitigate overestimation bias.
-    # - Target Networks: Uses moving average (tau=0.005) for stable Q-value targets.
+    # UPDATED: Added weight_decay to fight overfitting
+    # UPDATED: Reduced net_arch to [128, 128] via CustomSACPolicy
+    # UPDATED: Batched updates (train_freq=64, gradient_steps=64) for SPEED
     
     policy_kwargs = dict(
-        net_arch=dict(pi=[256, 256, 128], qf=[256, 256, 128]),
+        net_arch=dict(pi=[128, 128], qf=[128, 128]),
         activation_fn=ReLU,
+        optimizer_kwargs=dict(weight_decay=1e-5) # L2 Regularization to reduce overfitting
     )
     
-    # We use SB3's standard MLP Policy but provide the user-requested architecture.
-    # Note: To strictly enforce LayerNorm in ALL hidden layers as requested, 
-    # we rely on SB3's internal create_mlp or custom policy override if needed.
-    # For simplicity and robustness with SB3 parallel envs, we'll use the dict-based net_arch
-    # and if LayerNorm is strictly required, we can inject it via the features extractor 
-    # or a custom layer class.
-    
-    # REVISION: To ensure LayerNorm IS actually used between layers:
-    # We'll use a custom policy-kwargs setup.
-    
     model = SAC(
-        CustomSACPolicy, # Use custom policy with LayerNorm
+        CustomSACPolicy, # Use custom policy with LayerNorm and reduced size
         vec_env,
         learning_rate=LR_ACTOR,
         buffer_size=BUFFER_SIZE,
@@ -245,8 +251,8 @@ def train():
         batch_size=BATCH_SIZE,
         tau=TAU,
         gamma=GAMMA,
-        train_freq=1,
-        gradient_steps=1,
+        train_freq=64,      # OPTIMIZATION: Collect 64 steps
+        gradient_steps=64,  # OPTIMIZATION: Then do 64 updates
         policy_kwargs=policy_kwargs,
         verbose=1,
         tensorboard_log=LOG_DIR,
@@ -256,7 +262,6 @@ def train():
     )
 
     # 2b. Explicitly ensure everything is on the correct device
-    # This fixes issues where custom layers might stay on CPU
     model.policy.to(device)
     if hasattr(model, 'critic_target') and model.critic_target is not None:
         model.critic_target.to(device)
@@ -269,12 +274,13 @@ def train():
     )
     
     tb_callback = TensorboardCallback()
+    console_callback = ConsoleLoggingCallback(check_freq=7500)
 
     # 4. Train
     try:
         model.learn(
             total_timesteps=TOTAL_TIMESTEPS, 
-            callback=[checkpoint_callback, tb_callback],
+            callback=[checkpoint_callback, tb_callback, console_callback],
             progress_bar=True
         )
         
