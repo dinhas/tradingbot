@@ -61,7 +61,7 @@ class ModelLoader:
                 self.logger.info("Alpha VecNormalize stats loaded.")
             
             # 2. Risk Model (65-dim Refactored)
-            risk_dir = checkpoint_dir / "risk"
+            risk_dir = self.project_root / "models" / "risk"
             risk_path = risk_dir / "risk_model_final.zip"
             risk_norm_path = risk_dir / "vec_normalize.pkl"
             
