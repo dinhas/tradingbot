@@ -57,7 +57,7 @@ class TeeStderr:
 
 # --- Configuration for MAX SPEED ---
 N_CPU = multiprocessing.cpu_count()
-N_ENVS = min(N_CPU, 16) # Cap at 16 to prevent excessive overhead
+N_ENVS = 8 # Fixed to 8 as requested
 
 print(f"Detected {N_CPU} CPUs. Using {N_ENVS} parallel environments for MAX SPEED.")
 
