@@ -65,16 +65,22 @@ print(f"Detected {N_CPU} CPUs. Using {N_ENVS} parallel environments.")
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
+from typing import Callable
+def linear_schedule(initial_value: float, final_value: float = 3e-5) -> Callable[[float], float]:
+    def func(progress_remaining: float) -> float:
+        return final_value + (initial_value - final_value) * progress_remaining
+    return func
+
 # --- PPO Hyperparameters ---
-TOTAL_TIMESTEPS = 1_000_000
+TOTAL_TIMESTEPS = 6_000_000
 LEARNING_RATE = 3e-4
-N_STEPS = 2048 
-BATCH_SIZE = 128
+N_STEPS = 4096 
+BATCH_SIZE = 1024
 N_EPOCHS = 10
 GAMMA = 0.99
-GAE_LAMBDA = 0.95
+GAE_LAMBDA = 0.90
 CLIP_RANGE = 0.2
-ENT_COEF = 0.01
+ENT_COEF = 0.02
 VF_COEF = 0.5
 MAX_GRAD_NORM = 0.5
 
@@ -97,9 +103,9 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 class LayerNormMLP(nn.Module):
     """
     Standard MLP with LayerNorm and ReLU.
-    Architecture: [128, 128] (Reduced to prevent overfitting)
+    Architecture: [256, 256, 128]
     """
-    def __init__(self, input_dim, net_arch=[128, 128]):
+    def __init__(self, input_dim, net_arch=[256, 256, 128]):
         super().__init__()
         layers = []
         last_dim = input_dim
@@ -118,7 +124,7 @@ class CustomMlpExtractor(nn.Module):
     """
     Custom MLP Extractor that returns latent policy and value features.
     """
-    def __init__(self, feature_dim: int, net_arch=[128, 128]):
+    def __init__(self, feature_dim: int, net_arch=[256, 256, 128]):
         super().__init__()
         self.policy_net = LayerNormMLP(feature_dim, net_arch=net_arch)
         self.value_net = LayerNormMLP(feature_dim, net_arch=net_arch)
@@ -146,7 +152,7 @@ class CustomPPOPolicy(ActorCriticPolicy):
         Build the network layers.
         We override the default MLP extractor to use our CustomMlpExtractor.
         """
-        self.mlp_extractor = CustomMlpExtractor(self.features_dim, net_arch=[128, 128])
+        self.mlp_extractor = CustomMlpExtractor(self.features_dim, net_arch=[256, 256, 128])
 
 class ConsoleLoggingCallback(BaseCallback):
     """
@@ -225,7 +231,7 @@ def train():
     model = PPO(
         CustomPPOPolicy, 
         vec_env,
-        learning_rate=LEARNING_RATE,
+        learning_rate=linear_schedule(LEARNING_RATE),
         n_steps=N_STEPS,
         batch_size=BATCH_SIZE,
         n_epochs=N_EPOCHS,
