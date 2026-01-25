@@ -36,6 +36,9 @@ class TradingEnv(gym.Env):
         
         # Shared Execution Engine
         self.engine = ExecutionEngine(TradeConfig())
+        # Enforce no slippage for Alpha training (disable slippage across all stages)
+        self.engine.config.SLIPPAGE_MIN_PIPS = 0.0
+        self.engine.config.SLIPPAGE_MAX_PIPS = 0.0
 
         # Configuration Constants
         self.MIN_POSITION_SIZE = 0.1

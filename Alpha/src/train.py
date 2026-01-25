@@ -135,11 +135,22 @@ def load_ppo_config(config_path):
     Loads PPO configuration from a YAML file.
     """
     import yaml
-    
-    with open(config_path, 'r') as f:
+    from pathlib import Path
+
+    # Resolve config path: if the provided path doesn't exist, try relative to project root
+    config_p = Path(config_path)
+    if not config_p.exists():
+        alt = Path(__file__).resolve().parent.parent.parent / config_p
+        if alt.exists():
+            config_p = alt
+        else:
+            alt2 = Path.cwd() / config_p
+            if alt2.exists():
+                config_p = alt2
+
+    with open(str(config_p), 'r') as f:
         config = yaml.safe_load(f)
-        
-    # Handle policy_kwargs
+            # Handle policy_kwargs
     if 'policy_kwargs' in config:
         # Map activation function string to class
         activation_map = {
