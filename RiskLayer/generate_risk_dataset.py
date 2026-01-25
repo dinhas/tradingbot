@@ -4,6 +4,8 @@ import argparse
 import numpy as np
 import pandas as pd
 import torch
+import gymnasium as gym
+from gymnasium import spaces
 from datetime import datetime
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -62,28 +64,38 @@ class TeeStderr:
 
 # Defaults
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
-MODELS_DIR = os.path.join(PROJECT_ROOT, "models", "checkpoints")
+MODELS_DIR = os.path.join(PROJECT_ROOT, "models", "checkpoints", "alpha")
 
 def get_latest_model_files(models_dir):
     """Finds the latest zip model and its corresponding vecnormalize file."""
     if not os.path.exists(models_dir):
         return None, None
         
-    files = [f for f in os.listdir(models_dir) if f.endswith(".zip")]
-    if not files:
-        return None, None
-        
-    # Sort by modification time (newest first)
-    files.sort(key=lambda x: os.path.getmtime(os.path.join(models_dir, x)), reverse=True)
-    latest_zip = files[0]
+    # Check for specific ppo_final_model first
+    preferred_model = os.path.join(models_dir, "ppo_final_model.zip")
+    if os.path.exists(preferred_model):
+        latest_zip = "ppo_final_model.zip"
+    else:
+        files = [f for f in os.listdir(models_dir) if f.endswith(".zip")]
+        if not files:
+            return None, None
+        # Sort by modification time (newest first)
+        files.sort(key=lambda x: os.path.getmtime(os.path.join(models_dir, x)), reverse=True)
+        latest_zip = files[0]
     
     model_path = os.path.join(models_dir, latest_zip)
     
     # Try to find matching normalizer
-    # Common patterns: name.zip -> name_vecnormalize.pkl
+    # Pattern 1: name_vecnormalize.pkl
     base_name = os.path.splitext(latest_zip)[0]
     norm_name = f"{base_name}_vecnormalize.pkl"
     norm_path = os.path.join(models_dir, norm_name)
+    
+    # Pattern 2: if name is ppo_final_model, check ppo_final_vecnormalize.pkl
+    if not os.path.exists(norm_path):
+        alt_base = base_name.replace("_model", "")
+        norm_name = f"{alt_base}_vecnormalize.pkl"
+        norm_path = os.path.join(models_dir, norm_name)
     
     if not os.path.exists(norm_path):
         norm_path = None
@@ -94,13 +106,22 @@ DEFAULT_MODEL_PATH, DEFAULT_VEC_NORM_PATH = get_latest_model_files(MODELS_DIR)
 
 # Fallback if no model found (prevents crash on import, fails on run)
 if DEFAULT_MODEL_PATH is None:
-    DEFAULT_MODEL_PATH = os.path.join(MODELS_DIR, "model_not_found.zip")
+    DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "checkpoints", "model_not_found.zip")
     DEFAULT_VEC_NORM_PATH = None
+
+class SimpleDummyEnv(gym.Env):
+    """Minimal env for VecNormalize loading."""
+    def __init__(self):
+        super().__init__()
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(40,), dtype=np.float32)
+        self.action_space = gym.spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
+    def reset(self, seed=None): return np.zeros((40,), dtype=np.float32), {}
+    def step(self, action): return np.zeros((40,), dtype=np.float32), 0, False, False, {}
 
 DEFAULT_DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 DEFAULT_OUTPUT_FILE = os.path.join(PROJECT_ROOT, "risk_dataset.parquet")
-LOOKAHEAD_STEPS = 6 # 30 mins (5m candles)
-BATCH_SIZE = 50000  # Increased batch size as we use less memory now
+LOOKAHEAD_STEPS = 1000 # 1000 steps (5m candles) to match frozen env
+BATCH_SIZE = 5000  # Further reduced batch size
 
 def build_master_feature_cache(df, assets, start_idx, end_idx):
     """
@@ -208,9 +229,8 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
     if vec_norm_path and os.path.exists(vec_norm_path):
         logger.info(f"Loading VecNormalize stats from {vec_norm_path}...")
         try:
-            # VecNormalize requires a venv to load, even if dummy
-            # We create a dummy lambda that returns None, as we only need the stats
-            dummy_venv = DummyVecEnv([lambda: None]) 
+            # VecNormalize requires a venv to load
+            dummy_venv = DummyVecEnv([lambda: SimpleDummyEnv()]) 
             norm_env = VecNormalize.load(vec_norm_path, dummy_venv)
             norm_env.training = False # Do not update stats during inference
             norm_env.norm_reward = False
@@ -297,6 +317,11 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
     batch_starts = np.arange(0, num_rows, BATCH_SIZE)
     
     total_signals = 0
+    
+    # Validation Stats (1x SL / 5x TP)
+    stats_wins = 0
+    stats_losses = 0
+    
     timestamps = df.index[start_idx:end_idx]
     
     # Store all batch dataframes to concat at the end
@@ -395,6 +420,43 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
                     max_profit_pct = (entry_price - min_l) / entry_price
                     max_loss_pct = (entry_price - max_h) / entry_price
 
+                # --- Validation: Calculate Win Rate for Default 1x SL / 5x TP ---
+                sl_pips = 1.0 * atr
+                tp_pips = 5.0 * atr
+                
+                # Default Logic: Check what hit first
+                # We need exact timing, so we scan the arrays
+                # future_highs/lows are arrays of shape (LOOKAHEAD_STEPS-1,)
+                
+                did_win = False
+                did_loss = False
+                
+                if direction == 1: # LONG
+                    sl_price = entry_price - sl_pips
+                    tp_price = entry_price + tp_pips
+                    
+                    # Boolean masks
+                    sl_hits = future_lows <= sl_price
+                    tp_hits = future_highs >= tp_price
+                else: # SHORT
+                    sl_price = entry_price + sl_pips
+                    tp_price = entry_price - tp_pips
+                    
+                    # Boolean masks
+                    sl_hits = future_highs >= sl_price
+                    tp_hits = future_lows <= tp_price
+                
+                # Find first index
+                first_sl = np.argmax(sl_hits) if np.any(sl_hits) else 99999
+                first_tp = np.argmax(tp_hits) if np.any(tp_hits) else 99999
+                
+                if first_sl == 99999 and first_tp == 99999:
+                    pass # Neither hit
+                elif first_tp < first_sl:
+                    stats_wins += 1
+                else:
+                    stats_losses += 1
+
                 # --- Construct Reduced Feature Vector (40 dims) ---
                 # We already built this for inference: single_pair_obs[local_idx]
                 reduced_features = single_pair_obs[local_idx]
@@ -423,6 +485,19 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
 
     logger.info(f"Processing complete. Total signals: {total_signals}")
     
+    # Log Win Rate
+    total_closed = stats_wins + stats_losses
+    if total_closed > 0:
+        win_rate = (stats_wins / total_closed) * 100.0
+        logger.info(f"--- DATASET QUALITY CHECK ---")
+        logger.info(f"Default Strategy (1x ATR SL / 5x ATR TP):")
+        logger.info(f"Wins: {stats_wins}")
+        logger.info(f"Losses: {stats_losses}")
+        logger.info(f"Win Rate: {win_rate:.2f}%")
+        logger.info(f"-----------------------------")
+    else:
+        logger.warning("No trades closed within lookahead window for validation.")
+
     if all_batch_dfs:
         logger.info(f"Concatenating {len(all_batch_dfs)} batches and saving to {output_file}...")
         final_df = pd.concat(all_batch_dfs, ignore_index=True)

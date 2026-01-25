@@ -194,7 +194,7 @@ class CombinedBacktester:
                     if self.args.alpha_only:
                         # Fixed Risk Logic (matching TradingEnv.py default ATR multipliers and RiskLayer default risk)
                         sl_mult = 2.0  # Training Script default SL
-                        tp_mult = 4.0  # Training Script default TP
+                        tp_mult = 5.0  # Training Script default TP
                         risk_pct = 0.25 # Default fixed 25% risk per trade
                     else:
                         # 2. Risk Inference

@@ -222,11 +222,15 @@ def run_backtest(args):
     
     # Initialize execution engine
     engine = ExecutionEngine(TradeConfig())
+    if args.no_spread:
+        engine.set_spread_modifier(0.0)
+        logger.info("Spreads and slippage DISABLED for this run.")
+
     metrics_tracker = BacktestMetrics()
     
-    # Use a DummyEnv to get asset list
-    temp_env = TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)
-    available_assets = temp_env.assets
+    # Initialize main environment first (avoid multiple loads)
+    env = TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)
+    available_assets = env.assets
     assets_to_test = available_assets if args.asset == "all" else [args.asset]
     
     # Sequential backtest for accurate equity tracking and engine use
@@ -244,14 +248,20 @@ def run_backtest(args):
     if not os.path.exists(vecnorm_path):
         vecnorm_path = str(model_path).replace('_model.zip', '_vecnormalize.pkl')
 
-    # For manual step loop, we use a single env
-    env = TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)
-    
     alpha_norm = None
     if os.path.exists(vecnorm_path):
         logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
-        # Need a dummy vec env to load normalizer
-        dummy_vec_env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False)])
+        
+        # Mock Env to avoid reloading data
+        import gymnasium as gym
+        class MockEnv(gym.Env):
+            def __init__(self, obs_shape):
+                self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=obs_shape, dtype=np.float32)
+                self.action_space = gym.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
+            def reset(self, seed=None, options=None): return np.zeros(self.observation_space.shape), {}
+            def step(self, action): return np.zeros(self.observation_space.shape), 0, False, False, {}
+            
+        dummy_vec_env = DummyVecEnv([lambda: MockEnv(env.observation_space.shape)])
         alpha_norm = VecNormalize.load(vecnorm_path, dummy_vec_env)
         alpha_norm.training = False
         alpha_norm.norm_reward = False
@@ -267,6 +277,8 @@ def run_backtest(args):
         env.current_step = 0 # Start from beginning for full 2025 backtest
         
         asset_max_steps = len(env.processed_data) - 1
+        if args.max_steps:
+            asset_max_steps = min(asset_max_steps, args.max_steps)
         
         while env.current_step < asset_max_steps:
             if env.current_step % 10000 == 0 and env.current_step > 0:
@@ -279,23 +291,19 @@ def run_backtest(args):
             
             action_raw, _ = model.predict(norm_obs, deterministic=True)
             
-            # Simple thresholding logic (matching original backtest behavior)
-            signal = float(action_raw[0])
-            direction = 0
-            if signal > 0.33: direction = 1
-            elif signal < -0.33: direction = -1
+            # Use environment's action parsing to ensure consistency with training
+            parsed_act = env._parse_action(action_raw)
+            direction = parsed_act["direction"]
+            sl_mult = parsed_act["sl_mult"]
+            tp_mult = parsed_act["tp_mult"]
             
             if direction != 0:
                 # Execute via Engine
                 atr = env.atr_arrays[asset][env.current_step]
                 raw_price = env.close_arrays[asset][env.current_step]
                 
-                # Fixed SL/TP multipliers matching TradingEnv.py defaults
-                sl_mult = 2.0
-                tp_mult = 4.0
-                
                 # Execution price
-                entry_price = engine.get_entry_price(raw_price, direction, atr)
+                entry_price = engine.get_entry_price(raw_price, direction, atr, enable_slippage=not args.no_spread)
                 
                 # Position Sizing
                 is_usd_quote = "USD" in asset and asset.endswith("USD")
@@ -355,7 +363,7 @@ def run_backtest(args):
                     
                     # Friction on Exit
                     if exit_reason == 'TIME':
-                        exit_execution_price = engine.get_close_price(exit_price, direction, atr)
+                        exit_execution_price = engine.get_close_price(exit_price, direction, atr, enable_slippage=not args.no_spread)
                     else:
                         # SL/TP hit at specified price, but let's assume it's the bid/ask already
                         exit_execution_price = exit_price
@@ -684,6 +692,10 @@ if __name__ == "__main__":
                         help="Specific asset to test (e.g., EURUSD) or 'all' to test the full basket")
     parser.add_argument("--workers", type=int, default=2,
                         help="Number of parallel environment workers (default: 2)")
+    parser.add_argument("--max-steps", type=int, default=None,
+                        help="Maximum number of steps to run per asset")
+    parser.add_argument("--no-spread", action="store_true",
+                        help="Disable spreads and slippage in simulation")
     
     args = parser.parse_args()
     

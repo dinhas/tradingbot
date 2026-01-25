@@ -171,15 +171,66 @@ def get_lr_schedule(base_lr, total_timesteps):
     return lr_schedule
 
 def train(args):
-...
-    # 4. Train
+    # 1. Paths
+    data_dir_path = Path(args.data_dir).resolve()
+    log_dir_path = Path(args.log_dir).resolve()
+    checkpoint_dir_path = Path(args.checkpoint_dir).resolve()
+    
+    # Ensure directories exist
+    log_dir_path.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir_path.mkdir(parents=True, exist_ok=True)
+    
+    # 2. Setup Environment
+    def create_env():
+        env = TradingEnv(data_dir=str(data_dir_path), is_training=True)
+        env = Monitor(env)
+        return env
+
+    # Using DummyVecEnv for stability and simpler curriculum management
+    env = DummyVecEnv([create_env])
+    
+    # Wrap in VecNormalize
+    vec_norm_path = checkpoint_dir_path / "ppo_final_vecnormalize.pkl"
+    if args.load_model and vec_norm_path.exists():
+        logger.info(f"Loading VecNormalize from {vec_norm_path}")
+        env = VecNormalize.load(str(vec_norm_path), env)
+    else:
+        env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
+
+    # 3. Load Config and Model
+    config = load_ppo_config(args.config)
+    
+    # Extract training-specific parameters
+    base_lr = config.pop('learning_rate', 0.0003)
+    configured_timesteps = config.pop('total_timesteps', 5000000)
+    
+    # Determine total timesteps for this run
     if args.dry_run:
         total_timesteps = 1000
     else:
-        # Default to 5M if not specified and not dry-run
-        if args.total_timesteps is None:
-            total_timesteps = 5000000
+        total_timesteps = args.total_timesteps or configured_timesteps
+
+    # Set up learning rate schedule
+    config['learning_rate'] = get_lr_schedule(base_lr, total_timesteps)
+
+    if args.load_model:
+        logger.info(f"Loading model from {args.load_model}")
+        model = PPO.load(args.load_model, env=env, **config)
+    else:
+        logger.info("Creating new PPO model")
+        model = PPO("MlpPolicy", env, verbose=1, **config)
+
+    # Callbacks
+    checkpoint_callback = CheckpointCallback(
+        save_freq=max(10000, total_timesteps // 10), 
+        save_path=str(checkpoint_dir_path),
+        name_prefix="alpha_model"
+    )
     
+    metrics_callback = MetricsCallback(eval_freq=1000, plot_freq=10000)
+    curriculum_callback = CurriculumCallback(verbose=1)
+
+    # 4. Train
     # Configure file logging
     from datetime import datetime
     # Log to a fixed filename (no timestamp) as requested
