@@ -9,12 +9,17 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyV
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.monitor import Monitor
+import sys
+from pathlib import Path
+
+# Add project root to sys.path
+project_root = str(Path(__file__).resolve().parent.parent.parent)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 try:
     from .trading_env import TradingEnv
 except (ImportError, ValueError):
-    import sys
-    from pathlib import Path
-    sys.path.append(str(Path(__file__).parent))
     from trading_env import TradingEnv
 
 # Configure logging
