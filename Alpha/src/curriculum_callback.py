@@ -19,12 +19,11 @@ class CurriculumCallback(BaseCallback):
         super(CurriculumCallback, self).__init__(verbose)
         self.current_stage = 0
         self.spread_schedule = [
-            (5000000, 0.0),   # Up to 5M
-            (6500000, 0.15),  # Up to 6.5M
-            (7500000, 0.30),  # Up to 7.5M
-            (8500000, 0.50),  # Up to 8.5M
-            (9500000, 0.75),  # Up to 9.5M
-            (float('inf'), 1.0) # After 9.5M
+            (1000000, 0.0),   # Up to 1M (Warmup)
+            (2000000, 0.25),  # 1M - 2M
+            (3000000, 0.50),  # 2M - 3M
+            (4000000, 0.75),  # 3M - 4M
+            (float('inf'), 1.0) # After 4M (Full Reality)
         ]
         self.last_modifier = -1.0
 

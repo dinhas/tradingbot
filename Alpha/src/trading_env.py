@@ -80,6 +80,7 @@ class TradingEnv(gym.Env):
 
     def set_spread_modifier(self, modifier: float):
         """Sets the spread modifier for the execution engine."""
+        logging.info(f"[Curriculum] Env received Spread Modifier update: {modifier*100:.0f}%")
         self.engine.set_spread_modifier(modifier)
 
     def _build_optimization_matrix(self):
@@ -380,6 +381,12 @@ class TradingEnv(gym.Env):
         self.positions = {asset: None for asset in self.assets}
         self.portfolio_history = []
 
+        # Reset episode-level metrics
+        self.episode_wins = 0
+        self.episode_trades = 0
+        self.episode_fees_cash = 0.0
+        self.episode_volume_cash = 0.0
+
         # Reset reward tracker
         self.peeked_pnl_step = 0.0
         self.max_step_reward = -float(
@@ -459,6 +466,19 @@ class TradingEnv(gym.Env):
             "timestamp": self._get_current_timestamp(),
             "asset": self.current_asset,
         }
+
+        # Add episode metrics on termination for SB3 logger
+        if terminated or truncated:
+            win_rate = self.episode_wins / self.episode_trades if self.episode_trades > 0 else 0
+            fee_pct = (self.episode_fees_cash / self.episode_volume_cash * 100) if self.episode_volume_cash > 0 else 0
+            
+            info["episode"] = {
+                "r": reward, # Monitor will override this if it's there, but we can add our own
+                "l": self.current_step,
+                "win_rate": win_rate,
+                "fee_pct": fee_pct,
+                "total_trades": self.episode_trades
+            }
 
         return (
             self._validate_observation(self._get_observation()),
@@ -557,6 +577,20 @@ class TradingEnv(gym.Env):
         # PEEK & LABEL: Simulate outcome and assign reward NOW
         simulated_pnl, bars_held = self._simulate_trade_outcome(asset)
         self.peeked_pnl_step += simulated_pnl
+
+        # Track Metrics for Logging
+        self.episode_trades += 1
+        if simulated_pnl > 0:
+            self.episode_wins += 1
+        
+        # Calculate Fee (Friction) Impact
+        # Fee in price units = abs(execution_price - mid_price)
+        fee_dist = abs(price - mid_price)
+        pos_value = position_size * self.leverage
+        fee_cash = (fee_dist / price) * pos_value
+        
+        self.episode_fees_cash += fee_cash
+        self.episode_volume_cash += pos_value
 
         # TIERED SPEED REWARDS (Scalping Focus)
         if simulated_pnl > 0:
@@ -906,9 +940,9 @@ class TradingEnv(gym.Env):
             # Normalize: 1% of starting equity = 0.02 reward
             normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 2.0
 
-            # Loss Aversion Removed: Losses scaled same as wins
+            # Apply Loss Aversion (2.25x) as per REWARD_SYSTEM.md
             if normalized_pnl < 0:
-                normalized_pnl = np.clip(normalized_pnl, -5.0, 0.0)
+                normalized_pnl = np.clip(normalized_pnl * 2.25, -5.0, 0.0)
             else:
                 # Relaxed clipping to allow for Fast Win Bonus (up to 5.0)
                 normalized_pnl = np.clip(normalized_pnl, 0.0, 5.0)

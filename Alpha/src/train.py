@@ -61,9 +61,12 @@ class MetricsCallback(BaseCallback):
             if len(self.model.ep_info_buffer) > 0:
                 ep_info = self.model.ep_info_buffer[-1]
                 
-                # Log to TensorBoard
+                # Log to SB3 Logger
                 self.logger.record("train/episode_reward", ep_info.get("r", 0))
                 self.logger.record("train/episode_length", ep_info.get("l", 0))
+                self.logger.record("train/win_rate", ep_info.get("win_rate", 0))
+                self.logger.record("train/fee_pct", ep_info.get("fee_pct", 0))
+                self.logger.record("train/total_trades", ep_info.get("total_trades", 0))
                 
                 # Store for plotting
                 self.episode_rewards.append(ep_info.get("r", 0))
@@ -71,7 +74,7 @@ class MetricsCallback(BaseCallback):
                 self.timesteps.append(self.num_timesteps)
                 
                 if self.verbose > 0:
-                    logger.info(f"Step {self.num_timesteps}: Reward={ep_info.get('r', 0):.2f}, Length={ep_info.get('l', 0)}")
+                    logger.info(f"Step {self.num_timesteps}: Reward={ep_info.get('r', 0):.2f}, WinRate={ep_info.get('win_rate', 0):.1%}, Fee={ep_info.get('fee_pct', 0):.3f}%")
             else:
                 if self.verbose > 0:
                     logger.info(f"Step {self.num_timesteps}: No completed episodes yet...")
@@ -154,99 +157,28 @@ def load_ppo_config(config_path):
 def get_lr_schedule(base_lr, total_timesteps):
     """
     Returns a learning rate schedule function.
-    Reduces LR by 3x between 4.8M and 6.8M steps to handle curriculum transitions.
+    Reduces LR by 3x between 0.8M and 1.2M steps to handle the first curriculum transition.
     """
     def lr_schedule(progress_remaining):
         # progress_remaining goes from 1.0 to 0.0
         current_step = total_timesteps * (1.0 - progress_remaining)
         
-        # Dip LR around 5M-6.5M mark where spreads are introduced
-        if 4_800_000 <= current_step <= 6_800_000:
+        # Dip LR around 1M mark where spreads are first introduced
+        if 800_000 <= current_step <= 1_200_000:
              return base_lr / 3.0
         
         return base_lr
     return lr_schedule
 
 def train(args):
-    """
-    Main training loop.
-    """
-    project_root = Path(__file__).resolve().parent.parent.parent
-    log_dir_path = project_root / args.log_dir
-    checkpoint_dir_path = project_root / args.checkpoint_dir
-    data_dir_path = project_root / args.data_dir
-    config_path = project_root / args.config
-
-    logger.info("Starting Alpha Model Training (Simplified)")
-    
-    # Create directories
-    log_dir_path.mkdir(parents=True, exist_ok=True)
-    checkpoint_dir_path.mkdir(parents=True, exist_ok=True)
-    
-    import multiprocessing
-
-    # 1. Setup Vectorized Environment
-    n_cpu = multiprocessing.cpu_count()
-    n_envs = n_cpu if not args.dry_run else 1
-    
-    logger.info(f"Creating {n_envs} environment(s)...")
-    
-    if n_envs > 1:
-        env = SubprocVecEnv([make_env(i, data_dir=data_dir_path) for i in range(n_envs)])
-    else:
-        env = DummyVecEnv([make_env(0, data_dir=data_dir_path)])
-    
-    # Apply Normalization
-    env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
-    
-    # 2. Initialize Model
-    ppo_config = load_ppo_config(config_path)
-    
-    # Extract total_timesteps from config
-    total_timesteps = ppo_config.pop('total_timesteps', 1500000)
-    if args.total_timesteps:
-        total_timesteps = args.total_timesteps
-    
-    # Handle Learning Rate Schedule
-    if 'learning_rate' in ppo_config:
-        base_lr = float(ppo_config['learning_rate'])
-        if not args.dry_run and total_timesteps > 2000:
-             # Use custom schedule unless dry run
-             ppo_config['learning_rate'] = get_lr_schedule(base_lr, total_timesteps)
-             logger.info(f"Using custom LR schedule (Base: {base_lr}, Dip: {base_lr/3.0:.2e} @ 4.8M-6.8M)")
-        else:
-             ppo_config['learning_rate'] = base_lr
-    
-    if args.load_model:
-        load_model_path = project_root / args.load_model
-        logger.info(f"Loading model from {load_model_path}")
-        model = PPO.load(load_model_path, env=env, verbose=1, **ppo_config)
-    else:
-        logger.info("Creating new model from scratch")
-        model = PPO("MlpPolicy", env, verbose=1, **ppo_config)
-        
-    # 3. Callbacks
-    checkpoint_callback = CheckpointCallback(
-        save_freq=max(100000 // n_envs, 1),
-        save_path=str(checkpoint_dir_path),
-        name_prefix="ppo_alpha"
-    )
-    
-    metrics_callback = MetricsCallback(
-        eval_freq=1000,
-        plot_freq=10000,
-        verbose=1
-    )
-    
-    curriculum_callback = CurriculumCallback(verbose=1)
-    
+...
     # 4. Train
     if args.dry_run:
         total_timesteps = 1000
     else:
-        # Default to 10.5M if not specified and not dry-run
+        # Default to 5M if not specified and not dry-run
         if args.total_timesteps is None:
-            total_timesteps = 10500000
+            total_timesteps = 5000000
     
     # Configure file logging
     from datetime import datetime
