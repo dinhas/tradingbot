@@ -19,9 +19,9 @@ class TradeConfig:
     SL_MULT_MIN: float = 0.2
     SL_MULT_MAX: float = 2.0
     
-    # TP: 0.5 ATR to 4.0 ATR
+    # TP: 0.5 ATR to 5.0 ATR
     TP_MULT_MIN: float = 0.5
-    TP_MULT_MAX: float = 4.0
+    TP_MULT_MAX: float = 5.0
     
     # Execution constraints
     MIN_LOTS: float = 0.01
@@ -124,7 +124,7 @@ class ExecutionEngine:
             self.config.SL_MULT_MAX
         )
         
-        # TP Scaling: 0.5 ATR to 4.0 ATR
+        # TP Scaling: 0.5 ATR to 5.0 ATR
         tp_span = self.config.TP_MULT_MAX - self.config.TP_MULT_MIN
         tp_mult = np.clip(
             (action[1] + 1) / 2 * tp_span + self.config.TP_MULT_MIN,
