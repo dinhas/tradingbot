@@ -78,6 +78,10 @@ class TradingEnv(gym.Env):
         self.MAX_TOTAL_EXPOSURE = 0.60
         self.DRAWDOWN_LIMIT = 0.25
 
+    def set_spread_modifier(self, modifier: float):
+        """Sets the spread modifier for the execution engine."""
+        self.engine.set_spread_modifier(modifier)
+
     def _build_optimization_matrix(self):
         """
         Constructs a master numpy matrix (Steps x 140) containing all STATIC market data.
@@ -522,8 +526,8 @@ class TradingEnv(gym.Env):
 
     def _open_position(self, asset, direction, act, mid_price, atr):
         """Open a new position with friction-aware price and PEEK & LABEL reward."""
-        # Execution price including spread/slippage
-        price = self.engine.get_entry_price(mid_price, direction, atr)
+        # Execution price including spread/slippage (SLIPPAGE DISABLED)
+        price = self.engine.get_entry_price(mid_price, direction, atr, enable_slippage=False)
         
         # Risk Validation: Position size
         size_pct = act["size"] * self.MAX_POS_SIZE_PCT
@@ -581,8 +585,8 @@ class TradingEnv(gym.Env):
         equity_before = self.equity
         atr = self.atr_arrays[asset][self.current_step]
         
-        # Execution Price (Bid/Ask)
-        exit_price = self.engine.get_close_price(mid_price, pos["direction"], atr)
+        # Execution Price (Bid/Ask) - SLIPPAGE DISABLED
+        exit_price = self.engine.get_close_price(mid_price, pos["direction"], atr, enable_slippage=False)
 
         # Determine Currency Logic
         is_usd_quote = "USD" in asset and asset.endswith("USD")
@@ -757,7 +761,8 @@ class TradingEnv(gym.Env):
             # Neither hit: use last available price + friction
             exit_mid = self.close_arrays[asset][end_idx - 1]
             atr = self.atr_arrays[asset][end_idx - 1]
-            exit_price = self.engine.get_close_price(exit_mid, direction, atr)
+            # SLIPPAGE DISABLED
+            exit_price = self.engine.get_close_price(exit_mid, direction, atr, enable_slippage=False)
             bars_held = end_idx - start_idx
 
         # Calculate P&L
@@ -901,9 +906,9 @@ class TradingEnv(gym.Env):
             # Normalize: 1% of starting equity = 0.02 reward
             normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 2.0
 
-            # Loss Aversion (Prospect Theory): Losses hurt 2.25x more (1.5 * 1.5)
+            # Loss Aversion Removed: Losses scaled same as wins
             if normalized_pnl < 0:
-                normalized_pnl = np.clip(normalized_pnl, -5.0, 0.0) * 2.25
+                normalized_pnl = np.clip(normalized_pnl, -5.0, 0.0)
             else:
                 # Relaxed clipping to allow for Fast Win Bonus (up to 5.0)
                 normalized_pnl = np.clip(normalized_pnl, 0.0, 5.0)

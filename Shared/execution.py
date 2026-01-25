@@ -42,10 +42,16 @@ class ExecutionEngine:
     """
     def __init__(self, config: TradeConfig = TradeConfig()):
         self.config = config
+        self.spread_modifier = 1.0
+
+    def set_spread_modifier(self, modifier: float):
+        """Sets the spread multiplier (0.0 to 1.0+)."""
+        self.spread_modifier = max(0.0, modifier)
 
     def get_spread(self, mid_price: float, atr: float) -> float:
         """Calculates dynamic spread in price units."""
-        return (self.config.SPREAD_MIN_PIPS * 0.0001 * mid_price) + (self.config.SPREAD_ATR_FACTOR * atr)
+        raw_spread = (self.config.SPREAD_MIN_PIPS * 0.0001 * mid_price) + (self.config.SPREAD_ATR_FACTOR * atr)
+        return raw_spread * self.spread_modifier
 
     def get_slippage(self, mid_price: float) -> float:
         """Generates random adverse slippage in price units."""
@@ -60,6 +66,8 @@ class ExecutionEngine:
         """
         spread = self.get_spread(mid_price, atr)
         slippage = 0.0
+        if enable_slippage:
+            slippage = self.get_slippage(mid_price)
         
         if direction == 1: # LONG
             return mid_price + spread + slippage
@@ -73,6 +81,8 @@ class ExecutionEngine:
         """
         spread = self.get_spread(mid_price, atr)
         slippage = 0.0
+        if enable_slippage:
+            slippage = self.get_slippage(mid_price)
 
         if direction == 1: # Close LONG
             return mid_price - slippage

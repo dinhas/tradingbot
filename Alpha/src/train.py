@@ -22,6 +22,11 @@ try:
 except (ImportError, ValueError):
     from trading_env import TradingEnv
 
+try:
+    from .curriculum_callback import CurriculumCallback
+except (ImportError, ValueError):
+    from curriculum_callback import CurriculumCallback
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -146,6 +151,22 @@ def load_ppo_config(config_path):
             
     return config
 
+def get_lr_schedule(base_lr, total_timesteps):
+    """
+    Returns a learning rate schedule function.
+    Reduces LR by 3x between 4.8M and 6.8M steps to handle curriculum transitions.
+    """
+    def lr_schedule(progress_remaining):
+        # progress_remaining goes from 1.0 to 0.0
+        current_step = total_timesteps * (1.0 - progress_remaining)
+        
+        # Dip LR around 5M-6.5M mark where spreads are introduced
+        if 4_800_000 <= current_step <= 6_800_000:
+             return base_lr / 3.0
+        
+        return base_lr
+    return lr_schedule
+
 def train(args):
     """
     Main training loop.
@@ -186,6 +207,16 @@ def train(args):
     if args.total_timesteps:
         total_timesteps = args.total_timesteps
     
+    # Handle Learning Rate Schedule
+    if 'learning_rate' in ppo_config:
+        base_lr = float(ppo_config['learning_rate'])
+        if not args.dry_run and total_timesteps > 2000:
+             # Use custom schedule unless dry run
+             ppo_config['learning_rate'] = get_lr_schedule(base_lr, total_timesteps)
+             logger.info(f"Using custom LR schedule (Base: {base_lr}, Dip: {base_lr/3.0:.2e} @ 4.8M-6.8M)")
+        else:
+             ppo_config['learning_rate'] = base_lr
+    
     if args.load_model:
         load_model_path = project_root / args.load_model
         logger.info(f"Loading model from {load_model_path}")
@@ -207,9 +238,15 @@ def train(args):
         verbose=1
     )
     
+    curriculum_callback = CurriculumCallback(verbose=1)
+    
     # 4. Train
     if args.dry_run:
         total_timesteps = 1000
+    else:
+        # Default to 10.5M if not specified and not dry-run
+        if args.total_timesteps is None:
+            total_timesteps = 10500000
     
     # Configure file logging
     from datetime import datetime
@@ -225,11 +262,11 @@ def train(args):
     model.set_logger(new_logger)
 
     logger.info(f"Logging to {log_file}")
-    logger.info(f"Training for {total_timesteps} timesteps...")
+    logger.info(f"Training for {total_timesteps} timesteps with Curriculum Learning...")
     
     model.learn(
         total_timesteps=total_timesteps, 
-        callback=[checkpoint_callback, metrics_callback],
+        callback=[checkpoint_callback, metrics_callback, curriculum_callback],
         progress_bar=False
     )
     
