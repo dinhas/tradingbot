@@ -191,20 +191,26 @@ class CombinedBacktester:
                 if direction != 0:
                     self.risk_metrics.total_signals += 1
                     
-                    # 2. Risk Inference
-                    risk_obs = self.build_risk_observation(obs)
-                    if self.risk_norm:
-                        risk_obs = self.risk_norm.normalize_obs(risk_obs.reshape(1, -1))[0]
-                    
-                    risk_action, _ = self.risk_model.predict(risk_obs, deterministic=True)
-                    
-                    # Decoding logic from RiskManagementEnv.step (RiskLayer/src/risk_env.py)
-                    # SL: [-1, 1] -> [0.5, 3.0] ATR
-                    # TP: [-1, 1] -> [1.0, 10.0] ATR
-                    # Size: [-1, 1] -> [0.01, 0.10] (1% to 10% of portfolio)
-                    sl_mult = np.clip((risk_action[0] + 1) / 2 * (3.0 - 0.5) + 0.5, 0.5, 3.0)
-                    tp_mult = np.clip((risk_action[1] + 1) / 2 * (10.0 - 1.0) + 1.0, 1.0, 10.0)
-                    risk_pct = np.clip((risk_action[2] + 1) / 2 * (0.10 - 0.01) + 0.01, 0.01, 0.10)
+                    if self.args.alpha_only:
+                        # Fixed Risk Logic (matching TradingEnv.py default ATR multipliers and RiskLayer default risk)
+                        sl_mult = 2.0  # Training Script default SL
+                        tp_mult = 4.0  # Training Script default TP
+                        risk_pct = 0.25 # Default fixed 25% risk per trade
+                    else:
+                        # 2. Risk Inference
+                        risk_obs = self.build_risk_observation(obs)
+                        if self.risk_norm:
+                            risk_obs = self.risk_norm.normalize_obs(risk_obs.reshape(1, -1))[0]
+                        
+                        risk_action, _ = self.risk_model.predict(risk_obs, deterministic=True)
+                        
+                        # Decoding logic from RiskManagementEnv.step (RiskLayer/src/risk_env.py)
+                        # SL: [-1, 1] -> [0.5, 3.0] ATR
+                        # TP: [-1, 1] -> [1.0, 10.0] ATR
+                        # Size: [-1, 1] -> [0.01, 0.10] (1% to 10% of portfolio)
+                        sl_mult = np.clip((risk_action[0] + 1) / 2 * (3.0 - 0.5) + 0.5, 0.5, 3.0)
+                        tp_mult = np.clip((risk_action[1] + 1) / 2 * (10.0 - 1.0) + 1.0, 1.0, 10.0)
+                        risk_pct = np.clip((risk_action[2] + 1) / 2 * (0.10 - 0.01) + 0.01, 0.01, 0.10)
                     
                     # Track action for history
                     self.recent_actions.append(np.array([float(sl_mult), float(tp_mult), float(risk_pct)], dtype=np.float32))
@@ -493,6 +499,7 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", type=str, default="backtest/results_combined_v2")
     parser.add_argument("--initial-equity", type=float, default=10.0)
     parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--alpha-only", action="store_true", help="Bypass risk model and use fixed SL/TP")
     
     args = parser.parse_args()
     

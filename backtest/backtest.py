@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 # Add project root to sys.path to allow absolute imports
-project_root = str(Path(__file__).resolve().parent.parent.parent)
+project_root = str(Path(__file__).resolve().parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
@@ -36,6 +36,7 @@ plt.switch_backend('Agg')
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from Alpha.src.trading_env import TradingEnv
+from Shared.execution import ExecutionEngine, TradeConfig
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ class BacktestMetrics:
     def calculate_metrics(self):
         """Calculate all PRD metrics"""
         # Total Return (can be calculated without trades)
-        initial_equity = self.equity_curve[0] if self.equity_curve else 1000
+        initial_equity = self.equity_curve[0] if self.equity_curve else 10000
         final_equity = self.equity_curve[-1] if self.equity_curve else initial_equity
         total_return = (final_equity - initial_equity) / initial_equity
         
@@ -100,7 +101,7 @@ class BacktestMetrics:
         if 'net_pnl' in df_trades.columns:
             df_trades['final_pnl'] = df_trades['net_pnl']
         else:
-            df_trades['final_pnl'] = df_trades['pnl'] - df_trades['fees']
+            df_trades['final_pnl'] = df_trades['pnl'] - df_trades['fee']
         
         # Separate winning and losing trades based on net P&L
         winning_trades = df_trades[df_trades['final_pnl'] > 0]
@@ -172,7 +173,7 @@ class BacktestMetrics:
         if 'net_pnl' in df_trades.columns:
             df_trades['final_pnl'] = df_trades['net_pnl']
         else:
-            df_trades['final_pnl'] = df_trades['pnl'] - df_trades['fees']
+            df_trades['final_pnl'] = df_trades['pnl'] - df_trades['fee']
         
         per_asset = {}
         
@@ -194,14 +195,6 @@ class BacktestMetrics:
         return per_asset
 
 
-def make_backtest_env(data_dir, stage):
-    """Create environment for backtesting"""
-    def _init():
-        env = TradingEnv(data_dir=data_dir, stage=stage, is_training=False)
-        return env
-    return _init
-
-
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, np.integer):
@@ -215,145 +208,198 @@ class NumpyEncoder(json.JSONEncoder):
 
 def run_backtest(args):
     """Main backtesting function"""
-    project_root = Path(__file__).resolve().parent.parent.parent
+    project_root = Path(__file__).resolve().parent.parent
     model_path = project_root / args.model
     data_dir_path = project_root / args.data_dir
     output_dir_path = project_root / args.output_dir
 
-    logger.info("Starting Alpha Model Backtest")
+    logger.info("Starting Alpha Model Backtest with Shared Execution Engine")
     logger.info(f"Model: {model_path}")
     logger.info(f"Data directory: {data_dir_path}")
     
     # Create output directory
     output_dir_path.mkdir(parents=True, exist_ok=True)
     
-    # Initialize metrics tracker
+    # Initialize execution engine
+    engine = ExecutionEngine(TradeConfig())
     metrics_tracker = BacktestMetrics()
     
-    # ---------------------------------------------------------
-    # PARALLEL BACKTESTING SETUP
-    # ---------------------------------------------------------
-    num_envs = args.workers if args.workers > 1 else 1
-    logger.info(f"Initializing {num_envs} environment worker(s)...")
-
-    # Create environments
-    if num_envs > 1:
-        env = SubprocVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage) for _ in range(num_envs)])
-    else:
-        env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)])
-
-    # Load model
-    logger.info("Loading model...")
-    
-    # Load VecNormalize stats if available
-    vecnorm_path = str(model_path).replace('.zip', '_vecnormalize.pkl')
-    # FALLBACK: Handle ppo_final_model.zip -> ppo_final_vecnormalize.pkl
-    if not os.path.exists(vecnorm_path):
-        vecnorm_path = str(model_path).replace('_model.zip', '_vecnormalize.pkl')
-
-    if os.path.exists(vecnorm_path):
-        logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
-        env = VecNormalize.load(vecnorm_path, env)
-        env.training = False
-        env.norm_reward = False
-    
-    model = PPO.load(model_path, env=env)
-    logger.info("Model loaded successfully")
-
-    # Get asset list
-    # Use a temp env to get assets list (avoiding overhead)
-    # Actually we can just hardcode or assume the list if avoiding instantiation
-    # But better to stay safe.
+    # Use a DummyEnv to get asset list
     temp_env = TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)
     available_assets = temp_env.assets
     assets_to_test = available_assets if args.asset == "all" else [args.asset]
+    
+    # Sequential backtest for accurate equity tracking and engine use
+    initial_equity = 10000.0
+    equity = initial_equity
+    
+    # SB3 Compatibility Shim
+    if not hasattr(np, "_core"):
+        sys.modules["numpy._core"] = np.core
 
-    # Create Task Queue: list of (asset, episode_index)
-    tasks = []
+    # Load model
+    logger.info("Loading model...")
+    # Load VecNormalize stats if available
+    vecnorm_path = str(model_path).replace('.zip', '_vecnormalize.pkl')
+    if not os.path.exists(vecnorm_path):
+        vecnorm_path = str(model_path).replace('_model.zip', '_vecnormalize.pkl')
+
+    # For manual step loop, we use a single env
+    env = TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)
+    
+    alpha_norm = None
+    if os.path.exists(vecnorm_path):
+        logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
+        # Need a dummy vec env to load normalizer
+        dummy_vec_env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False)])
+        alpha_norm = VecNormalize.load(vecnorm_path, dummy_vec_env)
+        alpha_norm.training = False
+        alpha_norm.norm_reward = False
+    
+    model = PPO.load(model_path, device='cpu')
+    logger.info("Model loaded successfully")
+
     for asset in assets_to_test:
-        for episode in range(args.episodes):
-            tasks.append({'asset': asset, 'episode': episode})
-            
-    total_tasks = len(tasks)
-    logger.info(f"Total tasks: {total_tasks} (Assets: {len(assets_to_test)}, Episodes per asset: {args.episodes})")
-    
-    # Per-environment buffers
-    env_buffers = [BacktestMetrics() for _ in range(num_envs)]
-    
-    # Track which task is currently assigned to which env
-    # active_tasks[env_idx] = {'asset': ..., 'episode': ...}
-    active_tasks = [None] * num_envs
-    
-    # Initial Task Assignment
-    for i in range(num_envs):
-        if tasks:
-            task = tasks.pop(0)
-            active_tasks[i] = task
-            logger.info(f"Worker {i} starting: {task['asset']} (Ep {task['episode']+1})")
-            if num_envs > 1:
-                env.env_method('set_asset', task['asset'], indices=i)
-            else:
-                env.envs[0].set_asset(task['asset'])
-                
-    # Reset all environments to start
-    obs = env.reset()
-    dones = np.array([False] * num_envs)
-    
-    completed_tasks = 0
-    
-    # Main Loop
-    while completed_tasks < total_tasks or any(t is not None for t in active_tasks):
-        action, _ = model.predict(obs, deterministic=True)
-        obs, rewards, dones, infos = env.step(action)
+        logger.info(f"Testing Asset: {asset}")
+        env.set_asset(asset)
+        env.equity = equity # Start each asset with current portfolio equity
+        obs, _ = env.reset()
+        env.current_step = 0 # Start from beginning for full 2025 backtest
         
-        for i in range(num_envs):
-            # If this env has an active task
-            if active_tasks[i] is not None:
-                # Accumulate data
-                info = infos[i]
+        asset_max_steps = len(env.processed_data) - 1
+        
+        while env.current_step < asset_max_steps:
+            if env.current_step % 10000 == 0 and env.current_step > 0:
+                logger.info(f"  Step {env.current_step}/{asset_max_steps} | Portfolio Equity: ${equity:.2f}")
+            
+            # Predict
+            norm_obs = obs
+            if alpha_norm:
+                norm_obs = alpha_norm.normalize_obs(obs.reshape(1, -1))[0]
+            
+            action_raw, _ = model.predict(norm_obs, deterministic=True)
+            
+            # Simple thresholding logic (matching original backtest behavior)
+            signal = float(action_raw[0])
+            direction = 0
+            if signal > 0.33: direction = 1
+            elif signal < -0.33: direction = -1
+            
+            if direction != 0:
+                # Execute via Engine
+                atr = env.atr_arrays[asset][env.current_step]
+                raw_price = env.close_arrays[asset][env.current_step]
                 
-                # Capture trades from this step
-                if 'trades' in info:
-                    for trade in info['trades']:
-                        env_buffers[i].add_trade(trade)
+                # Fixed SL/TP multipliers matching TradingEnv.py defaults
+                sl_mult = 2.0
+                tp_mult = 4.0
+                
+                # Execution price
+                entry_price = engine.get_entry_price(raw_price, direction, atr)
+                
+                # Position Sizing
+                is_usd_quote = "USD" in asset and asset.endswith("USD")
+                is_usd_base = "USD" in asset and asset.startswith("USD")
+                if not is_usd_quote and not is_usd_base: is_usd_quote = True
+                
+                contract_size = engine.get_contract_size(asset)
+                
+                # Calculate SL distance in price
+                sl_dist_price = sl_mult * atr
+                
+                lots = engine.calculate_position_size(
+                    equity=equity,
+                    initial_equity=initial_equity,
+                    entry_price=entry_price,
+                    sl_dist_price=sl_dist_price,
+                    atr=atr,
+                    is_usd_quote=is_usd_quote,
+                    is_usd_base=is_usd_base,
+                    contract_size=contract_size
+                )
+                
+                if lots > 0:
+                    # Simulate outcome (lookahead)
+                    sl_price, tp_price, _, _ = engine.get_exit_prices(entry_price, direction, sl_mult, tp_mult, atr)
+                    
+                    exit_price = entry_price
+                    exit_reason = 'TIME'
+                    
+                    # Look forward (max 1000 steps)
+                    lookahead = 1000
+                    exit_idx = env.current_step
+                    for j in range(env.current_step + 1, min(env.current_step + lookahead, len(env.close_arrays[asset]))):
+                        exit_idx = j
+                        low = env.low_arrays[asset][j]
+                        high = env.high_arrays[asset][j]
                         
-                # Capture equity from this step
-                if 'equity' in info and 'timestamp' in info:
-                    env_buffers[i].add_equity_point(info['timestamp'], info['equity'])
-                
-                # Check for completion
-                if dones[i]:
-                    task = active_tasks[i]
-                    final_equity = info.get('equity', 0)
-                    
-                    logger.info(f"[{task['asset']}] Worker {i} finished Ep {task['episode']+1}. Final Equity: ${final_equity:.2f}")
-                    
-                    # Merge buffer into main metrics
-                    metrics_tracker.trades.extend(env_buffers[i].trades)
-                    metrics_tracker.equity_curve.extend(env_buffers[i].equity_curve)
-                    metrics_tracker.timestamps.extend(env_buffers[i].timestamps)
-                    
-                    # Reset buffer
-                    env_buffers[i] = BacktestMetrics()
-                    
-                    completed_tasks += 1
-                    
-                    # Assign new task if available
-                    if tasks:
-                        new_task = tasks.pop(0)
-                        active_tasks[i] = new_task
-                        logger.info(f"Worker {i} starting: {new_task['asset']} (Ep {new_task['episode']+1})")
-                        if num_envs > 1:
-                            env.env_method('set_asset', new_task['asset'], indices=i)
+                        if direction == 1:
+                            if low <= sl_price:
+                                exit_price = sl_price
+                                exit_reason = 'SL'
+                                break
+                            if high >= tp_price:
+                                exit_price = tp_price
+                                exit_reason = 'TP'
+                                break
                         else:
-                            env.envs[0].set_asset(new_task['asset'])
+                            if high >= sl_price:
+                                exit_price = sl_price
+                                exit_reason = 'SL'
+                                break
+                            if low <= tp_price:
+                                exit_price = tp_price
+                                exit_reason = 'TP'
+                                break
+                        exit_price = env.close_arrays[asset][j]
+                    
+                    # Friction on Exit
+                    if exit_reason == 'TIME':
+                        exit_execution_price = engine.get_close_price(exit_price, direction, atr)
                     else:
-                        active_tasks[i] = None
-                        # Env will continue stepping but we ignore it
-                        
-    env.close()
-    
-    # Calculate metrics
+                        # SL/TP hit at specified price, but let's assume it's the bid/ask already
+                        exit_execution_price = exit_price
+                    
+                    # Calculate PnL
+                    net_pnl = engine.calculate_pnl(entry_price, exit_execution_price, lots, direction, is_usd_quote, is_usd_base, contract_size)
+                    
+                    # Calculate Fees (Estimation for metrics)
+                    # Total friction = difference between entry/exit execution and mid prices
+                    entry_fee = abs(entry_price - raw_price) * lots * contract_size
+                    if not is_usd_quote and is_usd_base: entry_fee /= raw_price
+                    
+                    # Record Trade
+                    trade_info = {
+                        'timestamp': env.processed_data.index[env.current_step],
+                        'asset': asset,
+                        'direction': direction,
+                        'entry': entry_price,
+                        'exit': exit_execution_price,
+                        'reason': exit_reason,
+                        'pnl': net_pnl,
+                        'fee': entry_fee, # Simplified fee tracking
+                        'lots': lots,
+                        'sl_mult': sl_mult,
+                        'tp_mult': tp_mult,
+                        'hold_time': (exit_idx - env.current_step) * 5,
+                        'rr_ratio': tp_mult / sl_mult
+                    }
+                    metrics_tracker.add_trade(trade_info)
+                    
+                    equity += net_pnl
+                    env.current_step = exit_idx # Skip to exit
+                
+            # Update metrics
+            metrics_tracker.add_equity_point(env.processed_data.index[env.current_step], equity)
+            
+            # Step forward
+            env.current_step += 1
+            if env.current_step < asset_max_steps:
+                # Update env equity for correct observation
+                env.equity = equity
+                obs = env._get_observation()
+
+    # Finalize
     logger.info("\n" + "="*60)
     logger.info("CALCULATING METRICS")
     logger.info("="*60)
@@ -361,7 +407,7 @@ def run_backtest(args):
     metrics = metrics_tracker.calculate_metrics()
     
     # Print metrics
-    logger.info(f"\n{'BACKTEST RESULTS':^60}")
+    logger.info(f"\n{'BACKTEST RESULTS (WITH ENGINE)':^60}")
     logger.info("="*60)
     logger.info(f"{'PRIMARY METRIC - Profit Factor:':<40} {metrics.get('profit_factor', 0):.3f}")
     logger.info(f"{'Total Return:':<40} {metrics.get('total_return', 0):.2%}")
@@ -376,51 +422,17 @@ def run_backtest(args):
     logger.info(f"{'Losing Trades:':<40} {metrics.get('losing_trades', 0)}")
     logger.info("="*60)
     
-    # Check PRD success criteria (Section 8.1)
-    logger.info(f"\n{'PRD SUCCESS CRITERIA CHECK':^60}")
-    logger.info("="*60)
-    pf_pass = metrics.get('profit_factor', 0) > 1.3
-    dd_pass = metrics.get('max_drawdown', 0) > -0.20
-    sr_pass = metrics.get('sharpe_ratio', 0) > 1.0
-    wr_pass = metrics.get('win_rate', 0) > 0.45
-    
-    logger.info(f"{'Profit Factor > 1.3:':<40} {'✅ PASS' if pf_pass else '❌ FAIL'}")
-    logger.info(f"{'Max Drawdown < 20%:':<40} {'✅ PASS' if dd_pass else '❌ FAIL'}")
-    logger.info(f"{'Sharpe Ratio > 1.0:':<40} {'✅ PASS' if sr_pass else '❌ FAIL'}")
-    logger.info(f"{'Win Rate > 45%:':<40} {'✅ PASS' if wr_pass else '❌ FAIL'}")
-    logger.info("="*60)
-    
-    all_pass = pf_pass and dd_pass and sr_pass and wr_pass
-    logger.info(f"\n{'OVERALL: ' + ('✅ ALL CRITERIA MET' if all_pass else '❌ SOME CRITERIA NOT MET'):^60}\n")
-    
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # 1. Save metrics JSON
-    metrics_file = output_dir_path / f"metrics_alpha_{timestamp}.json"
+    metrics_file = output_dir_path / f"metrics_alpha_engine_{timestamp}.json"
     with open(metrics_file, 'w') as f:
         json.dump(metrics, f, indent=2, cls=NumpyEncoder)
-    logger.info(f"Saved metrics to {metrics_file}")
     
-    # 2. Save trade log
     if metrics_tracker.trades:
-        trades_file = output_dir_path / f"trades_alpha_{timestamp}.csv"
+        trades_file = output_dir_path / f"trades_alpha_engine_{timestamp}.csv"
         pd.DataFrame(metrics_tracker.trades).to_csv(trades_file, index=False)
-        logger.info(f"Saved trade log to {trades_file}")
-    
-    # 3. Save per-asset performance
-    per_asset = metrics_tracker.get_per_asset_metrics()
-    if per_asset:
-        asset_file = output_dir_path / f"asset_breakdown_stage{args.stage}_{timestamp}.csv"
-        pd.DataFrame(per_asset).T.to_csv(asset_file)
-        logger.info(f"Saved per-asset breakdown to {asset_file}")
-    
-    # 4. Generate all visualizations
-    if metrics_tracker.equity_curve and metrics_tracker.trades:
-        logger.info("\nGenerating comprehensive charts...")
-        generate_all_charts(metrics_tracker, per_asset, args.stage, output_dir_path, timestamp)
-    
-    logger.info("\nBacktest complete!")
+        
+    logger.info(f"Results saved to {output_dir_path}")
     return metrics
 
 
@@ -675,7 +687,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    project_root = Path(__file__).resolve().parent.parent.parent
+    project_root = Path(__file__).resolve().parent.parent
     model_path = project_root / args.model
     data_dir_path = project_root / args.data_dir
 

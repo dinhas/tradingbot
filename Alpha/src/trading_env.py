@@ -11,6 +11,7 @@ try:
 except (ImportError, ValueError):
     from feature_engine import FeatureEngine
 
+from Shared.execution import ExecutionEngine, TradeConfig
 
 class TradingEnv(gym.Env):
     """
@@ -32,6 +33,9 @@ class TradingEnv(gym.Env):
         self.stage = stage
         self.transaction_cost = transaction_cost
         self.assets = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "XAUUSD"]
+        
+        # Shared Execution Engine
+        self.engine = ExecutionEngine(TradeConfig())
 
         # Configuration Constants
         self.MIN_POSITION_SIZE = 0.1
@@ -476,7 +480,7 @@ class TradingEnv(gym.Env):
             else (-1 if direction_raw < -0.33 else 0),
             "size": 0.5,  # Fixed: 25% of equity (0.5 * MAX_POS_SIZE_PCT)
             "sl_mult": 2.0,  # Fixed: 2.0x ATR
-            "tp_mult": 4.0,  # Fixed: 4.0x ATR
+            "tp_mult": 5.0,  # Fixed: 5.0x ATR
         }
 
     def _execute_trades(self, actions):
@@ -516,34 +520,28 @@ class TradingEnv(gym.Env):
         total_allocated = current_exposure + new_position_size
         return total_allocated <= (self.equity * self.MAX_TOTAL_EXPOSURE)
 
-    def _open_position(self, asset, direction, act, price, atr):
-        """Open a new position with PEEK & LABEL reward assignment."""
+    def _open_position(self, asset, direction, act, mid_price, atr):
+        """Open a new position with friction-aware price and PEEK & LABEL reward."""
+        # Execution price including spread/slippage
+        price = self.engine.get_entry_price(mid_price, direction, atr)
+        
         # Risk Validation: Position size
         size_pct = act["size"] * self.MAX_POS_SIZE_PCT
         position_size = size_pct * self.equity
 
-        # Minimum position check (REMOVED BLOCKING)
-        # if position_size < self.MIN_POSITION_SIZE:
-        #     return
-
         # Maximum position check
         position_size = min(position_size, self.equity * 0.5)
 
-        # Global exposure check (REMOVED BLOCKING)
-        # if not self._check_global_exposure(position_size):
-        #     return
-
-        # Calculate SL/TP levels (FIX: Handle zero ATR edge case)
-        atr = max(atr, price * self.MIN_ATR_MULTIPLIER)  # Minimum 0.01% of price
-        sl_dist = act["sl_mult"] * atr
-        tp_dist = act["tp_mult"] * atr
-        sl = price - (direction * sl_dist)
-        tp = price + (direction * tp_dist)
+        # Calculate SL/TP levels using Engine for consistent rounding and logic
+        sl_mult = act["sl_mult"]
+        tp_mult = act["tp_mult"]
+        sl, tp, sl_dist, tp_dist = self.engine.get_exit_prices(price, direction, sl_mult, tp_mult, atr)
 
         # Create position
         self.positions[asset] = {
             "direction": direction,
             "entry_price": price,
+            "mid_entry_price": mid_price, # Store mid for fee calculation
             "size": position_size,
             "sl": sl,
             "tp": tp,
@@ -571,57 +569,68 @@ class TradingEnv(gym.Env):
         # FAST SL PENALTY (Anti-Overtrade/Precision Focus)
         elif simulated_pnl < 0 and bars_held <= 3:
             # If hit SL within 3 candles, add an extra penalty (1% of equity)
-            # This "x price" penalty discourages tight stops that get hunted immediately
             bad_entry_penalty = -(0.01 * self.start_equity)
             self.peeked_pnl_step += bad_entry_penalty
 
-        # Transaction costs (Notional Based)
-        # 0.00002 = 0.2 pips spread (applied to full volume)
-        cost = (position_size * self.leverage) * self.transaction_cost
-        self.equity -= cost
-
-    def _close_position(self, asset, price):
-        """Close position and record trade."""
+    def _close_position(self, asset, mid_price):
+        """Close position using ExecutionEngine friction."""
         pos = self.positions[asset]
         if pos is None:
             return
 
         equity_before = self.equity
+        atr = self.atr_arrays[asset][self.current_step]
+        
+        # Execution Price (Bid/Ask)
+        exit_price = self.engine.get_close_price(mid_price, pos["direction"], atr)
 
-        # Calculate P&L
-        price_change = (price - pos["entry_price"]) * pos["direction"]
-        price_change_pct = (
-            price_change / pos["entry_price"] if pos["entry_price"] != 0 else 0
-        )
-        position_value = pos["size"] * self.leverage
-        pnl = price_change_pct * position_value
+        # Determine Currency Logic
+        is_usd_quote = "USD" in asset and asset.endswith("USD")
+        is_usd_base = "USD" in asset and asset.startswith("USD")
+        if not is_usd_quote and not is_usd_base: is_usd_quote = True
+        
+        contract_size = self.engine.get_contract_size(asset)
+
+        # Calculate P&L using Engine
+        lots = pos["size"] / (pos["entry_price"] if is_usd_base else 100000) # Rough lot conversion for PnL logic
+        # Actually, let's keep consistency with how TradingEnv usually handles P&L but add friction
+        
+        price_change = (exit_price - pos["entry_price"]) * pos["direction"]
+        price_change_pct = (price_change / pos["entry_price"]) if pos["entry_price"] != 0 else 0
+        
+        # position_value = size * leverage
+        pnl = price_change_pct * (pos["size"] * self.leverage)
+        
+        if not is_usd_quote and is_usd_base:
+            pnl /= mid_price
 
         # Update equity
         self.equity += pnl
-
-        # Exit transaction cost (Notional Based)
-        cost = (pos["size"] * self.leverage) * self.transaction_cost
-        self.equity -= cost
-
-        # Prevent negative equity
         self.equity = max(self.equity, 0.01)
 
         # Record trade for backtesting
-        # LOGGING RESTRICTION: Only log if NOT training (Backtest only)
         if not self.is_training:
-            hold_time = (self.current_step - pos["entry_step"]) * 5  # 5 min per step
+            # Fee estimation (entry + exit friction)
+            entry_fee_dist = abs(pos["entry_price"] - pos["mid_entry_price"])
+            exit_fee_dist = abs(exit_price - mid_price)
+            total_fee_dist = entry_fee_dist + exit_fee_dist
+            
+            fee_pnl = (total_fee_dist / pos["entry_price"]) * (pos["size"] * self.leverage)
+            if not is_usd_quote and is_usd_base: fee_pnl /= mid_price
+
+            hold_time = (self.current_step - pos["entry_step"]) * 5
             trade_record = {
                 "timestamp": self._get_current_timestamp(),
                 "asset": asset,
                 "action": "BUY" if pos["direction"] == 1 else "SELL",
                 "size": pos["size"],
                 "entry_price": pos["entry_price"],
-                "exit_price": price,
+                "exit_price": exit_price,
                 "sl": pos["sl"],
                 "tp": pos["tp"],
                 "pnl": pnl,
-                "net_pnl": pnl - cost,
-                "fees": cost,
+                "net_pnl": pnl, # pnl already includes friction
+                "fees": fee_pnl,
                 "equity_before": equity_before,
                 "equity_after": self.equity,
                 "hold_time": hold_time,
@@ -637,30 +646,68 @@ class TradingEnv(gym.Env):
         """Check SL/TP for all open positions."""
         current_prices = self._get_current_prices()
 
-        # FIX: Safe iteration using list() to avoid runtime issues if dict changes
         for asset, pos in list(self.positions.items()):
             if pos is None:
                 continue
 
             price = current_prices[asset]
 
-            # Check SL/TP (use SL/TP price for exit, not gap price)
+            # Check SL/TP (Note: SL/TP prices already include friction since they are exit execution prices)
             if pos["direction"] == 1:  # Long
                 if price <= pos["sl"]:
-                    self._close_position(asset, pos["sl"])
+                    # We hit the Bid price level
+                    self._close_position_direct(asset, pos["sl"])
                 elif price >= pos["tp"]:
-                    self._close_position(asset, pos["tp"])
+                    # We hit the TP target
+                    self._close_position_direct(asset, pos["tp"])
             else:  # Short
                 if price >= pos["sl"]:
-                    self._close_position(asset, pos["sl"])
+                    self._close_position_direct(asset, pos["sl"])
                 elif price <= pos["tp"]:
-                    self._close_position(asset, pos["tp"])
+                    self._close_position_direct(asset, pos["tp"])
+
+    def _close_position_direct(self, asset, execution_price):
+        """Internal close at exact execution price (SL/TP hit)."""
+        pos = self.positions[asset]
+        if pos is None: return
+        
+        equity_before = self.equity
+        price_change = (execution_price - pos["entry_price"]) * pos["direction"]
+        price_change_pct = (price_change / pos["entry_price"]) if pos["entry_price"] != 0 else 0
+        pnl = price_change_pct * (pos["size"] * self.leverage)
+        
+        is_usd_base = "USD" in asset and asset.startswith("USD")
+        if is_usd_base: pnl /= execution_price
+        
+        self.equity += pnl
+        self.equity = max(self.equity, 0.01)
+        
+        if not self.is_training:
+            trade_record = {
+                "timestamp": self._get_current_timestamp(),
+                "asset": asset,
+                "action": "BUY" if pos["direction"] == 1 else "SELL",
+                "size": pos["size"],
+                "entry_price": pos["entry_price"],
+                "exit_price": execution_price,
+                "sl": pos["sl"],
+                "tp": pos["tp"],
+                "pnl": pnl,
+                "net_pnl": pnl,
+                "fees": 0, # Friction already in prices
+                "equity_before": equity_before,
+                "equity_after": self.equity,
+                "hold_time": (self.current_step - pos["entry_step"]) * 5,
+                "rr_ratio": pos["tp_dist"] / pos["sl_dist"] if pos["sl_dist"] > 0 else 0,
+            }
+            self.completed_trades.append(trade_record)
+            self.all_trades.append(trade_record)
+        self.positions[asset] = None
 
     def _simulate_trade_outcome(self, asset):
         """
         PEEK & LABEL: Look ahead to see if trade hits SL or TP.
-        OPTIMIZED: Uses cached numpy arrays instead of pandas slicing.
-        Returns: (pnl, bars_held)
+        Now includes friction awareness.
         """
         if self.positions[asset] is None:
             return 0.0, 0
@@ -670,14 +717,12 @@ class TradingEnv(gym.Env):
         sl = pos["sl"]
         tp = pos["tp"]
 
-        # Look forward up to 1000 steps
         start_idx = self.current_step + 1
         end_idx = min(start_idx + 1000, len(self.raw_data))
 
         if start_idx >= end_idx:
             return 0.0, 0
 
-        # OPTIMIZATION: Use pre-cached numpy arrays
         lows = self.low_arrays[asset][start_idx:end_idx]
         highs = self.high_arrays[asset][start_idx:end_idx]
 
@@ -693,8 +738,6 @@ class TradingEnv(gym.Env):
 
         bars_held = end_idx - start_idx
 
-        # Determine outcome
-        # FIX: When both hit on same candle, assume SL first (conservative)
         if sl_hit and tp_hit:
             first_sl_idx = np.argmax(sl_hit_mask)
             first_tp_idx = np.argmax(tp_hit_mask)
@@ -711,16 +754,19 @@ class TradingEnv(gym.Env):
             exit_price = tp
             bars_held = np.argmax(tp_hit_mask) + 1
         else:
-            # Neither hit: use last available price from cached array
-            exit_price = self.close_arrays[asset][end_idx - 1]
+            # Neither hit: use last available price + friction
+            exit_mid = self.close_arrays[asset][end_idx - 1]
+            atr = self.atr_arrays[asset][end_idx - 1]
+            exit_price = self.engine.get_close_price(exit_mid, direction, atr)
+            bars_held = end_idx - start_idx
 
-        # Calculate P&L (FIX: Use correct formula matching _close_position)
+        # Calculate P&L
         price_change = (exit_price - pos["entry_price"]) * direction
-        price_change_pct = (
-            price_change / pos["entry_price"] if pos["entry_price"] != 0 else 0
-        )
-        position_value = pos["size"] * self.leverage
-        pnl = price_change_pct * position_value
+        price_change_pct = (price_change / pos["entry_price"]) if pos["entry_price"] != 0 else 0
+        pnl = price_change_pct * (pos["size"] * self.leverage)
+        
+        is_usd_base = "USD" in asset and asset.startswith("USD")
+        if is_usd_base: pnl /= exit_price
 
         return pnl, bars_held
 

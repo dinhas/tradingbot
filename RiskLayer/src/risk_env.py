@@ -44,8 +44,9 @@ class RiskManagementEnv(gym.Env):
         # Simulation Toggles
         self.ENABLE_SLIPPAGE = False 
         
-        # --- Configuration ---
-        self.EPISODE_LENGTH = 100
+        # --- Configuration (Aligned with Alpha) ---
+        self.EPISODE_LENGTH = 2000 # Increased for longer horizon learning
+        self.DRAWDOWN_LIMIT = 0.25 # 25% Drawdown termination
         
         # --- Load Data ---
         self._load_data()
@@ -445,16 +446,22 @@ class RiskManagementEnv(gym.Env):
         terminated = False
         truncated = (self.current_step >= self.EPISODE_LENGTH)
         
-        if self.equity < (self.initial_equity_base * 0.3): 
+        # 25% Drawdown termination (only in training)
+        drawdown = 1.0 - (self.equity / self.peak_equity)
+        if drawdown > self.DRAWDOWN_LIMIT and self.is_training:
+            terminated = True
+            reward -= 10.0 # Termination penalty
+            
+        if self.equity < (self.initial_equity_base * 0.1): # Safety terminal
             terminated = True
             reward -= 20.0
-            reward = np.clip(reward, -100.0, 100.0)
             
         info = {
             'pnl': net_pnl,
             'exit': exited_on,
             'lots': lots,
             'equity': self.equity,
+            'drawdown': drawdown,
             'efficiency': pnl_efficiency,
             'bullet': bullet_bonus
         }
