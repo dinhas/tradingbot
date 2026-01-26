@@ -228,16 +228,18 @@ class TradingEnv(gym.Env):
         total_exposure = sum(
             pos["size"] for pos in self.positions.values() if pos is not None
         )
-        full_obs[self.dynamic_indices["equity"]] = self.equity
+        # NORMALIZE: equity relative to start_equity
+        full_obs[self.dynamic_indices["equity"]] = self.equity / self.start_equity
         full_obs[self.dynamic_indices["margin_usage_pct"]] = (
             total_exposure / self.equity if self.equity > 0 else 0
         )
         full_obs[self.dynamic_indices["drawdown"]] = 1.0 - (
             self.equity / self.peak_equity
         )
+        # NORMALIZE: num_open_positions (max 5)
         full_obs[self.dynamic_indices["num_open_positions"]] = sum(
             1 for p in self.positions.values() if p is not None
-        )
+        ) / 5.0
 
         # Update Per-Asset Dynamic
         current_prices = self._get_current_prices()
@@ -255,13 +257,15 @@ class TradingEnv(gym.Env):
 
                 full_obs[indices["has_position"]] = 1.0
                 full_obs[indices["position_size"]] = pos["size"] / self.equity
-                full_obs[indices["unrealized_pnl"]] = unrealized_pnl
+                full_obs[indices["unrealized_pnl"]] = unrealized_pnl # Already somewhat normalized
                 full_obs[indices["position_age"]] = (
                     self.current_step - pos["entry_step"]
-                )
-                full_obs[indices["entry_price"]] = pos["entry_price"]
-                full_obs[indices["current_sl"]] = pos["sl"]
-                full_obs[indices["current_tp"]] = pos["tp"]
+                ) / 500.0 # NORMALIZE: Approx 2 days of 5m candles
+                # NORMALIZE: Entry price relative to current
+                full_obs[indices["entry_price"]] = (pos["entry_price"] - current_prices[asset]) / current_prices[asset]
+                # NORMALIZE: SL/TP relative to current
+                full_obs[indices["current_sl"]] = (pos["sl"] - current_prices[asset]) / current_prices[asset]
+                full_obs[indices["current_tp"]] = (pos["tp"] - current_prices[asset]) / current_prices[asset]
 
         return full_obs
 
@@ -475,8 +479,13 @@ class TradingEnv(gym.Env):
             win_rate = self.episode_wins / self.episode_trades if self.episode_trades > 0 else 0
             fee_pct = (self.episode_fees_cash / self.episode_volume_cash * 100) if self.episode_volume_cash > 0 else 0
             
+            # These must be at the top level of info for Monitor(..., info_keywords=...) to catch them
+            info["win_rate"] = win_rate
+            info["fee_pct"] = fee_pct
+            info["total_trades"] = self.episode_trades
+
             info["episode"] = {
-                "r": reward, # Monitor will override this if it's there, but we can add our own
+                "r": reward, 
                 "l": self.current_step,
                 "win_rate": win_rate,
                 "fee_pct": fee_pct,

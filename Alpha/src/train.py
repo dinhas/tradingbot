@@ -194,7 +194,8 @@ def train(args):
     # 2. Setup Environment
     def create_env():
         env = TradingEnv(data_dir=str(data_dir_path), is_training=True)
-        env = Monitor(env)
+        # Add custom keywords to Monitor to ensure they are captured in ep_info_buffer
+        env = Monitor(env, info_keywords=("total_trades", "win_rate", "fee_pct"))
         return env
 
     # Using DummyVecEnv for stability and simpler curriculum management
@@ -206,7 +207,8 @@ def train(args):
         logger.info(f"Loading VecNormalize from {vec_norm_path}")
         env = VecNormalize.load(str(vec_norm_path), env)
     else:
-        env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
+        # DISABLE norm_reward: Peek & Label rewards are already normalized to starting equity
+        env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10.)
 
     # 3. Load Config and Model
     config = load_ppo_config(args.config)
