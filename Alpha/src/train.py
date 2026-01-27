@@ -153,7 +153,22 @@ def train(args):
     project_root = Path(__file__).resolve().parent.parent.parent
     log_dir_path = project_root / args.log_dir
     checkpoint_dir_path = project_root / args.checkpoint_dir
-    data_dir_path = project_root / args.data_dir
+    # Resolve data directory: prefer provided path but also check common Alpha downloader locations
+    requested_data_dir = project_root / args.data_dir
+    candidate_dirs = [
+        requested_data_dir,
+        project_root / "data",
+        project_root / "Alpha" / "data",
+        Path(__file__).resolve().parent / "data",
+    ]
+    data_dir_path = requested_data_dir
+    for cand in candidate_dirs:
+        try:
+            if cand.exists() and any(cand.glob("*.parquet")):
+                data_dir_path = cand
+                break
+        except Exception:
+            continue
     config_path = project_root / args.config
 
     logger.info("Starting Alpha Model Training (Simplified)")
