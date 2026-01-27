@@ -16,6 +16,11 @@ except (ImportError, ValueError):
     from pathlib import Path
     sys.path.append(str(Path(__file__).parent))
     from trading_env import TradingEnv
+try:
+    from .curriculum_callback_alpha import AlphaCurriculumCallback
+except (ImportError, ValueError):
+    from curriculum_callback_alpha import AlphaCurriculumCallback
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -201,6 +206,13 @@ def train(args):
         plot_freq=10000,
         verbose=1
     )
+
+    # Curriculum Learning Callback
+    curriculum_callback = AlphaCurriculumCallback(
+        total_timesteps=total_timesteps,
+        schedule=args.curriculum_schedule,
+        verbose=1
+    )
     
     # 4. Train
     if args.dry_run:
@@ -224,7 +236,7 @@ def train(args):
     
     model.learn(
         total_timesteps=total_timesteps, 
-        callback=[checkpoint_callback, metrics_callback],
+        callback=[checkpoint_callback, metrics_callback, curriculum_callback],
         progress_bar=False
     )
     
@@ -244,6 +256,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_dir", type=str, default="models/checkpoints", help="Path to save checkpoints relative to project root")
     parser.add_argument("--load_model", type=str, default=None, help="Path to load existing model")
     parser.add_argument("--config", type=str, default="Alpha/config/ppo_config.yaml", help="Path to PPO configuration file")
+    parser.add_argument("--curriculum-schedule", type=str, default="recommended", choices=["original", "recommended"], help="Curriculum schedule: 'original' or 'recommended'")
     parser.add_argument("--dry-run", action="store_true", help="Run a short test training loop")
     
     args = parser.parse_args()

@@ -38,6 +38,37 @@ class TradingEnv(gym.Env):
         self.MIN_ATR_MULTIPLIER = 0.0001
         self.REWARD_LOG_INTERVAL = 5000
 
+        # ========== FEES ENGINE CONFIGURATION ==========
+        # Curriculum learning: All fees scale with spread_modifier (0.0 to 1.0)
+        self.spread_modifier = 0.0  # 0.0 = no fees, 1.0 = full fees
+        
+        # Asset-specific base spreads (in pips)
+        self.base_spreads_pips = {
+            "EURUSD": 0.8,
+            "GBPUSD": 1.2,
+            "USDJPY": 0.9,
+            "USDCHF": 1.5,
+            "XAUUSD": 25.0,
+        }
+        
+        # Commission (per $100k lot round-trip)
+        self.commission_per_lot = {
+            "EURUSD": 3.0,
+            "GBPUSD": 3.0,
+            "USDJPY": 3.0,
+            "USDCHF": 3.5,
+            "XAUUSD": 5.0,
+        }
+        
+        # Slippage configuration
+        self.base_slippage_pips = 0.3
+        self.slippage_enabled = True
+        
+        # Historical ATR tracking for volatility detection
+        self.atr_history = {asset: [] for asset in self.assets}
+        self.atr_window = 100  # Track 100 periods for volatility baseline
+        # ===============================================
+
         # Load Data
         if data is not None:
             self.data = data
@@ -384,6 +415,137 @@ class TradingEnv(gym.Env):
 
         return self._get_observation(), {}
 
+    def set_spread_modifier(self, modifier: float):
+        """
+        Set spread/fees multiplier for curriculum learning.
+        
+        Args:
+            modifier: 0.0 = no fees, 1.0 = full fees
+        """
+        self.spread_modifier = np.clip(modifier, 0.0, 1.0)
+        if hasattr(self, 'is_training') and not self.is_training:
+            # Only log during training
+            pass
+        else:
+            logging.info(f"Spread modifier set to {self.spread_modifier*100:.0f}%")
+
+    def _get_pip_value(self, asset: str) -> float:
+        """Get pip value for asset."""
+        if asset == "USDJPY":
+            return 0.01
+        elif asset == "XAUUSD":
+            return 0.1
+        else:
+            return 0.0001
+    
+    def _get_session_multiplier(self) -> float:
+        """Get spread multiplier based on trading session."""
+        try:
+            hour = self.raw_data.index[self.current_step].hour
+        except:
+            return 1.0
+        
+        # London (8-17 UTC): 1.0x
+        # NY (13-22 UTC): 1.0x
+        # Overlap (13-17 UTC): 0.8x
+        # Asian (23-8 UTC): 1.5x
+        
+        if 13 <= hour < 17:
+            return 0.8  # London-NY overlap - best liquidity
+        elif 8 <= hour < 22:
+            return 1.0  # London or NY session
+        else:
+            return 1.5  # Asian session - lower liquidity
+    
+    def _get_volatility_multiplier(self, asset: str) -> float:
+        """Get spread multiplier based on volatility."""
+        if len(self.atr_history[asset]) < 20:
+            return 1.0  # Not enough history
+        
+        current_atr = self.atr_arrays[asset][self.current_step]
+        avg_atr = np.mean(self.atr_history[asset][-100:])
+        
+        if avg_atr == 0:
+            return 1.0
+        
+        # If ATR is 2x normal, spread increases 50%
+        atr_ratio = current_atr / avg_atr
+        volatility_mult = 1.0 + max(0, (atr_ratio - 1.0) * 0.5)
+        return np.clip(volatility_mult, 1.0, 2.0)
+    
+    def _calculate_spread(self, asset: str, price: float) -> float:
+        """
+        Calculate effective spread for asset.
+        
+        Returns:
+            Spread in price units (half-spread for one side)
+        """
+        base_spread_pips = self.base_spreads_pips.get(asset, 2.0)
+        pip_value = self._get_pip_value(asset)
+        session_mult = self._get_session_multiplier()
+        volatility_mult = self._get_volatility_multiplier(asset)
+        
+        # Full spread in price units
+        full_spread = (base_spread_pips * pip_value * 
+                      session_mult * volatility_mult * 
+                      self.spread_modifier)
+        
+        # Return half-spread (one side)
+        return full_spread / 2.0
+    
+    def _calculate_slippage(self, asset: str, position_size: float, 
+                           direction: int) -> float:
+        """
+        Calculate slippage for order execution.
+        
+        Args:
+            asset: Trading asset
+            position_size: Size in base currency
+            direction: 1 for long, -1 for short
+        
+        Returns:
+            Slippage in price units (signed)
+        """
+        if not self.slippage_enabled or self.spread_modifier == 0:
+            return 0.0
+        
+        pip_value = self._get_pip_value(asset)
+        session_mult = self._get_session_multiplier()
+        volatility_mult = self._get_volatility_multiplier(asset)
+        
+        # Size factor (larger positions = more slippage)
+        size_factor = np.clip(position_size / self.equity, 0, 0.5)
+        size_mult = 1.0 + (size_factor * 2.0)  # Up to 2x for max size
+        
+        # Calculate slippage in pips
+        slippage_pips = (self.base_slippage_pips * size_mult * 
+                        volatility_mult * session_mult * 
+                        self.spread_modifier)
+        
+        # 90% negative, 10% positive slippage
+        slip_direction = -1 if np.random.rand() < 0.9 else 1
+        
+        # Convert to price units (negative = worse fill for trader)
+        return slip_direction * slippage_pips * pip_value
+    
+    def _calculate_commission(self, asset: str, position_size: float) -> float:
+        """
+        Calculate commission for trade.
+        
+        Args:
+            asset: Trading asset
+            position_size: Size in base currency
+        
+        Returns:
+            Commission in base currency
+        """
+        # Convert to standard lots ($100k)
+        lot_size = (position_size * self.leverage) / 100000.0
+        commission_per_lot = self.commission_per_lot.get(asset, 3.0)
+        
+        # Apply curriculum modifier
+        return lot_size * commission_per_lot * self.spread_modifier
+
     def set_asset(self, asset):
         """Set the current asset for the environment."""
         if asset not in self.assets:
@@ -517,7 +679,7 @@ class TradingEnv(gym.Env):
         return total_allocated <= (self.equity * self.MAX_TOTAL_EXPOSURE)
 
     def _open_position(self, asset, direction, act, price, atr):
-        """Open a new position with PEEK & LABEL reward assignment."""
+        """Open a new position with PEEK & LABEL and FEES."""
         # Risk Validation: Position size
         size_pct = act["size"] * self.MAX_POS_SIZE_PCT
         position_size = size_pct * self.equity
@@ -533,23 +695,46 @@ class TradingEnv(gym.Env):
         # if not self._check_global_exposure(position_size):
         #     return
 
-        # Calculate SL/TP levels (FIX: Handle zero ATR edge case)
+        # ========== FEES CALCULATION ==========
+        spread = self._calculate_spread(asset, price)
+        slippage = self._calculate_slippage(asset, position_size, direction)
+        commission = self._calculate_commission(asset, position_size)
+        
+        # Apply entry costs
+        # Longs: pay spread on entry (enter at ask)
+        # Shorts: pay spread on exit (enter at bid)
+        if direction == 1:
+            entry_price_adjusted = price + spread + slippage
+        else:
+            entry_price_adjusted = price + slippage
+            
+        # Apply half commission on entry
+        entry_commission = commission / 2.0
+        self.equity -= entry_commission
+        # ======================================
+
+        # Calculate SL/TP levels based on ADJUSTED entry price
         atr = max(atr, price * self.MIN_ATR_MULTIPLIER)  # Minimum 0.01% of price
         sl_dist = act["sl_mult"] * atr
         tp_dist = act["tp_mult"] * atr
-        sl = price - (direction * sl_dist)
-        tp = price + (direction * tp_dist)
+        sl = entry_price_adjusted - (direction * sl_dist)
+        tp = entry_price_adjusted + (direction * tp_dist)
 
         # Create position
         self.positions[asset] = {
             "direction": direction,
-            "entry_price": price,
+            "entry_price": entry_price_adjusted,
             "size": position_size,
             "sl": sl,
             "tp": tp,
             "entry_step": self.current_step,
             "sl_dist": sl_dist,
             "tp_dist": tp_dist,
+            "fees": {
+                "entry_spread": spread if direction == 1 else 0,
+                "entry_slippage": slippage,
+                "entry_commission": entry_commission,
+            }
         }
 
         # PEEK & LABEL: Simulate outcome and assign reward NOW
@@ -574,22 +759,42 @@ class TradingEnv(gym.Env):
             # This "x price" penalty discourages tight stops that get hunted immediately
             bad_entry_penalty = -(0.01 * self.start_equity)
             self.peeked_pnl_step += bad_entry_penalty
+            
+        # Update ATR history for volatility tracking
+        self.atr_history[asset].append(atr)
+        if len(self.atr_history[asset]) > self.atr_window:
+            self.atr_history[asset].pop(0)
 
-        # Transaction costs (Notional Based)
-        # 0.00002 = 0.2 pips spread (applied to full volume)
-        cost = (position_size * self.leverage) * self.transaction_cost
-        self.equity -= cost
+        # Transaction costs (Legacy - removed in favor of Fees Engine)
+        # cost = (position_size * self.leverage) * self.transaction_cost
+        # self.equity -= cost
 
     def _close_position(self, asset, price):
-        """Close position and record trade."""
+        """Close position with fees and record trade."""
         pos = self.positions[asset]
         if pos is None:
             return
 
         equity_before = self.equity
+        direction = pos["direction"]
 
-        # Calculate P&L
-        price_change = (price - pos["entry_price"]) * pos["direction"]
+        # ========== FEES CALCULATION ==========
+        # Calculate exit fees
+        spread = self._calculate_spread(asset, price)
+        slippage = self._calculate_slippage(asset, pos["size"], direction)
+        exit_commission = self._calculate_commission(asset, pos["size"]) / 2.0
+        
+        # Apply exit costs
+        # Longs: pay spread on exit (exit at bid)
+        # Shorts: pay spread on exit (exit at ask)
+        if direction == 1:
+            exit_price_adjusted = price - spread + slippage
+        else:
+            exit_price_adjusted = price + spread + slippage
+        # ======================================
+
+        # Calculate P&L using ADJUSTED prices
+        price_change = (exit_price_adjusted - pos["entry_price"]) * direction
         price_change_pct = (
             price_change / pos["entry_price"] if pos["entry_price"] != 0 else 0
         )
@@ -598,13 +803,15 @@ class TradingEnv(gym.Env):
 
         # Update equity
         self.equity += pnl
-
-        # Exit transaction cost (Notional Based)
-        cost = (pos["size"] * self.leverage) * self.transaction_cost
-        self.equity -= cost
-
-        # Prevent negative equity
+        self.equity -= exit_commission  # Deduct exit commission
         self.equity = max(self.equity, 0.01)
+
+        # Calculate total fees for reporting
+        entry_fees = pos.get("fees", {})
+        total_fees = (entry_fees.get("entry_spread", 0) + 
+                     entry_fees.get("entry_commission", 0) + 
+                     (spread if direction == -1 else 0) +
+                     exit_commission)
 
         # Record trade for backtesting
         # LOGGING RESTRICTION: Only log if NOT training (Backtest only)
@@ -613,15 +820,29 @@ class TradingEnv(gym.Env):
             trade_record = {
                 "timestamp": self._get_current_timestamp(),
                 "asset": asset,
-                "action": "BUY" if pos["direction"] == 1 else "SELL",
+                "action": "BUY" if direction == 1 else "SELL",
                 "size": pos["size"],
                 "entry_price": pos["entry_price"],
-                "exit_price": price,
+                "exit_price": exit_price_adjusted,
                 "sl": pos["sl"],
                 "tp": pos["tp"],
                 "pnl": pnl,
-                "net_pnl": pnl - cost,
-                "fees": cost,
+                "fees_breakdown": {
+                    "entry_spread": entry_fees.get("entry_spread", 0),
+                    "entry_slippage": entry_fees.get("entry_slippage", 0),
+                    "entry_commission": entry_fees.get("entry_commission", 0),
+                    "exit_spread": spread if direction == -1 else 0,
+                    "exit_slippage": abs(slippage),
+                    "exit_commission": exit_commission,
+                    "total_fees": total_fees,
+                },
+                "net_pnl": pnl - total_fees,  # pnl already includes spread/slippage, just subtract comms? 
+                                              # Actually PnL above includes spread/slippage implicitly via price adjustment
+                                              # But commission is explicit deduction.
+                                              # Let's standardize: PnL = (Exit - Entry) * Size
+                                              # Net PnL = PnL - Commission
+                                              # Wait, logic above: equity += pnl; equity -= comm.
+                                              # So pnl DOES include spread/slippage, but NOT commission.
                 "equity_before": equity_before,
                 "equity_after": self.equity,
                 "hold_time": hold_time,
@@ -714,13 +935,33 @@ class TradingEnv(gym.Env):
             # Neither hit: use last available price from cached array
             exit_price = self.close_arrays[asset][end_idx - 1]
 
-        # Calculate P&L (FIX: Use correct formula matching _close_position)
-        price_change = (exit_price - pos["entry_price"]) * direction
+        # ========== FEES SIMULATION ==========
+        # Calculate exit fees for simulation
+        spread = self._calculate_spread(asset, exit_price)
+        
+        # Use deterministic slippage for simulation (no randomness)
+        # Average negative slip to be conservative
+        pip_value = self._get_pip_value(asset)
+        avg_slippage = -0.3 * pip_value * self.spread_modifier
+        
+        # Adjust exit price for fees
+        if direction == 1:
+            exit_price_adjusted = exit_price - spread + avg_slippage
+        else:
+            exit_price_adjusted = exit_price + spread + avg_slippage
+        # =====================================
+
+        # Calculate P&L using ADJUSTED prices
+        price_change = (exit_price_adjusted - pos["entry_price"]) * direction
         price_change_pct = (
             price_change / pos["entry_price"] if pos["entry_price"] != 0 else 0
         )
         position_value = pos["size"] * self.leverage
         pnl = price_change_pct * position_value
+        
+        # Subtract remaining commission (half already paid on entry)
+        exit_commission = self._calculate_commission(asset, pos["size"]) / 2.0
+        pnl -= exit_commission
 
         return pnl, bars_held
 
