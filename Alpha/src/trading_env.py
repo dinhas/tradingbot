@@ -320,22 +320,22 @@ class TradingEnv(gym.Env):
             )
 
     def _load_data(self):
-        """Load market data for all assets, prioritizing 2025 files."""
+        """Load market data for all assets, prioritizing the provided data_dir."""
         data = {}
-        # Prioritize backtest/data for 2025 files
-        backtest_data_dir = Path("backtest/data")
-        shared_data_dir = Path("data")
+        target_dir = Path(self.data_dir)
         
         for asset in self.assets:
-            # 1. Try 2025 specific files in backtest/data
-            file_2025 = backtest_data_dir / f"{asset}_5m_2025.parquet"
-            # 2. Try standard files in backtest/data
-            file_backtest = backtest_data_dir / f"{asset}_5m.parquet"
-            # 3. Try standard files in shared data
-            file_shared = shared_data_dir / f"{asset}_5m.parquet"
+            # Define candidates in order of priority
+            candidates = [
+                target_dir / f"{asset}_5m.parquet",
+                target_dir / f"{asset}_5m_2025.parquet",
+                Path("backtest/data") / f"{asset}_5m_2025.parquet",
+                Path("backtest/data") / f"{asset}_5m.parquet",
+                Path("data") / f"{asset}_5m.parquet",
+            ]
 
             df = None
-            for path in [file_2025, file_backtest, file_shared]:
+            for path in candidates:
                 if path.exists():
                     try:
                         df = pd.read_parquet(path)
