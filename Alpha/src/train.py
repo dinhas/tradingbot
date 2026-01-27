@@ -155,17 +155,23 @@ def train(args):
     checkpoint_dir_path = project_root / args.checkpoint_dir
     # Resolve data directory: prefer provided path but also check common Alpha downloader locations
     requested_data_dir = project_root / args.data_dir
+    # Match the path logic from data_fetcher.py
+    # DataFetcher: self.data_dir = Path(__file__).resolve().parent.parent.parent / "data"
+    # Given train.py is in Alpha/src/train.py, this resolves to project_root / "data"
+    alpha_data_dir = Path(__file__).resolve().parent.parent.parent / "data"
+    
     candidate_dirs = [
         requested_data_dir,
+        alpha_data_dir,
         project_root / "data",
         project_root / "Alpha" / "data",
-        Path(__file__).resolve().parent / "data",
     ]
     data_dir_path = requested_data_dir
     for cand in candidate_dirs:
         try:
             if cand.exists() and any(cand.glob("*.parquet")):
                 data_dir_path = cand
+                logger.info(f"Found data in: {data_dir_path}")
                 break
         except Exception:
             continue
