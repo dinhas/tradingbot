@@ -60,6 +60,15 @@ class TradingEnv(gym.Env):
             "XAUUSD": 5.0,
         }
         
+        # Asset-specific contract sizes (Units per standard lot)
+        self.contract_sizes = {
+            "EURUSD": 100_000,
+            "GBPUSD": 100_000,
+            "USDJPY": 100_000,
+            "USDCHF": 100_000,
+            "XAUUSD": 100,
+        }
+        
         # Slippage configuration
         self.base_slippage_pips = 0.3
         self.slippage_enabled = True
@@ -539,8 +548,15 @@ class TradingEnv(gym.Env):
         Returns:
             Commission in base currency
         """
-        # Convert to standard lots ($100k)
-        lot_size = (position_size * self.leverage) / 100000.0
+        # Get current price for lot calculation
+        price = self._get_current_prices()[asset]
+        contract_size = self.contract_sizes.get(asset, 100_000)
+        
+        # Convert Notional Value to standard lots
+        # Lots = Notional_USD / (Price * ContractSize)
+        notional_value = position_size * self.leverage
+        lot_size = notional_value / (price * contract_size)
+        
         commission_per_lot = self.commission_per_lot.get(asset, 3.0)
         
         # Apply curriculum modifier

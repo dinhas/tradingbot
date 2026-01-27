@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 # Add project root to sys.path to allow absolute imports
-project_root = str(Path(__file__).resolve().parent.parent.parent)
+project_root = str(Path(__file__).resolve().parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
@@ -48,6 +48,7 @@ class BacktestMetrics:
         self.trades = []
         self.equity_curve = []
         self.timestamps = []
+        self.total_fees_paid = 0.0
         
     def add_trade(self, trade_info):
         """Add a completed trade"""
@@ -156,7 +157,8 @@ class BacktestMetrics:
             'gross_profit': gross_profit,
             'gross_loss': gross_loss,
             'final_equity': final_equity,
-            'initial_equity': initial_equity
+            'initial_equity': initial_equity,
+            'total_fees_paid': self.total_fees_paid
         }
         
         return metrics
@@ -215,7 +217,7 @@ class NumpyEncoder(json.JSONEncoder):
 
 def run_backtest(args):
     """Main backtesting function"""
-    project_root = Path(__file__).resolve().parent.parent.parent
+    project_root = Path(__file__).resolve().parent.parent
     model_path = project_root / args.model
     data_dir_path = project_root / args.data_dir
     output_dir_path = project_root / args.output_dir
@@ -260,6 +262,13 @@ def run_backtest(args):
     model = PPO.load(model_path, env=env)
     logger.info("Model loaded successfully")
 
+    # Set full fees for backtesting
+    if num_envs > 1:
+        env.env_method('set_spread_modifier', 1.0)
+    else:
+        env.envs[0].set_spread_modifier(1.0)
+    logger.info("Spread modifier set to 1.0 (Full Fees)")
+
     # Get asset list
     # Use a temp env to get assets list (avoiding overhead)
     # Actually we can just hardcode or assume the list if avoiding instantiation
@@ -300,17 +309,27 @@ def run_backtest(args):
     dones = np.array([False] * num_envs)
     
     completed_tasks = 0
+    total_steps = 0
     
     # Main Loop
     while completed_tasks < total_tasks or any(t is not None for t in active_tasks):
         action, _ = model.predict(obs, deterministic=True)
         obs, rewards, dones, infos = env.step(action)
+        total_steps += num_envs
         
+        if args.max_steps and total_steps >= args.max_steps:
+            logger.info(f"Reached maximum steps: {total_steps} >= {args.max_steps}")
+            break
+            
         for i in range(num_envs):
             # If this env has an active task
             if active_tasks[i] is not None:
                 # Accumulate data
                 info = infos[i]
+                
+                # DEBUG: Check if trades are in info
+                if 'trades' in info and len(info['trades']) > 0:
+                    logger.info(f"Worker {i} received trades: {len(info['trades'])}")
                 
                 # Capture trades from this step
                 if 'trades' in info:
@@ -320,6 +339,14 @@ def run_backtest(args):
                 # Capture equity from this step
                 if 'equity' in info and 'timestamp' in info:
                     env_buffers[i].add_equity_point(info['timestamp'], info['equity'])
+                
+                # Capture fees from info if present (incremental pnl usually includes them, but let's track explicit fees)
+                if 'trades' in info:
+                    for trade in info['trades']:
+                        if 'fees_breakdown' in trade:
+                            env_buffers[i].total_fees_paid += trade['fees_breakdown'].get('total_fees', 0)
+                        elif 'fees' in trade:
+                            env_buffers[i].total_fees_paid += trade['fees']
                 
                 # Check for completion
                 if dones[i]:
@@ -332,6 +359,7 @@ def run_backtest(args):
                     metrics_tracker.trades.extend(env_buffers[i].trades)
                     metrics_tracker.equity_curve.extend(env_buffers[i].equity_curve)
                     metrics_tracker.timestamps.extend(env_buffers[i].timestamps)
+                    metrics_tracker.total_fees_paid += env_buffers[i].total_fees_paid
                     
                     # Reset buffer
                     env_buffers[i] = BacktestMetrics()
@@ -350,7 +378,16 @@ def run_backtest(args):
                     else:
                         active_tasks[i] = None
                         # Env will continue stepping but we ignore it
-                        
+    
+    # Flush any remaining data in buffers if we exited due to max_steps
+    for i in range(num_envs):
+        if env_buffers[i].trades:
+            logger.info(f"Flushing {len(env_buffers[i].trades)} trades from Worker {i} buffer")
+            metrics_tracker.trades.extend(env_buffers[i].trades)
+            metrics_tracker.equity_curve.extend(env_buffers[i].equity_curve)
+            metrics_tracker.timestamps.extend(env_buffers[i].timestamps)
+            metrics_tracker.total_fees_paid += env_buffers[i].total_fees_paid
+
     env.close()
     
     # Calculate metrics
@@ -374,6 +411,7 @@ def run_backtest(args):
     logger.info(f"{'Total Trades:':<40} {metrics.get('total_trades', 0)}")
     logger.info(f"{'Winning Trades:':<40} {metrics.get('winning_trades', 0)}")
     logger.info(f"{'Losing Trades:':<40} {metrics.get('losing_trades', 0)}")
+    logger.info(f"{'Total Fees Paid:':<40} ${metrics.get('total_fees_paid', 0):.2f}")
     logger.info("="*60)
     
     # Check PRD success criteria (Section 8.1)
@@ -672,10 +710,12 @@ if __name__ == "__main__":
                         help="Specific asset to test (e.g., EURUSD) or 'all' to test the full basket")
     parser.add_argument("--workers", type=int, default=2,
                         help="Number of parallel environment workers (default: 2)")
+    parser.add_argument("--max-steps", type=int, default=None,
+                        help="Maximum number of steps to run across all episodes")
     
     args = parser.parse_args()
     
-    project_root = Path(__file__).resolve().parent.parent.parent
+    project_root = Path(__file__).resolve().parent.parent
     model_path = project_root / args.model
     data_dir_path = project_root / args.data_dir
 
