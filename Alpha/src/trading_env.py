@@ -443,7 +443,7 @@ class TradingEnv(gym.Env):
         if asset == "USDJPY":
             return 0.01
         elif asset == "XAUUSD":
-            return 0.1
+            return 0.01  # FIX: 1 pip = 0.01 (1 cent), not 0.1
         else:
             return 0.0001
     
