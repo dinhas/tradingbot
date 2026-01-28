@@ -266,6 +266,12 @@ class TradingEnv(gym.Env):
         full_obs[self.dynamic_indices["num_open_positions"]] = sum(
             1 for p in self.positions.values() if p is not None
         )
+        
+        # DIFFICULTY CONDITIONING: Inject fee level into observation
+        # Repurposing 'asset_dispersion' index to avoid changing observation shape
+        if "asset_dispersion" in self.internal_feature_map:
+            idx = self.internal_feature_map["asset_dispersion"]
+            full_obs[idx] = self.spread_modifier
 
         # Update Per-Asset Dynamic
         current_prices = self._get_current_prices()

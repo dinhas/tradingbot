@@ -232,6 +232,8 @@ def train(args):
     curriculum_callback = AlphaCurriculumCallback(
         total_timesteps=total_timesteps,
         schedule=args.curriculum_schedule,
+        initial_lr=ppo_config.get('learning_rate', 0.0001),
+        initial_ent=ppo_config.get('ent_coef', 0.01),
         verbose=1
     )
     

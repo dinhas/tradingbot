@@ -14,54 +14,52 @@ logger = logging.getLogger(__name__)
 class AlphaCurriculumCallback(BaseCallback):
     """
     Adjusts environment difficulty (spreads/fees) over time for Alpha Model.
+    Also decays learning rate and entropy to encourage consolidation.
     
     The 'spread_modifier' in the environment controls all fees:
     - 0.0: No spreads, no slippage, no commission (Pure theoretical price)
     - 0.5: 50% of real-world costs
     - 1.0: 100% of real-world costs (Full reality)
-    
-    Schedule Options (for 8M steps):
-    
-    Option 'original' (User's request):
-    - 0       - 3.5M: 0% Fees
-    - 3.5M    - 5.0M: 20% Fees
-    - 5.0M    - 6.0M: 45% Fees
-    - 6.0M    - 7.0M: 75% Fees
-    - 7.0M    - 8.0M: 100% Fees
-    
-    Option 'recommended' (Smoother progression):
-    - 0       - 2.0M: 0% Fees
-    - 2.0M    - 3.5M: 25% Fees
-    - 3.5M    - 5.0M: 50% Fees
-    - 5.0M    - 6.5M: 75% Fees
-    - 6.5M    - 8.0M: 100% Fees
     """
     
     def __init__(self, 
                  total_timesteps: int = 8_000_000, 
                  schedule: str = "recommended",
+                 initial_lr: float = 0.0001,
+                 final_lr: float = 0.00003,
+                 initial_ent: float = 0.01,
+                 final_ent: float = 0.002,
+                 warmup_steps: int = 150_000,
                  verbose: int = 1):
         super().__init__(verbose)
         self.total_timesteps = total_timesteps
         self.last_modifier = -1.0
         self.schedule_name = schedule
         
+        # Hyperparameters for decay
+        self.initial_lr = initial_lr
+        self.final_lr = final_lr
+        self.initial_ent = initial_ent
+        self.final_ent = final_ent
+        self.warmup_steps = warmup_steps
+        
         # Define curriculum schedules as (threshold_steps, modifier)
         if schedule == "original":
             self.spread_schedule = [
-                (int(total_timesteps * 0.4375), 0.0),   # 0 - 3.5M: 0%
-                (int(total_timesteps * 0.625), 0.20),   # 3.5M - 5M: 20%
-                (int(total_timesteps * 0.75), 0.45),    # 5M - 6M: 45%
-                (int(total_timesteps * 0.875), 0.75),   # 6M - 7M: 75%
-                (float('inf'), 1.0)                     # 7M+: 100%
+                (warmup_steps, 0.0),                     # Plateau at 0 until warmup
+                (int(total_timesteps * 0.4375), 0.0),   
+                (int(total_timesteps * 0.625), 0.20),   
+                (int(total_timesteps * 0.75), 0.45),    
+                (int(total_timesteps * 0.875), 0.75),   
+                (float('inf'), 1.0)                     
             ]
         else:  # recommended (default)
             self.spread_schedule = [
-                (int(total_timesteps * 0.25), 0.0),     # 0 - 2M: 0%
-                (int(total_timesteps * 0.4375), 0.25),  # 2M - 3.5M: 25%
-                (int(total_timesteps * 0.625), 0.50),   # 3.5M - 5M: 50%
-                (int(total_timesteps * 0.8125), 0.75),  # 5M - 6.5M: 75%
-                (float('inf'), 1.0)                     # 6.5M+: 100%
+                (warmup_steps, 0.0),                    # 0 - 150k: Stay at 0
+                (int(total_timesteps * 0.35), 0.25),    # Start ramp to 25% early
+                (int(total_timesteps * 0.55), 0.50),    # 50%
+                (int(total_timesteps * 0.75), 0.75),    # 75%
+                (float('inf'), 1.0)                     # 100%
             ]
         
         if verbose > 0:
@@ -73,36 +71,44 @@ class AlphaCurriculumCallback(BaseCallback):
                     logger.info(f"  Up to {threshold:,} steps: {modifier*100:.0f}% Fees")
 
     def _on_step(self) -> bool:
-        """Called at every step. Updates spread modifier when crossing thresholds."""
+        """Called at every step. Updates spread modifier with discrete plateaus."""
         current_steps = self.num_timesteps
-        target_modifier = 0.0
+        total = self.total_timesteps
         
-        # Find the current stage based on timesteps
+        # 1. Update Spread Modifier (Discrete Plateaus)
+        # We pick the target modifier from the first threshold we haven't crossed yet
+        target_modifier = 1.0
         for threshold, modifier in self.spread_schedule:
             if current_steps < threshold:
                 target_modifier = modifier
                 break
-        else:
-            target_modifier = 1.0
-            
-        # Only update if modifier changed (avoid unnecessary calls)
-        if target_modifier != self.last_modifier:
+
+        # Apply Spread Modifier
+        if abs(target_modifier - self.last_modifier) > 0.001:
             self.last_modifier = target_modifier
-            
-            if self.verbose > 0:
-                stage_name = f"{target_modifier*100:.0f}% Fees"
-                logger.info(f"[Curriculum] Step {current_steps:,}: Advancing to {stage_name}")
-                print(f"\n{'='*60}")
-                print(f"  ALPHA CURRICULUM UPDATE: {stage_name}")
-                print(f"  Step: {current_steps:,} / {self.total_timesteps:,}")
-                print(f"  Schedule: {self.schedule_name}")
-                print(f"{'='*60}\n")
-            
-            # Apply to all vectorized environments
             try:
                 self.training_env.env_method("set_spread_modifier", target_modifier)
-            except Exception as e:
-                logger.warning(f"Failed to set spread modifier: {e}")
+            except Exception:
+                pass
+
+        # 2. Update Learning Rate & Entropy Coefficient (Global Linear Decay)
+        # Keep global decay as it helps finalize the policy regardless of fees
+        global_progress = min(current_steps / total, 1.0)
+        new_lr = self.initial_lr + (self.final_lr - self.initial_lr) * global_progress
+        new_ent = self.initial_ent + (self.final_ent - self.initial_ent) * global_progress
+        
+        self.model.ent_coef = new_ent
+        for param_group in self.model.policy.optimizer.param_groups:
+            param_group['lr'] = new_lr
+
+        # Logging
+        if current_steps % 100_000 == 0 and self.verbose > 0:
+            logger.info(
+                f"[Curriculum] Step {current_steps:,}: "
+                f"PLATEAU={target_modifier*100:.0f}% Fees, "
+                f"LR={new_lr:.6f}, "
+                f"Ent={new_ent:.4f}"
+            )
                 
         return True
     
