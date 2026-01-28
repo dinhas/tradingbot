@@ -719,16 +719,17 @@ class TradingEnv(gym.Env):
 
         # ========== FEES CALCULATION ==========
         spread = self._calculate_spread(asset, price)
-        slippage = self._calculate_slippage(asset, position_size, direction)
+        # Adverse slippage (makes price worse for trader)
+        slippage_val = abs(self._calculate_slippage(asset, position_size, direction))
         commission = self._calculate_commission(asset, position_size)
         
         # Apply entry costs
-        # Longs: pay spread on entry (enter at ask)
-        # Shorts: pay spread on exit (enter at bid)
+        # LONG: Buy at Ask (Mid + Spread + Slippage)
+        # SHORT: Sell at Bid (Mid - Spread - Slippage)
         if direction == 1:
-            entry_price_adjusted = price + spread + slippage
+            entry_price_adjusted = price + spread + slippage_val
         else:
-            entry_price_adjusted = price + slippage
+            entry_price_adjusted = price - spread - slippage_val
             
         # Apply half commission on entry
         entry_commission = commission / 2.0
@@ -753,8 +754,8 @@ class TradingEnv(gym.Env):
             "sl_dist": sl_dist,
             "tp_dist": tp_dist,
             "fees": {
-                "entry_spread": spread if direction == 1 else 0,
-                "entry_slippage": slippage,
+                "entry_spread": spread,
+                "entry_slippage": slippage_val,
                 "entry_commission": entry_commission,
             }
         }
@@ -803,16 +804,17 @@ class TradingEnv(gym.Env):
         # ========== FEES CALCULATION ==========
         # Calculate exit fees
         spread = self._calculate_spread(asset, price)
-        slippage = self._calculate_slippage(asset, pos["size"], direction)
+        # Adverse slippage (makes price worse for trader)
+        slippage_val = abs(self._calculate_slippage(asset, pos["size"], direction))
         exit_commission = self._calculate_commission(asset, pos["size"]) / 2.0
         
         # Apply exit costs
-        # Longs: pay spread on exit (exit at bid)
-        # Shorts: pay spread on exit (exit at ask)
+        # Close LONG: Sell at BID (Mid - Spread - Slippage)
+        # Close SHORT: Buy at ASK (Mid + Spread + Slippage)
         if direction == 1:
-            exit_price_adjusted = price - spread + slippage
+            exit_price_adjusted = price - spread - slippage_val
         else:
-            exit_price_adjusted = price + spread + slippage
+            exit_price_adjusted = price + spread + slippage_val
         # ======================================
 
         # Calculate P&L using ADJUSTED prices
@@ -828,15 +830,19 @@ class TradingEnv(gym.Env):
         self.equity -= exit_commission  # Deduct exit commission
         self.equity = max(self.equity, 0.01)
 
-        # Calculate total fees for reporting
+        # Calculate total friction vs explicit fees
         entry_fees = pos.get("fees", {})
-        total_fees = (entry_fees.get("entry_spread", 0) + 
-                     entry_fees.get("entry_commission", 0) + 
-                     (spread if direction == -1 else 0) +
-                     exit_commission)
+        total_commissions = entry_fees.get("entry_commission", 0) + exit_commission
+        total_spread_slippage = (entry_fees.get("entry_spread", 0) + 
+                                entry_fees.get("entry_slippage", 0) + 
+                                spread + slippage_val)
+        
+        # Standardize: 'fees' for reporting often means everything that reduces equity
+        # BUT we must not subtract spread twice if it's already in the PnL.
+        # Standard reporting: Total Costs = Commissions + Market Friction
+        total_costs = total_commissions + total_spread_slippage
 
         # Record trade for backtesting
-        # LOGGING RESTRICTION: Only log if NOT training (Backtest only)
         if not self.is_training:
             hold_time = (self.current_step - pos["entry_step"]) * 5  # 5 min per step
             trade_record = {
@@ -848,23 +854,19 @@ class TradingEnv(gym.Env):
                 "exit_price": exit_price_adjusted,
                 "sl": pos["sl"],
                 "tp": pos["tp"],
-                "pnl": pnl,
+                "pnl": pnl, # Adjusted Price PnL
                 "fees_breakdown": {
                     "entry_spread": entry_fees.get("entry_spread", 0),
                     "entry_slippage": entry_fees.get("entry_slippage", 0),
                     "entry_commission": entry_fees.get("entry_commission", 0),
-                    "exit_spread": spread if direction == -1 else 0,
-                    "exit_slippage": abs(slippage),
+                    "exit_spread": spread,
+                    "exit_slippage": slippage_val,
                     "exit_commission": exit_commission,
-                    "total_fees": total_fees,
+                    "total_commissions": total_commissions,
+                    "total_friction": total_spread_slippage,
+                    "total_fees": total_costs,
                 },
-                "net_pnl": pnl - total_fees,  # pnl already includes spread/slippage, just subtract comms? 
-                                              # Actually PnL above includes spread/slippage implicitly via price adjustment
-                                              # But commission is explicit deduction.
-                                              # Let's standardize: PnL = (Exit - Entry) * Size
-                                              # Net PnL = PnL - Commission
-                                              # Wait, logic above: equity += pnl; equity -= comm.
-                                              # So pnl DOES include spread/slippage, but NOT commission.
+                "net_pnl": pnl - total_commissions,  # FIX: pnl already has spread/slippage
                 "equity_before": equity_before,
                 "equity_after": self.equity,
                 "hold_time": hold_time,

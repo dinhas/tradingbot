@@ -56,27 +56,27 @@ class ExecutionEngine:
         """
         Calculates execution price including spread and optional slippage.
         LONG: Buy at Ask (Mid + Spread + Slippage)
-        SHORT: Sell at Bid (Mid - Slippage)
+        SHORT: Sell at Bid (Mid - Spread - Slippage)
         """
         spread = self.get_spread(mid_price, atr)
-        slippage = 0.0
+        slippage = self.get_slippage(mid_price) if enable_slippage else 0.0
         
-        if direction == 1: # LONG
-            return mid_price + spread + slippage
-        return mid_price - slippage # SHORT
+        if direction == 1: # LONG (Buy at Ask)
+            return mid_price + spread + abs(slippage)
+        return mid_price - spread - abs(slippage) # SHORT (Sell at Bid)
 
     def get_close_price(self, mid_price: float, direction: int, atr: float, enable_slippage: bool = True) -> float:
         """
         Calculates exit price for a position including spread and optional slippage.
-        Close LONG: Sell at BID (Mid - Slippage)
+        Close LONG: Sell at BID (Mid - Spread - Slippage)
         Close SHORT: Buy at ASK (Mid + Spread + Slippage)
         """
         spread = self.get_spread(mid_price, atr)
-        slippage = 0.0
+        slippage = self.get_slippage(mid_price) if enable_slippage else 0.0
 
-        if direction == 1: # Close LONG
-            return mid_price - slippage
-        return mid_price + spread + slippage # Close SHORT
+        if direction == 1: # Close LONG (Sell at Bid)
+            return mid_price - spread - abs(slippage)
+        return mid_price + spread + abs(slippage) # Close SHORT (Buy at Ask)
 
     def get_contract_size(self, asset: str) -> int:
         """Returns contract size based on asset name."""
