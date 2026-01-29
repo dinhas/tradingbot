@@ -146,6 +146,24 @@ def load_ppo_config(config_path):
             
     return config
 
+def linear_schedule(initial_value):
+    """
+    Linear learning rate schedule.
+
+    :param initial_value: Initial learning rate.
+    :return: schedule function.
+    """
+    def func(progress_remaining: float) -> float:
+        """
+        Progress will decrease from 1 (beginning) to 0.
+
+        :param progress_remaining:
+        :return: current learning rate
+        """
+        return progress_remaining * initial_value
+
+    return func
+
 def train(args):
     """
     Main training loop.
@@ -213,7 +231,15 @@ def train(args):
         model = PPO.load(load_model_path, env=env, verbose=1, **ppo_config)
     else:
         logger.info("Creating new model from scratch")
-        model = PPO("MlpPolicy", env, verbose=1, **ppo_config)
+        # Handle learning rate schedule
+        initial_lr = ppo_config.get('learning_rate', 0.0001)
+        lr_schedule = linear_schedule(initial_lr)
+        
+        # Remove learning_rate from config as we pass it explicitly
+        if 'learning_rate' in ppo_config:
+            del ppo_config['learning_rate']
+            
+        model = PPO("MlpPolicy", env, verbose=1, learning_rate=lr_schedule, **ppo_config)
         
     # 3. Callbacks
     checkpoint_callback = CheckpointCallback(
@@ -240,6 +266,11 @@ def train(args):
     # 4. Train
     if args.dry_run:
         total_timesteps = 1000
+        # Reduce memory usage for dry run
+        model.n_steps = 256
+        model.batch_size = 64
+        model.rollout_buffer.buffer_size = 256
+        model.rollout_buffer.reset()
     
     # Configure file logging
     from datetime import datetime

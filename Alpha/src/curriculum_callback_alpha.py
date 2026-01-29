@@ -53,10 +53,11 @@ class AlphaCurriculumCallback(BaseCallback):
                 (int(total_timesteps * 0.875), 0.75),   
                 (float('inf'), 1.0)                     
             ]
-        else:  # recommended (default)
+        else:  # recommended (default) - SMOOTHED
             self.spread_schedule = [
                 (warmup_steps, 0.0),                    # 0 - 150k: Stay at 0
-                (int(total_timesteps * 0.35), 0.25),    # Start ramp to 25% early
+                (int(total_timesteps * 0.20), 0.10),    # Gentle intro 10%
+                (int(total_timesteps * 0.35), 0.25),    # 25%
                 (int(total_timesteps * 0.55), 0.50),    # 50%
                 (int(total_timesteps * 0.75), 0.75),    # 75%
                 (float('inf'), 1.0)                     # 100%
@@ -91,22 +92,25 @@ class AlphaCurriculumCallback(BaseCallback):
             except Exception:
                 pass
 
-        # 2. Update Learning Rate & Entropy Coefficient (Global Linear Decay)
-        # Keep global decay as it helps finalize the policy regardless of fees
+        # 2. Update Entropy Coefficient (Global Linear Decay)
+        # LR is now handled by SB3's linear_schedule passed to PPO
         global_progress = min(current_steps / total, 1.0)
-        new_lr = self.initial_lr + (self.final_lr - self.initial_lr) * global_progress
+        
+        # Slower entropy decay (keep exploration longer)
+        # Mix the scheduled decay with a floor
         new_ent = self.initial_ent + (self.final_ent - self.initial_ent) * global_progress
         
         self.model.ent_coef = new_ent
-        for param_group in self.model.policy.optimizer.param_groups:
-            param_group['lr'] = new_lr
+        # Note: We do NOT update param_group['lr'] here anymore to avoid conflicts with SB3 scheduler
 
         # Logging
         if current_steps % 100_000 == 0 and self.verbose > 0:
+            # Retrieve current LR from optimizer for logging check
+            current_lr = self.model.policy.optimizer.param_groups[0]['lr']
             logger.info(
                 f"[Curriculum] Step {current_steps:,}: "
                 f"PLATEAU={target_modifier*100:.0f}% Fees, "
-                f"LR={new_lr:.6f}, "
+                f"LR={current_lr:.8f}, "
                 f"Ent={new_ent:.4f}"
             )
                 

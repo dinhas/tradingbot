@@ -599,7 +599,7 @@ class TradingEnv(gym.Env):
             self.positions = {asset: None for asset in self.assets}
             return (
                 self._validate_observation(self._get_observation()),
-                -1.0,  # Strong terminal penalty
+                -10.0,  # CRITICAL: Massive penalty for blowing account
                 True,
                 False,
                 {"trades": [], "equity": 0.01, "termination_reason": "margin_call"},
@@ -622,12 +622,6 @@ class TradingEnv(gym.Env):
         self.peak_equity = max(self.peak_equity, self.equity)
         drawdown = 1.0 - (self.equity / self.peak_equity)
 
-        # Drawdown termination: Only apply during training
-        # During backtesting, we want to see full performance over entire dataset
-        if drawdown > self.DRAWDOWN_LIMIT and self.is_training:
-            terminated = True
-            reward -= 0.5  # Terminal drawdown penalty
-
         info = {
             "trades": self.completed_trades,
             "equity": self.equity,
@@ -635,6 +629,16 @@ class TradingEnv(gym.Env):
             "timestamp": self._get_current_timestamp(),
             "asset": self.current_asset,
         }
+
+        # Drawdown termination: Only apply during training
+        # During backtesting, we want to see full performance over entire dataset
+        if drawdown > self.DRAWDOWN_LIMIT and self.is_training:
+            terminated = True
+            reward -= 0.5  # Terminal drawdown penalty
+        elif not self.is_training and drawdown > 0.70:
+            # Backtesting Hard Stop: 70% Drawdown
+            terminated = True
+            info["termination_reason"] = "max_drawdown_exceeded_70pct"
 
         return (
             self._validate_observation(self._get_observation()),
@@ -658,7 +662,7 @@ class TradingEnv(gym.Env):
             "direction": 1
             if direction_raw > 0.33
             else (-1 if direction_raw < -0.33 else 0),
-            "size": 0.5,  # Fixed: 25% of equity (0.5 * MAX_POS_SIZE_PCT)
+            "size": 0.2,  # Fixed: 10% of equity (0.2 * MAX_POS_SIZE_PCT=0.5 = 0.10)
             "sl_mult": 2.0,  # Fixed: 2.0x ATR
             "tp_mult": 4.0,  # Fixed: 4.0x ATR
         }
@@ -833,14 +837,24 @@ class TradingEnv(gym.Env):
         # Calculate total friction vs explicit fees
         entry_fees = pos.get("fees", {})
         total_commissions = entry_fees.get("entry_commission", 0) + exit_commission
-        total_spread_slippage = (entry_fees.get("entry_spread", 0) + 
-                                entry_fees.get("entry_slippage", 0) + 
-                                spread + slippage_val)
         
-        # Standardize: 'fees' for reporting often means everything that reduces equity
-        # BUT we must not subtract spread twice if it's already in the PnL.
-        # Standard reporting: Total Costs = Commissions + Market Friction
-        total_costs = total_commissions + total_spread_slippage
+        # Calculate friction in price units
+        total_friction_pips = (entry_fees.get("entry_spread", 0) + 
+                              entry_fees.get("entry_slippage", 0) + 
+                              spread + slippage_val)
+        
+        # CONVERT FRICTION TO DOLLARS: (Price Change / Entry Price) * Notional
+        # Simplified: (Friction_Price_Units / Entry_Price) * (Margin * Leverage)
+        friction_usd = (total_friction_pips / pos["entry_price"]) * (pos["size"] * self.leverage)
+        
+        # Standardize: Total Costs = Commissions + Market Friction (All in USD)
+        total_costs = total_commissions + friction_usd
+
+        # Calculate lot size for reporting
+        contract_size = self.contract_sizes.get(asset, 100_000)
+        price_for_lots = self._get_current_prices()[asset]
+        # lots = Notional / (Price * ContractSize) = (Margin * Leverage) / (Price * ContractSize)
+        lot_size = (pos["size"] * self.leverage) / (price_for_lots * contract_size)
 
         # Record trade for backtesting
         if not self.is_training:
@@ -849,7 +863,8 @@ class TradingEnv(gym.Env):
                 "timestamp": self._get_current_timestamp(),
                 "asset": asset,
                 "action": "BUY" if direction == 1 else "SELL",
-                "size": pos["size"],
+                "size": pos["size"],  # Margin Used
+                "lot_size": lot_size, # Standard Lots
                 "entry_price": pos["entry_price"],
                 "exit_price": exit_price_adjusted,
                 "sl": pos["sl"],
@@ -863,10 +878,10 @@ class TradingEnv(gym.Env):
                     "exit_slippage": slippage_val,
                     "exit_commission": exit_commission,
                     "total_commissions": total_commissions,
-                    "total_friction": total_spread_slippage,
+                    "total_friction_usd": friction_usd,
                     "total_fees": total_costs,
                 },
-                "net_pnl": pnl - total_commissions,  # FIX: pnl already has spread/slippage
+                "net_pnl": pnl - exit_commission,  # pnl already includes spread/slippage and entry_comm is deducted from equity at entry
                 "equity_before": equity_before,
                 "equity_after": self.equity,
                 "hold_time": hold_time,
@@ -985,7 +1000,12 @@ class TradingEnv(gym.Env):
         
         # Subtract remaining commission (half already paid on entry)
         exit_commission = self._calculate_commission(asset, pos["size"]) / 2.0
-        pnl -= exit_commission
+        
+        # FIX: Include entry_commission in PnL for correct credit assignment
+        # pos["fees"] contains entry fees
+        entry_commission = pos.get("fees", {}).get("entry_commission", 0.0)
+        
+        pnl -= (exit_commission + entry_commission)
 
         return pnl, bars_held
 
@@ -1124,8 +1144,8 @@ class TradingEnv(gym.Env):
             if normalized_pnl < 0:
                 normalized_pnl = np.clip(normalized_pnl, -5.0, 0.0) * 2.25
             else:
-                # Relaxed clipping to allow for Fast Win Bonus (up to 5.0)
-                normalized_pnl = np.clip(normalized_pnl, 0.0, 5.0)
+                # Cap positive reward to 2.0 (1% gain) per step to prevent "lucky trade + suicide" exploit
+                normalized_pnl = np.clip(normalized_pnl, 0.0, 2.0)
             reward += normalized_pnl
 
         # COMPONENT 2: Progressive Drawdown Penalty
