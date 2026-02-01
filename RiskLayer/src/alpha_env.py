@@ -150,7 +150,7 @@ class TradingEnv(gym.Env):
             # Backtesting: Fixed equity, randomize start point
             self.equity = 10000.0
             self.leverage = 100
-            # Backtesting: Start from beginning to cover full dataset
+            # Backtesting: Start from step 500 for indicator warmup
             self.current_step = 500
             
         self.start_equity = self.equity
