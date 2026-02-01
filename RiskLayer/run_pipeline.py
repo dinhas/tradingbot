@@ -83,12 +83,25 @@ def main():
     if not base_dir:
         base_dir = "."
     
+    project_root = os.path.dirname(os.path.abspath(base_dir))
+    data_dir = os.path.join(project_root, "data")
+    
     print("STARTING RISK LAYER PIPELINE")
     print(f"Working Directory: {base_dir}")
     
-    # 1. Fetch Data
-    if not run_step("Fetch Training Data", "download_training_data.py", base_dir):
-        sys.exit(1)
+    # 1. Fetch Data (Skip if exists)
+    assets = ['EURUSD', 'GBPUSD', 'XAUUSD', 'USDCHF', 'USDJPY']
+    data_exists = True
+    for asset in assets:
+        if not os.path.exists(os.path.join(data_dir, f"{asset}_5m.parquet")):
+            data_exists = False
+            break
+            
+    if data_exists:
+        print("\n✅ Market data found in /data. Skipping 'Fetch Training Data' step.")
+    else:
+        if not run_step("Fetch Training Data", "download_training_data.py", base_dir):
+            sys.exit(1)
         
     # 2. Generate Dataset
     if not run_step("Generate Risk Dataset", "generate_risk_dataset.py", base_dir):
