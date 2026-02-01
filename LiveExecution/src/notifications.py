@@ -36,13 +36,6 @@ class DiscordNotifier:
         msg = f"🚀 **TRADE EXECUTED**\n**Symbol:** {symbol}\n**Action:** {action}\n**Size:** {size}"
         return self.send_message(msg)
 
-    def send_block_event(self, details):
-        """Formats and sends a TradeGuard block alert."""
-        symbol = details.get('symbol', 'Unknown')
-        reason = details.get('reason', 'TradeGuard Filter')
-        
-        msg = f"🛡️ **TRADE BLOCKED**\n**Symbol:** {symbol}\n**Reason:** {reason}"
-        return self.send_message(msg)
 
     def send_error(self, error_msg):
         """Sends an error alert."""

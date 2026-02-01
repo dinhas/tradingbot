@@ -13,26 +13,19 @@ class ModelLoader:
         
         self.alpha_model = None
         self.risk_model = None
-        self.tradeguard_model = None
 
     def load_all_models(self):
-        """Loads all three RL models from their respective paths."""
+        """Loads all RL models from their respective paths."""
         try:
             # Alpha Model (v8.03)
-            alpha_path = self.project_root / "checkpoints" / "8.03.zip"
+            alpha_path = self.project_root / "models" / "alpha" / "8.03.zip"
             self.logger.info(f"Loading Alpha model from {alpha_path}...")
             self.alpha_model = PPO.load(alpha_path)
             
             # Risk Model (v2.15)
-            risk_path = self.project_root / "RiskLayer" / "models" / "2.15.zip"
+            risk_path = self.project_root / "models" / "risk" / "2.15.zip"
             self.logger.info(f"Loading Risk model from {risk_path}...")
             self.risk_model = PPO.load(risk_path)
-            
-            # TradeGuard Model
-            # PRD mentions LightGBM but codebase uses PPO for TradeGuard too
-            tg_path = self.project_root / "TradeGuard" / "models" / "manual_test_model.zip"
-            self.logger.info(f"Loading TradeGuard model from {tg_path}...")
-            self.tradeguard_model = PPO.load(tg_path)
             
             self.logger.info("All models loaded successfully.")
             return True
@@ -54,9 +47,3 @@ class ModelLoader:
         action, _ = self.risk_model.predict(observation, deterministic=True)
         return action
 
-    def get_tradeguard_action(self, observation):
-        """Predicts Allow/Block (1/0) from TradeGuard model."""
-        if self.tradeguard_model is None:
-            raise RuntimeError("TradeGuard model not loaded.")
-        action, _ = self.tradeguard_model.predict(observation, deterministic=True)
-        return action
