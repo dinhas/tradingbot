@@ -36,19 +36,22 @@ class RiskManagementEnv(gym.Env):
         self.MAX_RISK_PER_TRADE = 0.40  # 40% Max Risk per trade (Very Agressive)
         self.MAX_MARGIN_PER_TRADE_PCT = 0.80 # Max 80% margin for $10 account survival
         self.MAX_LEVERAGE = 400.0       # 1:400 Leverage
-        self.TRADING_COST_PCT = 0.0002  # ~2 pips/ticks roundtrip cost
+        
+        # --- Realistic Fee Structure (Standard Account - No Commission) ---
+        # Standard accounts have 0 commission but slightly wider spreads
+        self.TRADING_COST_PCT = 0.0
+        
         self.MIN_LOTS = 0.01
-        self.CONTRACT_SIZE = 100000     # Standard Lot
         
         # Slippage Configuration (Realistic Execution Model)
-        # Slippage is modeled as 0.5 - 1.5 pips adverse movement on entry
-        self.SLIPPAGE_MIN_PIPS = 0.5    # Minimum slippage in pips
-        self.SLIPPAGE_MAX_PIPS = 1.5    # Maximum slippage in pips
-        self.ENABLE_SLIPPAGE = True     # Toggle for A/B testing
+        # 0.0 - 0.5 pips (Standard retail execution)
+        self.SLIPPAGE_MIN_PIPS = 0.0
+        self.SLIPPAGE_MAX_PIPS = 0.5
+        self.ENABLE_SLIPPAGE = True
         
-        # Spread Configuration (Realistic Market Simulation)
-        self.SPREAD_MIN_PIPS = 0.5      # Minimum spread in pips (e.g., 0.5 pips)
-        self.SPREAD_ATR_FACTOR = 0.05   # Spread expands by 5% of ATR (Volatility adjustment)
+        # Spread Configuration (Standard Account: 1.2 pip base)
+        self.SPREAD_MIN_PIPS = 1.2
+        self.SPREAD_ATR_FACTOR = 0.05   # Spread expands by 5% of ATR
         
         # Tradeable Signal Definitions
         self.TARGET_PROFIT_PCT = 0.001   # 0.1% Target Gain (10 pips)
@@ -89,7 +92,8 @@ class RiskManagementEnv(gym.Env):
         cache_valid = True
         required_files = ['features.npy', 'metadata.npy', 'entry_prices.npy', 'atrs.npy', 
                          'directions.npy', 'max_profit_pcts.npy', 'max_loss_pcts.npy', 
-                         'close_prices.npy', 'is_usd_quote.npy', 'is_usd_base.npy']
+                         'close_prices.npy', 'is_usd_quote.npy', 'is_usd_base.npy',
+                         'pip_scalars.npy', 'contract_sizes.npy']
                          
         for f in required_files:
             fp = os.path.join(cache_dir, f)
@@ -137,17 +141,37 @@ class RiskManagementEnv(gym.Env):
                     print("WARNING: Missing features column. Using zeros.")
                     features_array = np.zeros((len(self.df), 40), dtype=np.float32)
 
-                # Metadata checking for non-USDs
+                # Metadata checking for non-USDs and JPY/Gold logic
+                n = len(self.df)
+                is_usd_quote = np.ones(n, dtype=bool)
+                is_usd_base = np.zeros(n, dtype=bool)
+                pip_scalars = np.full(n, 0.0001, dtype=np.float32)
+                contract_sizes = np.full(n, 100000.0, dtype=np.float32)
+
                 if 'pair' in self.df.columns:
                      pairs = self.df['pair'].astype(str).str.upper()
                      is_usd_quote = pairs.str.endswith('USD').values
                      is_usd_base = (pairs.str.startswith('USD') & ~is_usd_quote).values
+                     
+                     # --- Fix JPY Error ---
+                     # Any pair containing JPY (USDJPY, EURJPY) has pip size 0.01
+                     is_jpy = pairs.str.contains('JPY').values
+                     pip_scalars[is_jpy] = 0.01
+                     
+                     # --- Fix Gold Contract Size & Pips ---
+                     is_gold = pairs.str.contains('XAU').values
+                     pip_scalars[is_gold] = 0.01 # Standard XAU pip is 0.01 (cents) usually
+                     contract_sizes[is_gold] = 100.0 # Gold standard contract size
+                     
                 else:
-                     # Fallback
-                     n = len(self.df)
-                     is_usd_quote = np.ones(n, dtype=bool)
-                     is_usd_base = np.zeros(n, dtype=bool)
-
+                     # Fallback if pair missing: Try to infer from price?
+                     # Rough heuristic: if price > 50, likely JPY or Gold
+                     print("WARNING: 'pair' column missing. Inferring JPY/Gold from prices.")
+                     prices = self.df['entry_price'].values
+                     is_likely_jpy_or_gold = prices > 50.0
+                     pip_scalars[is_likely_jpy_or_gold] = 0.01
+                     # Cannot safely infer contract size from price, defaulting to 100k
+                     
                 # Save arrays
                 np.save(os.path.join(cache_dir, 'features.npy'), features_array)
                 np.save(os.path.join(cache_dir, 'entry_prices.npy'), self.df['entry_price'].values.astype(np.float32))
@@ -158,6 +182,8 @@ class RiskManagementEnv(gym.Env):
                 np.save(os.path.join(cache_dir, 'close_prices.npy'), self.df['close_1000_price'].values.astype(np.float32))
                 np.save(os.path.join(cache_dir, 'is_usd_quote.npy'), is_usd_quote)
                 np.save(os.path.join(cache_dir, 'is_usd_base.npy'), is_usd_base)
+                np.save(os.path.join(cache_dir, 'pip_scalars.npy'), pip_scalars)
+                np.save(os.path.join(cache_dir, 'contract_sizes.npy'), contract_sizes)
                 
                 # Optional time limit
                 if 'hours_to_exit' in self.df.columns:
@@ -189,6 +215,8 @@ class RiskManagementEnv(gym.Env):
             self.close_prices = np.load(os.path.join(cache_dir, 'close_prices.npy'), mmap_mode='r')
             self.is_usd_quote_arr = np.load(os.path.join(cache_dir, 'is_usd_quote.npy'), mmap_mode='r')
             self.is_usd_base_arr = np.load(os.path.join(cache_dir, 'is_usd_base.npy'), mmap_mode='r')
+            self.pip_scalars = np.load(os.path.join(cache_dir, 'pip_scalars.npy'), mmap_mode='r')
+            self.contract_sizes = np.load(os.path.join(cache_dir, 'contract_sizes.npy'), mmap_mode='r')
             
             p_time = os.path.join(cache_dir, 'hours_to_exits.npy')
             if os.path.exists(p_time):
@@ -271,8 +299,8 @@ class RiskManagementEnv(gym.Env):
     def step(self, action):
         # --- 1. Parse Action ---
         # Clip actions to valid ranges (SCALPING ADJUSTED)
-        sl_mult = np.clip((action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)   # 0.2 - 2.0 ATR
-        tp_mult = np.clip((action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)   # 0.5 - 4.0 ATR
+        sl_mult = np.clip((action[0] + 1) / 2 * 2.0 + 0.5, 0.5, 2.5)   # 0.5 - 2.5 ATR
+        tp_mult = np.clip((action[1] + 1) / 2 * 4.5 + 0.5, 0.5, 5.0)   # 0.5 - 5.0 ATR
         
         # FIXED RISK: 2.0% per trade (Reverted to Fixed)
         risk_raw = 0.02 
@@ -289,18 +317,24 @@ class RiskManagementEnv(gym.Env):
         is_usd_quote = self.is_usd_quote_arr[global_idx]
         is_usd_base = self.is_usd_base_arr[global_idx]
         
+        # NEW: Load Correct Pip Size and Contract Size
+        pip_scalar = self.pip_scalars[global_idx]
+        contract_size = self.contract_sizes[global_idx]
+        
         # --- Apply Slippage (Adverse Entry) ---
         # Slippage moves the entry price AGAINST the trade direction
         if self.ENABLE_SLIPPAGE:
             slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-            slippage_price = slippage_pips * 0.0001 * entry_price_raw
+            # FIX: Use correct pip_scalar
+            slippage_price = slippage_pips * pip_scalar
             entry_price = entry_price_raw + (direction * -1 * slippage_price)
         else:
             entry_price = entry_price_raw
 
         # --- Dynamic Spread Simulation (Bid/Ask Logic) ---
         # Calculate Spread: Min + (Factor * ATR)
-        spread_val = (self.SPREAD_MIN_PIPS * 0.0001) + (self.SPREAD_ATR_FACTOR * atr)
+        # FIX: Use correct pip_scalar
+        spread_val = (self.SPREAD_MIN_PIPS * pip_scalar) + (self.SPREAD_ATR_FACTOR * atr)
         spread_pct = spread_val / entry_price_raw
         
         # Adjust Entry for Spread
@@ -326,27 +360,29 @@ class RiskManagementEnv(gym.Env):
         sl_dist_price = max(sl_mult * atr, 1e-9) # Safety clip
         
         # ATR-based Min SL (SCALPING ADJUSTED)
-        min_sl_dist = max(0.0001 * entry_price, 0.2 * atr)
+        min_sl_dist = max(pip_scalar * 1.0, 0.5 * atr) # Min 1 pip or 0.5 ATR
         if sl_dist_price < min_sl_dist: sl_dist_price = min_sl_dist
         
         risk_amount_cash = self.equity * actual_risk_pct
         
         lots = 0.0
+        # FIX: Use correct contract_size
         if sl_dist_price > 0:
             if is_usd_quote:
-                 lots = risk_amount_cash / (sl_dist_price * self.CONTRACT_SIZE)
+                 lots = risk_amount_cash / (sl_dist_price * contract_size)
             elif is_usd_base:
-                 lots = (risk_amount_cash * entry_price) / (sl_dist_price * self.CONTRACT_SIZE)
+                 lots = (risk_amount_cash * entry_price) / (sl_dist_price * contract_size)
             else:
-                 lots = risk_amount_cash / (sl_dist_price * self.CONTRACT_SIZE)
+                 lots = risk_amount_cash / (sl_dist_price * contract_size)
         
         # Leverage Clamping
+        # FIX: Use correct contract_size
         if is_usd_quote:
-             lot_value_usd = self.CONTRACT_SIZE * entry_price
+             lot_value_usd = contract_size * entry_price
         elif is_usd_base:
-             lot_value_usd = self.CONTRACT_SIZE * 1.0 
+             lot_value_usd = contract_size * 1.0 
         else:
-             lot_value_usd = self.CONTRACT_SIZE * 1.0
+             lot_value_usd = contract_size * 1.0
         
         max_position_value = (self.equity * self.MAX_MARGIN_PER_TRADE_PCT) * self.MAX_LEVERAGE
         max_lots_leverage = max_position_value / lot_value_usd
@@ -418,7 +454,8 @@ class RiskManagementEnv(gym.Env):
             
         # --- 6. Calculate Rewards ---
         price_change = exit_price - entry_price
-        gross_pnl_quote = price_change * lots * self.CONTRACT_SIZE * direction
+        # FIX: Use correct contract_size
+        gross_pnl_quote = price_change * lots * contract_size * direction
         
         gross_pnl_usd = 0.0
         if is_usd_quote:
