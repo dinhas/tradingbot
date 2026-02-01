@@ -22,7 +22,7 @@ def main():
     # 1. Setup Environment & Logging
     load_dotenv()
     logger = setup_logger()
-    logger.info("Starting TradeGuard Live Execution System...")
+    logger.info("Starting Live Execution System...")
 
     # 2. Load Configuration
     try:

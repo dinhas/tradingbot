@@ -8,7 +8,14 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.logger import configure
-from .trading_env import TradingEnv
+from stable_baselines3.common.monitor import Monitor
+try:
+    from .trading_env import TradingEnv
+except (ImportError, ValueError):
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent))
+    from trading_env import TradingEnv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,14 +24,10 @@ logger = logging.getLogger(__name__)
 def make_env(rank, seed=0, data_dir='data'):
     """
     Utility function for multiprocessed env.
-    
-    :param rank: (int) index of the subprocess
-    :param seed: (int) the initial seed for RNG
-    :param data_dir: (str) path to data directory
     """
     def _init():
-        # Environment is now fixed to 'Stage 3' logic internally
         env = TradingEnv(data_dir=data_dir, is_training=True)
+        env = Monitor(env)
         env.reset(seed=seed + rank)
         return env
     return _init
@@ -59,6 +62,9 @@ class MetricsCallback(BaseCallback):
                 
                 if self.verbose > 0:
                     logger.info(f"Step {self.num_timesteps}: Reward={ep_info.get('r', 0):.2f}, Length={ep_info.get('l', 0)}")
+            else:
+                if self.verbose > 0:
+                    logger.info(f"Step {self.num_timesteps}: No completed episodes yet...")
         
         # Create plots periodically
         if self.n_calls % self.plot_freq == 0 and len(self.episode_rewards) > 0:
@@ -101,7 +107,8 @@ class MetricsCallback(BaseCallback):
             ax2.grid(True, alpha=0.3)
             
             plt.tight_layout()
-            plot_path = plot_dir / f"training_progress_{self.num_timesteps}.png"
+            # Save to a fixed filename (no timestamp/steps) as requested
+            plot_path = plot_dir / "training_progress.png"
             plt.savefig(plot_path, dpi=100)
             plt.close()
             
@@ -113,18 +120,11 @@ class MetricsCallback(BaseCallback):
 def load_ppo_config(config_path):
     """
     Loads PPO configuration from a YAML file.
-    Always uses the 'stage 3' overrides if they exist as the new default.
     """
     import yaml
     
     with open(config_path, 'r') as f:
-        full_config = yaml.safe_load(f)
-        
-    config = full_config['default'].copy()
-    
-    # Apply Stage 3 overrides as the final production state
-    if 'stages' in full_config and 3 in full_config['stages']:
-        config.update(full_config['stages'][3])
+        config = yaml.safe_load(f)
         
     # Handle policy_kwargs
     if 'policy_kwargs' in config:
@@ -151,7 +151,7 @@ def train(args):
     data_dir_path = project_root / args.data_dir
     config_path = project_root / args.config
 
-    logger.info("Starting training (Final Curriculum State)")
+    logger.info("Starting Alpha Model Training (Simplified)")
     
     # Create directories
     log_dir_path.mkdir(parents=True, exist_ok=True)
@@ -160,13 +160,11 @@ def train(args):
     import multiprocessing
 
     # 1. Setup Vectorized Environment
-    # MAX SPEED: Use all available CPU cores with SubprocVecEnv
     n_cpu = multiprocessing.cpu_count()
     n_envs = n_cpu if not args.dry_run else 1
     
-    logger.info(f"Creating {n_envs} environment(s) using SubprocVecEnv (maximizing CPU usage)...")
+    logger.info(f"Creating {n_envs} environment(s)...")
     
-    # Use SubprocVecEnv for true parallelism
     if n_envs > 1:
         env = SubprocVecEnv([make_env(i, data_dir=data_dir_path) for i in range(n_envs)])
     else:
@@ -178,51 +176,49 @@ def train(args):
     # 2. Initialize Model
     ppo_config = load_ppo_config(config_path)
     
-    # Extract total_timesteps from config before removing it
-    config_timesteps = ppo_config.pop('total_timesteps', 1500000)
-    
-    if args.total_timesteps is None:
-        args.total_timesteps = config_timesteps
-        logger.info(f"Using total_timesteps from config: {args.total_timesteps}")
+    # Extract total_timesteps from config
+    total_timesteps = ppo_config.pop('total_timesteps', 1500000)
+    if args.total_timesteps:
+        total_timesteps = args.total_timesteps
     
     if args.load_model:
         load_model_path = project_root / args.load_model
         logger.info(f"Loading model from {load_model_path}")
-        try:
-            model = PPO.load(load_model_path, env=env, **ppo_config)
-            logger.info("✅ Model loaded successfully - continuing training")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not load model: {e}")
-            logger.info("Starting fresh model instead")
-            model = PPO("MlpPolicy", env, **ppo_config)
+        model = PPO.load(load_model_path, env=env, verbose=1, **ppo_config)
     else:
         logger.info("Creating new model from scratch")
-        model = PPO("MlpPolicy", env, **ppo_config)
+        model = PPO("MlpPolicy", env, verbose=1, **ppo_config)
         
     # 3. Callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=max(100000 // n_envs, 1),
         save_path=str(checkpoint_dir_path),
-        name_prefix="ppo_final"
+        name_prefix="ppo_alpha"
     )
     
     metrics_callback = MetricsCallback(
-        eval_freq=10000,
+        eval_freq=1000,
         plot_freq=10000,
         verbose=1
     )
     
     # 4. Train
-    total_timesteps = args.total_timesteps if not args.dry_run else 1000
+    if args.dry_run:
+        total_timesteps = 1000
     
     # Configure file logging
     from datetime import datetime
-    log_file = log_dir_path / f"train_final_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    # Log to a fixed filename (no timestamp) as requested
+    log_file = log_dir_path / "train_alpha.log"
     
-    file_handler = logging.FileHandler(log_file)
+    file_handler = logging.FileHandler(log_file, mode='w') # mode='w' to overwrite
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logging.getLogger().addHandler(file_handler)
     
+    # Configure SB3 logger
+    new_logger = configure(str(log_dir_path), ["stdout", "csv"])
+    model.set_logger(new_logger)
+
     logger.info(f"Logging to {log_file}")
     logger.info(f"Training for {total_timesteps} timesteps...")
     

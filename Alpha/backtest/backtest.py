@@ -31,9 +31,10 @@ import pandas as pd
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+plt.switch_backend('Agg')
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from Alpha.src.trading_env import TradingEnv
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -193,74 +194,6 @@ class BacktestMetrics:
         return per_asset
 
 
-class FullSystemMetrics(BacktestMetrics):
-    """
-    Extends BacktestMetrics to handle TradeGuard specifics and Shadow Portfolio.
-    """
-    def __init__(self):
-        super().__init__()
-        self.blocked_trades = []
-        self.shadow_equity_curve = []
-        self.shadow_timestamps = []
-
-    def add_blocked_trade(self, trade_info):
-        """Add a trade that was blocked by TradeGuard"""
-        self.blocked_trades.append(trade_info)
-
-    def add_shadow_equity_point(self, timestamp, equity):
-        """Add equity snapshot for the Shadow Portfolio (Baseline)"""
-        self.shadow_timestamps.append(timestamp)
-        self.shadow_equity_curve.append(equity)
-
-    def calculate_tradeguard_metrics(self):
-        """Calculate TradeGuard-specific performance metrics"""
-        if not self.blocked_trades and not self.trades:
-            return {}
-
-        total_signals = len(self.trades) + len(self.blocked_trades)
-        approval_rate = len(self.trades) / total_signals if total_signals > 0 else 0
-
-        # Block Accuracy: How many blocked trades would have been losses?
-        good_blocks = sum(1 for t in self.blocked_trades if t['theoretical_pnl'] <= 0)
-        bad_blocks = sum(1 for t in self.blocked_trades if t['theoretical_pnl'] > 0)
-        block_accuracy = good_blocks / len(self.blocked_trades) if self.blocked_trades else 0
-
-        # Net Value-Add: (Sum of avoided losses) - (Sum of missed profits)
-        avoided_losses = sum(abs(t['theoretical_pnl']) for t in self.blocked_trades if t['theoretical_pnl'] <= 0)
-        missed_profits = sum(t['theoretical_pnl'] for t in self.blocked_trades if t['theoretical_pnl'] > 0)
-        net_value_add = avoided_losses - missed_profits
-
-        return {
-            'approval_rate': approval_rate,
-            'block_accuracy': block_accuracy,
-            'net_value_add_pct': net_value_add,
-            'total_blocked': len(self.blocked_trades),
-            'good_blocks': good_blocks,
-            'bad_blocks': bad_blocks,
-            'avoided_losses_pct': avoided_losses,
-            'missed_profits_pct': missed_profits
-        }
-
-    def calculate_metrics(self):
-        """Calculate base metrics plus TradeGuard and Shadow Portfolio metrics"""
-        # Call the base class method to get standard metrics
-        metrics = super().calculate_metrics()
-        
-        # TradeGuard metrics
-        tg_metrics = self.calculate_tradeguard_metrics()
-        metrics['tradeguard'] = tg_metrics
-        
-        # Shadow Portfolio (Baseline) Return
-        if self.shadow_equity_curve:
-            initial_shadow = self.shadow_equity_curve[0]
-            final_shadow = self.shadow_equity_curve[-1]
-            shadow_return = (final_shadow - initial_shadow) / initial_shadow
-            metrics['baseline_return'] = shadow_return
-            
-            # Net Value-Add over Baseline
-            metrics['net_value_add_vs_baseline'] = metrics.get('total_return', 0) - shadow_return
-            
-        return metrics
 
 
 def make_backtest_env(data_dir, stage):
@@ -289,66 +222,137 @@ def run_backtest(args):
     data_dir_path = project_root / args.data_dir
     output_dir_path = project_root / args.output_dir
 
-    logger.info(f"Starting backtest for Stage {args.stage}")
+    logger.info("Starting Alpha Model Backtest")
     logger.info(f"Model: {model_path}")
     logger.info(f"Data directory: {data_dir_path}")
     
     # Create output directory
     output_dir_path.mkdir(parents=True, exist_ok=True)
     
-    # Load model
-    logger.info("Loading model...")
-    env = DummyVecEnv([make_backtest_env(data_dir_path, args.stage)])
-    
-    # Load VecNormalize stats if available
-    vecnorm_path = str(model_path).replace('.zip', '_vecnormalize.pkl')
-    if os.path.exists(vecnorm_path):
-        logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
-        env = VecNormalize.load(vecnorm_path, env)
-        env.training = False  # Disable training mode for deterministic evaluation
-        env.norm_reward = False  # Don't normalize rewards during evaluation
-    
-    model = PPO.load(model_path, env=env)
-    logger.info("Model loaded successfully")
-    
     # Initialize metrics tracker
     metrics_tracker = BacktestMetrics()
     
-    # Run episodes
-    logger.info(f"Running {args.episodes} episodes...")
+    # ---------------------------------------------------------
+    # PARALLEL BACKTESTING SETUP
+    # ---------------------------------------------------------
+    num_envs = args.workers if args.workers > 1 else 1
+    logger.info(f"Initializing {num_envs} environment worker(s)...")
+
+    # Create environments
+    if num_envs > 1:
+        env = SubprocVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage) for _ in range(num_envs)])
+    else:
+        env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)])
+
+    # Load model
+    logger.info("Loading model...")
     
-    for episode in range(args.episodes):
-        obs = env.reset()
-        done = False
-        episode_reward = 0
-        step_count = 0
-        
-        while not done:
-            # Get action from model (deterministic for backtesting)
-            action, _states = model.predict(obs, deterministic=True)
-            
-            # Step environment
-            obs, reward, done, info = env.step(action)
-            episode_reward += reward[0]
-            step_count += 1
-            
-            # Extract trade information if available
-            if info and len(info) > 0:
-                env_info = info[0]
-                
-                # Log completed trades
-                if 'trades' in env_info:
-                    for trade in env_info['trades']:
-                        metrics_tracker.add_trade(trade)
-                
-                # Log equity
-                if 'equity' in env_info and 'timestamp' in env_info:
-                    metrics_tracker.add_equity_point(env_info['timestamp'], env_info['equity'])
-        
-        # Get final equity from the last info
-        final_equity = env_info.get('equity', 0) if info and len(info) > 0 else 0
-        logger.info(f"Episode {episode + 1}/{args.episodes} complete. Reward: {episode_reward:.2f}, Steps: {step_count}, Final Equity: ${final_equity:.2f}")
+    # Load VecNormalize stats if available
+    vecnorm_path = str(model_path).replace('.zip', '_vecnormalize.pkl')
+    # FALLBACK: Handle ppo_final_model.zip -> ppo_final_vecnormalize.pkl
+    if not os.path.exists(vecnorm_path):
+        vecnorm_path = str(model_path).replace('_model.zip', '_vecnormalize.pkl')
+
+    if os.path.exists(vecnorm_path):
+        logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
+        env = VecNormalize.load(vecnorm_path, env)
+        env.training = False
+        env.norm_reward = False
     
+    model = PPO.load(model_path, env=env)
+    logger.info("Model loaded successfully")
+
+    # Get asset list
+    # Use a temp env to get assets list (avoiding overhead)
+    # Actually we can just hardcode or assume the list if avoiding instantiation
+    # But better to stay safe.
+    temp_env = TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)
+    available_assets = temp_env.assets
+    assets_to_test = available_assets if args.asset == "all" else [args.asset]
+
+    # Create Task Queue: list of (asset, episode_index)
+    tasks = []
+    for asset in assets_to_test:
+        for episode in range(args.episodes):
+            tasks.append({'asset': asset, 'episode': episode})
+            
+    total_tasks = len(tasks)
+    logger.info(f"Total tasks: {total_tasks} (Assets: {len(assets_to_test)}, Episodes per asset: {args.episodes})")
+    
+    # Per-environment buffers
+    env_buffers = [BacktestMetrics() for _ in range(num_envs)]
+    
+    # Track which task is currently assigned to which env
+    # active_tasks[env_idx] = {'asset': ..., 'episode': ...}
+    active_tasks = [None] * num_envs
+    
+    # Initial Task Assignment
+    for i in range(num_envs):
+        if tasks:
+            task = tasks.pop(0)
+            active_tasks[i] = task
+            logger.info(f"Worker {i} starting: {task['asset']} (Ep {task['episode']+1})")
+            if num_envs > 1:
+                env.env_method('set_asset', task['asset'], indices=i)
+            else:
+                env.envs[0].set_asset(task['asset'])
+                
+    # Reset all environments to start
+    obs = env.reset()
+    dones = np.array([False] * num_envs)
+    
+    completed_tasks = 0
+    
+    # Main Loop
+    while completed_tasks < total_tasks or any(t is not None for t in active_tasks):
+        action, _ = model.predict(obs, deterministic=True)
+        obs, rewards, dones, infos = env.step(action)
+        
+        for i in range(num_envs):
+            # If this env has an active task
+            if active_tasks[i] is not None:
+                # Accumulate data
+                info = infos[i]
+                
+                # Capture trades from this step
+                if 'trades' in info:
+                    for trade in info['trades']:
+                        env_buffers[i].add_trade(trade)
+                        
+                # Capture equity from this step
+                if 'equity' in info and 'timestamp' in info:
+                    env_buffers[i].add_equity_point(info['timestamp'], info['equity'])
+                
+                # Check for completion
+                if dones[i]:
+                    task = active_tasks[i]
+                    final_equity = info.get('equity', 0)
+                    
+                    logger.info(f"[{task['asset']}] Worker {i} finished Ep {task['episode']+1}. Final Equity: ${final_equity:.2f}")
+                    
+                    # Merge buffer into main metrics
+                    metrics_tracker.trades.extend(env_buffers[i].trades)
+                    metrics_tracker.equity_curve.extend(env_buffers[i].equity_curve)
+                    metrics_tracker.timestamps.extend(env_buffers[i].timestamps)
+                    
+                    # Reset buffer
+                    env_buffers[i] = BacktestMetrics()
+                    
+                    completed_tasks += 1
+                    
+                    # Assign new task if available
+                    if tasks:
+                        new_task = tasks.pop(0)
+                        active_tasks[i] = new_task
+                        logger.info(f"Worker {i} starting: {new_task['asset']} (Ep {new_task['episode']+1})")
+                        if num_envs > 1:
+                            env.env_method('set_asset', new_task['asset'], indices=i)
+                        else:
+                            env.envs[0].set_asset(new_task['asset'])
+                    else:
+                        active_tasks[i] = None
+                        # Env will continue stepping but we ignore it
+                        
     env.close()
     
     # Calculate metrics
@@ -395,14 +399,14 @@ def run_backtest(args):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # 1. Save metrics JSON
-    metrics_file = output_dir_path / f"metrics_stage{args.stage}_{timestamp}.json"
+    metrics_file = output_dir_path / f"metrics_alpha_{timestamp}.json"
     with open(metrics_file, 'w') as f:
         json.dump(metrics, f, indent=2, cls=NumpyEncoder)
     logger.info(f"Saved metrics to {metrics_file}")
     
     # 2. Save trade log
     if metrics_tracker.trades:
-        trades_file = output_dir_path / f"trades_stage{args.stage}_{timestamp}.csv"
+        trades_file = output_dir_path / f"trades_alpha_{timestamp}.csv"
         pd.DataFrame(metrics_tracker.trades).to_csv(trades_file, index=False)
         logger.info(f"Saved trade log to {trades_file}")
     
@@ -441,7 +445,7 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
     ax1.fill_between(times, equity[0], equity, where=(equity < equity[0]), alpha=0.2, color='red', label='Loss Zone')
     ax1.set_ylabel('Equity ($)', fontsize=11, fontweight='bold')
     # Determine year for title
-    year = times[0].year if times else "2025"
+    year = times[0].year if times else datetime.now().year
     ax1.set_title(f'Stage {stage} - Equity Curve & Drawdown ({year})', fontsize=13, fontweight='bold')
     ax1.legend(loc='upper left', fontsize=9)
     ax1.grid(True, alpha=0.3)
@@ -467,8 +471,10 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
     # Use net_pnl if available
     if 'net_pnl' in df_trades.columns:
         pnl_values = df_trades['net_pnl'].values
-    else:
+    elif 'fees' in df_trades.columns:
         pnl_values = (df_trades['pnl'] - df_trades['fees']).values
+    else:
+        pnl_values = df_trades['pnl'].values
     
     wins = pnl_values[pnl_values > 0]
     losses = pnl_values[pnl_values < 0]
@@ -486,7 +492,7 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
     ax3 = fig.add_subplot(gs[1, 2])
     if 'asset' in df_trades.columns:
         for asset in df_trades['asset'].unique():
-            asset_trades = df_trades[df_trades['asset'] == asset].sort_values('timestamp' if 'timestamp' in df_trades.columns else df_trades.index)
+            asset_trades = df_trades[df_trades['asset'] == asset].sort_values('timestamp')
             cumulative_pnl = asset_trades['pnl'].cumsum()
             ax3.plot(range(len(cumulative_pnl)), cumulative_pnl, marker='o', markersize=3, label=asset, linewidth=2)
         
@@ -626,14 +632,15 @@ def create_detailed_trade_chart(df_trades, stage, output_dir, timestamp):
     
     # Calculate streaks
     streaks = []
-    current_streak = 1
-    for i in range(1, len(win_loss)):
-        if win_loss[i] == win_loss[i-1]:
-            current_streak += 1
-        else:
-            streaks.append(current_streak * win_loss[i-1])
-            current_streak = 1
-    streaks.append(current_streak * win_loss[-1])
+    if len(win_loss) > 0:
+        current_streak = 1
+        for i in range(1, len(win_loss)):
+            if win_loss[i] == win_loss[i-1]:
+                current_streak += 1
+            else:
+                streaks.append(current_streak * win_loss[i-1])
+                current_streak = 1
+        streaks.append(current_streak * win_loss[-1])
     
     colors_streak = ['green' if s > 0 else 'red' for s in streaks]
     ax4.bar(range(len(streaks)), streaks, color=colors_streak, alpha=0.7, edgecolor='black')
@@ -652,145 +659,23 @@ def create_detailed_trade_chart(df_trades, stage, output_dir, timestamp):
     logger.info(f"✅ Saved detailed trade analysis to {detail_file}")
 
 
-def generate_full_system_charts(metrics_tracker, per_asset, stage, output_dir, timestamp):
-    """
-    Generate comprehensive visualization suite for the Three-Layer System.
-    Includes Shadow Portfolio comparison and TradeGuard analysis.
-    """
-    # 1. Main Comparative Analysis Chart
-    fig = plt.figure(figsize=(20, 16))
-    gs = fig.add_gridspec(4, 3, hspace=0.3, wspace=0.3)
-    
-    times = metrics_tracker.timestamps
-    equity = np.array(metrics_tracker.equity_curve)
-    shadow_equity = np.array(metrics_tracker.shadow_equity_curve)
-    
-    # --- Plot 1: Equity Curve Comparison (Full System vs. Baseline) ---
-    ax1 = fig.add_subplot(gs[0, :2])
-    ax1.plot(times, equity, linewidth=2.5, color='#2E86AB', label='Full System (With TradeGuard)', zorder=3)
-    if len(shadow_equity) == len(times):
-        ax1.plot(times, shadow_equity, linewidth=2.0, color='#A23B72', alpha=0.7, label='Baseline (Shadow Portfolio)', linestyle='--')
-    
-    ax1.set_ylabel('Equity ($)', fontsize=11, fontweight='bold')
-    ax1.set_title(f'Equity Curve Comparison: Full System vs. Baseline', fontsize=13, fontweight='bold')
-    ax1.legend(loc='upper left', fontsize=10)
-    ax1.grid(True, alpha=0.3)
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
-
-    # --- Plot 2: TradeGuard Probability Distribution (Approved vs. Blocked) ---
-    ax2 = fig.add_subplot(gs[0, 2])
-    approved_probs = [t.get('prob', 0.5) for t in metrics_tracker.trades if 'prob' in t]
-    blocked_probs = [t.get('prob', 0.5) for t in metrics_tracker.blocked_trades]
-    
-    if approved_probs:
-        ax2.hist(approved_probs, bins=20, alpha=0.6, color='green', label='Approved', edgecolor='black')
-    if blocked_probs:
-        ax2.hist(blocked_probs, bins=20, alpha=0.6, color='red', label='Blocked', edgecolor='black')
-    
-    # Threshold line
-    threshold = 0.5
-    if metrics_tracker.blocked_trades:
-        threshold = metrics_tracker.blocked_trades[0].get('threshold', 0.5)
-    
-    ax2.axvline(x=threshold, color='black', linestyle='--', label='Threshold')
-    ax2.set_xlabel('TradeGuard Probability', fontsize=10, fontweight='bold')
-    ax2.set_title('TradeGuard Probability Distribution', fontsize=12, fontweight='bold')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-
-    # --- Plot 3: Block Quality Timeline ---
-    ax3 = fig.add_subplot(gs[1, :])
-    if metrics_tracker.blocked_trades:
-        bt_df = pd.DataFrame(metrics_tracker.blocked_trades)
-        # Good blocks (avoided loss) = Green, Bad blocks (missed profit) = Red
-        colors = ['#27AE60' if p <= 0 else '#E74C3C' for p in bt_df['theoretical_pnl']]
-        sizes = [abs(p) * 5000 for p in bt_df['theoretical_pnl']]
-        ax3.scatter(bt_df['timestamp'], bt_df['theoretical_pnl'], s=sizes, c=colors, alpha=0.6, edgecolor='black')
-        ax3.axhline(y=0, color='black', linestyle='-', linewidth=1)
-        ax3.set_ylabel('Avoided PnL (Ratio)', fontsize=10, fontweight='bold')
-        ax3.set_title('TradeGuard Block Quality Timeline (Bubble size = magnitude)', fontsize=12, fontweight='bold')
-        ax3.grid(True, alpha=0.3)
-        ax3.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
-        plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45)
-
-    # --- Plot 4: Per-Asset Approval Rates ---
-    ax4 = fig.add_subplot(gs[2, 0])
-    approved_asset_data = [{'asset': t['asset'], 'status': 'approved'} for t in metrics_tracker.trades]
-    blocked_asset_data = [{'asset': t['asset'], 'status': 'blocked'} for t in metrics_tracker.blocked_trades]
-    
-    if approved_asset_data or blocked_asset_data:
-        all_signals = pd.concat([pd.DataFrame(approved_asset_data), pd.DataFrame(blocked_asset_data)])
-        if not all_signals.empty:
-            counts = all_signals.groupby(['asset', 'status']).size().unstack(fill_value=0)
-            if 'approved' in counts:
-                total_sigs = counts.sum(axis=1)
-                rates = counts['approved'] / total_sigs
-                rates.plot(kind='bar', ax=ax4, color='#3498DB', edgecolor='black', alpha=0.7)
-                ax4.set_title('Approval Rate by Asset', fontsize=11, fontweight='bold')
-                ax4.set_ylim(0, 1.1)
-                ax4.grid(True, alpha=0.3, axis='y')
-
-    # --- Plot 5: Time-of-Day Decision Analysis ---
-    ax5 = fig.add_subplot(gs[2, 1:])
-    if approved_asset_data or blocked_asset_data:
-        all_signals['hour'] = pd.to_datetime([t['timestamp'] for t in metrics_tracker.trades] + 
-                                           [t['timestamp'] for t in metrics_tracker.blocked_trades]).hour
-        hourly_stats = all_signals.groupby(['hour', 'status']).size().unstack(fill_value=0)
-        hourly_stats.plot(kind='bar', stacked=True, ax=ax5, color=['#2ECC71', '#E74C3C'], alpha=0.7, edgecolor='black')
-        ax5.set_title('Decision Volume by Hour (Approved vs. Blocked)', fontsize=11, fontweight='bold')
-        ax5.grid(True, alpha=0.3, axis='y')
-
-    plt.suptitle(f'Three-Layer System Analysis - Stage {stage}', fontsize=16, fontweight='bold', y=0.99)
-    chart_file = output_dir / f"full_system_analysis_stage{stage}_{timestamp}.png"
-    plt.savefig(chart_file, dpi=150, bbox_inches='tight')
-    plt.close()
-    
-    # 2. Detail Chart for TradeGuard Metrics
-    create_tradeguard_performance_charts(metrics_tracker, stage, output_dir, timestamp)
-
-
-def create_tradeguard_performance_charts(metrics_tracker, stage, output_dir, timestamp):
-    """Detailed Performance metrics for TradeGuard layer"""
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-    
-    # Net Value Add vs. Probability
-    ax1 = axes[0]
-    if metrics_tracker.blocked_trades:
-        bt_df = pd.DataFrame(metrics_tracker.blocked_trades)
-        ax1.scatter(bt_df['prob'], bt_df['theoretical_pnl'], alpha=0.5)
-        ax1.axhline(y=0, color='black', linestyle='--')
-        ax1.set_xlabel('TradeGuard Probability')
-        ax1.set_ylabel('Theoretical PnL')
-        ax1.set_title('Block Quality vs. Confidence Score')
-        ax1.grid(True, alpha=0.3)
-    
-    # Block Accuracy Pie
-    ax2 = axes[1]
-    tg_metrics = metrics_tracker.calculate_tradeguard_metrics()
-    if tg_metrics and tg_metrics.get('total_blocked', 0) > 0:
-        labels = [f"Good Blocks ({tg_metrics['good_blocks']})", f"Bad Blocks ({tg_metrics['bad_blocks']})"]
-        sizes = [tg_metrics['good_blocks'], tg_metrics['bad_blocks']]
-        ax2.pie(sizes, labels=labels, autopct='%1.1f%%', colors=['#2ECC71', '#E74C3C'], startangle=90, wedgeprops={'edgecolor': 'white'})
-        ax2.set_title(f"TradeGuard Filtering Accuracy (Total Blocked: {tg_metrics['total_blocked']})")
-    
-    plt.tight_layout()
-    chart_file = output_dir / f"tradeguard_performance_stage3_{timestamp}.png"
-    plt.savefig(chart_file, dpi=150, bbox_inches='tight')
-    plt.close()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Backtest RL Trading Bot")
     parser.add_argument("--model", type=str, required=True, help="Path to trained model (.zip file) relative to project root")
-    parser.add_argument("--stage", type=int, required=True, choices=[1, 2, 3],
-                        help="Curriculum stage (1=Direction, 2=+Sizing, 3=Full)")
     parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data",
                         help="Path to backtest data directory relative to project root")
     parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results",
                         help="Path to save results relative to project root")
     parser.add_argument("--episodes", type=int, default=1,
-                        help="Number of episodes to run")
+                        help="Number of episodes to run per asset")
+    parser.add_argument("--stage", type=int, default=1,
+                        help="Training stage (1, 2, or 3) for reporting")
+    parser.add_argument("--asset", type=str, default="all",
+                        help="Specific asset to test (e.g., EURUSD) or 'all' to test the full basket")
+    parser.add_argument("--workers", type=int, default=2,
+                        help="Number of parallel environment workers (default: 2)")
     
     args = parser.parse_args()
     

@@ -4,15 +4,15 @@ import numpy as np
 import pandas as pd
 import logging
 from pathlib import Path
-from .feature_engine import FeatureEngine
+try:
+    from .feature_engine import FeatureEngine
+except (ImportError, ValueError):
+    from feature_engine import FeatureEngine
 
 class TradingEnv(gym.Env):
     """
-    Trading environment for RL agent.
-    
-    Curriculum Stages:
-        - REMOVED: Now effectively 'Stage 3' (Full Control)
-        Stage 3: Direction + Position sizing + SL/TP (20 outputs)
+    Simplified Trading environment for RL agent.
+    Focuses on single-pair direction (Buy/Sell/Flat).
     
     Reward System:
         - Peeked P&L: Primary signal via PEEK & LABEL (solves credit assignment)
@@ -20,7 +20,7 @@ class TradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, data_dir='data', is_training=True, stage=3, data=None):
+    def __init__(self, data_dir='data', is_training=True, data=None, stage=1):
         super(TradingEnv, self).__init__()
         
         self.data_dir = data_dir
@@ -28,7 +28,7 @@ class TradingEnv(gym.Env):
         self.stage = stage
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         
-        # Configuration Constants (Moved up to prevent AttributeError in _load_data fallback)
+        # Configuration Constants
         self.MIN_POSITION_SIZE = 0.1
         self.MIN_ATR_MULTIPLIER = 0.0001
         self.REWARD_LOG_INTERVAL = 5000
@@ -46,21 +46,16 @@ class TradingEnv(gym.Env):
         self._build_optimization_matrix()
         self._cache_data_arrays()
         
-        # Define Action Space based on Stage
-        if self.stage == 1:
-            self.action_dim = 5  # Direction only
-        elif self.stage == 2:
-            self.action_dim = 10  # Direction + Size
-        else:
-            self.action_dim = 20  # Direction + Size + SL/TP
-            
+        # Simple Action Space: 1 output for Direction (Buy, Sell, Flat)
+        self.action_dim = 1
         self.action_space = spaces.Box(low=-1, high=1, shape=(self.action_dim,), dtype=np.float32)
         
-        # Define Observation Space (140 features)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(140,), dtype=np.float32)
+        # Define Observation Space (40 features: 25 asset-specific + 15 global)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(40,), dtype=np.float32)
         
         # State Variables
         self.current_step = 0
+        self.current_asset = self.assets[0] # Default, will be randomized in reset
         self.max_steps = len(self.processed_data) - 1
         
         # PRD Risk Constants
@@ -74,81 +69,106 @@ class TradingEnv(gym.Env):
         Dynamic features (portfolio state) are left as 0 and filled at runtime.
         """
         n_steps = len(self.processed_data)
+        # We keep 140 internally to store all assets, but will extract 40 for observation
         self.master_obs_matrix = np.zeros((n_steps, 140), dtype=np.float32)
         
-        # Map feature names to indices
-        self.feature_map = {name: i for i, name in enumerate(self.feature_engine.feature_names)}
+        # Internal map for ALL possible features
+        self.internal_feature_map = {}
+        idx = 0
+        for asset in self.assets:
+            for feat in ["close", "return_1", "return_12", "atr_14", "atr_ratio", "bb_position", 
+                        "ema_9", "ema_21", "price_vs_ema9", "ema9_vs_ema21", "rsi_14", "macd_hist", "volume_ratio"]:
+                self.internal_feature_map[f"{asset}_{feat}"] = idx
+                idx += 1
+            # Skip position state (7) - dynamic
+            idx += 7
+            for feat in ["corr_basket", "rel_strength", "corr_xauusd", "corr_eurusd", "rank"]:
+                self.internal_feature_map[f"{asset}_{feat}"] = idx
+                idx += 1
         
-        # Cache indices for dynamic features for fast updates
-        self.dynamic_indices = {
-            'equity': self.feature_map['equity'],
-            'margin_usage_pct': self.feature_map['margin_usage_pct'],
-            'drawdown': self.feature_map['drawdown'],
-            'num_open_positions': self.feature_map['num_open_positions']
-        }
+        # Global features (indices 125-139)
+        global_feats = [
+            "equity", "margin_usage_pct", "drawdown", "num_open_positions",
+            "risk_on_score", "asset_dispersion", "market_volatility",
+            "hour_sin", "hour_cos", "day_sin", "day_cos",
+            "session_asian", "session_london", "session_ny", "session_overlap"
+        ]
+        for feat in global_feats:
+            self.internal_feature_map[feat] = idx
+            idx += 1
+
+        # Cache dynamic indices for fast updates
+        self.dynamic_indices = {feat: self.internal_feature_map[feat] for feat in global_feats[:4]}
         
         self.asset_dynamic_indices = {}
         for asset in self.assets:
+            # Re-calculating indices for dynamic position state
+            base_idx = self.assets.index(asset) * 25
             self.asset_dynamic_indices[asset] = {
-                'has_position': self.feature_map[f"{asset}_has_position"],
-                'position_size': self.feature_map[f"{asset}_position_size"],
-                'unrealized_pnl': self.feature_map[f"{asset}_unrealized_pnl"],
-                'position_age': self.feature_map[f"{asset}_position_age"],
-                'entry_price': self.feature_map[f"{asset}_entry_price"],
-                'current_sl': self.feature_map[f"{asset}_current_sl"],
-                'current_tp': self.feature_map[f"{asset}_current_tp"]
+                'has_position': base_idx + 13,
+                'position_size': base_idx + 14,
+                'unrealized_pnl': base_idx + 15,
+                'position_age': base_idx + 16,
+                'entry_price': base_idx + 17,
+                'current_sl': base_idx + 18,
+                'current_tp': base_idx + 19
             }
         
         # Fill static features from DataFrame columns
         for col in self.processed_data.columns:
-            if col in self.feature_map:
-                idx = self.feature_map[col]
+            if col in self.internal_feature_map:
+                idx = self.internal_feature_map[col]
                 self.master_obs_matrix[:, idx] = self.processed_data[col].values
+            elif any(col.endswith(f"_{feat}") for feat in ["risk_on_score", "asset_dispersion", "market_volatility", "hour_sin", "hour_cos", "day_sin", "day_cos", "session_asian", "session_london", "session_ny", "session_overlap"]):
+                # Handle global columns that might not have asset prefix but are in internal_feature_map
+                feat_name = col.split('_', 1)[-1] if '_' in col else col
+                if feat_name in self.internal_feature_map:
+                    self.master_obs_matrix[:, self.internal_feature_map[feat_name]] = self.processed_data[col].values
+        
+        # Ensure session features are filled (they are named exactly in the dataframe usually)
+        for feat in ["hour_sin", "hour_cos", "day_sin", "day_cos", "session_asian", "session_london", "session_ny", "session_overlap", "risk_on_score", "asset_dispersion", "market_volatility"]:
+            if feat in self.processed_data.columns:
+                self.master_obs_matrix[:, self.internal_feature_map[feat]] = self.processed_data[feat].values
 
     def _get_observation(self):
         """
-        Optimized observation retrieval using pre-computed matrix.
+        Optimized observation retrieval. Extracts 40 features for current asset.
         """
-        # 1. Copy pre-computed static data for current step
-        # using copy() ensures we don't mutate the master matrix
-        obs = self.master_obs_matrix[self.current_step].copy()
+        # 1. Update master matrix with dynamic features (Internal 140-dim representation)
+        full_obs = self.master_obs_matrix[self.current_step].copy()
         
-        # 2. Update Global Dynamic Features
+        # Update Global Dynamic
         total_exposure = sum(pos['size'] for pos in self.positions.values() if pos is not None)
+        full_obs[self.dynamic_indices['equity']] = self.equity
+        full_obs[self.dynamic_indices['margin_usage_pct']] = total_exposure / self.equity if self.equity > 0 else 0
+        full_obs[self.dynamic_indices['drawdown']] = 1.0 - (self.equity / self.peak_equity)
+        full_obs[self.dynamic_indices['num_open_positions']] = sum(1 for p in self.positions.values() if p is not None)
         
-        obs[self.dynamic_indices['equity']] = self.equity
-        obs[self.dynamic_indices['margin_usage_pct']] = total_exposure / self.equity if self.equity > 0 else 0
-        obs[self.dynamic_indices['drawdown']] = 1.0 - (self.equity / self.peak_equity)
-        obs[self.dynamic_indices['num_open_positions']] = sum(1 for p in self.positions.values() if p is not None)
-        
-        # 3. Update Per-Asset Dynamic Features
+        # Update Per-Asset Dynamic
         current_prices = self._get_current_prices()
-        
         for asset in self.assets:
             pos = self.positions[asset]
             indices = self.asset_dynamic_indices[asset]
-            
             if pos:
-                # Calculate metrics
                 price_change = (current_prices[asset] - pos['entry_price']) * pos['direction']
                 price_change_pct = price_change / pos['entry_price'] if pos['entry_price'] != 0 else 0
                 unrealized_pnl = price_change_pct * (pos['size'] * self.leverage)
                 
-                # Update Vector
-                obs[indices['has_position']] = 1.0
-                obs[indices['position_size']] = pos['size'] / self.equity
-                obs[indices['unrealized_pnl']] = unrealized_pnl
-                obs[indices['position_age']] = self.current_step - pos['entry_step']
-                obs[indices['entry_price']] = pos['entry_price']
-                obs[indices['current_sl']] = pos['sl']
-                obs[indices['current_tp']] = pos['tp']
-            else:
-                # No position (already 0 in matrix, but resetting ensures safety if we reused arrays)
-                # Since we copy() from master (where they are 0), we don't strictly need to zero them 
-                # unless the master matrix was dirty, which it isn't.
-                pass
-                
-        return obs
+                full_obs[indices['has_position']] = 1.0
+                full_obs[indices['position_size']] = pos['size'] / self.equity
+                full_obs[indices['unrealized_pnl']] = unrealized_pnl
+                full_obs[indices['position_age']] = self.current_step - pos['entry_step']
+                full_obs[indices['entry_price']] = pos['entry_price']
+                full_obs[indices['current_sl']] = pos['sl']
+                full_obs[indices['current_tp']] = pos['tp']
+
+        # 2. Extract the 40 features for current_asset
+        # [25 asset features] + [15 global features]
+        asset_start_idx = self.assets.index(self.current_asset) * 25
+        asset_features = full_obs[asset_start_idx : asset_start_idx + 25]
+        global_features = full_obs[125:140]
+        
+        return np.concatenate([asset_features, global_features])
 
     def _cache_data_arrays(self):
         """Cache DataFrame columns as numpy arrays for performance."""
@@ -194,15 +214,15 @@ class TradingEnv(gym.Env):
                     }
                     base_price = default_prices.get(asset, 1.0000)
                     
+                    # FIX: Use raw column names, _align_data will add prefixes
                     dates = pd.date_range(start='2024-01-01', periods=1000, freq='5min')
-                    # FIX: Match column naming convention expected by _get_current_prices/atrs
                     df = pd.DataFrame(index=dates)
-                    df[f"{asset}_open"] = base_price
-                    df[f"{asset}_high"] = base_price * 1.001
-                    df[f"{asset}_low"] = base_price * 0.999
-                    df[f"{asset}_close"] = base_price
-                    df[f"{asset}_volume"] = 100
-                    df[f"{asset}_atr_14"] = self.MIN_ATR_MULTIPLIER * base_price  # Default small ATR
+                    df["open"] = base_price
+                    df["high"] = base_price * 1.001
+                    df["low"] = base_price * 0.999
+                    df["close"] = base_price
+                    df["volume"] = 100
+                    df["atr_14"] = self.MIN_ATR_MULTIPLIER * base_price  # Default small ATR
                     
             
             data[asset] = df
@@ -211,6 +231,14 @@ class TradingEnv(gym.Env):
     def reset(self, seed=None, options=None):
         """Reset environment to initial state."""
         super().reset(seed=seed)
+        
+        # Support forcing a specific asset via options (useful for backtesting/shuffling)
+        if options and 'asset' in options:
+            self.current_asset = options['asset']
+        elif self.is_training:
+            # Randomly select asset for this episode
+            self.current_asset = np.random.choice(self.assets)
+        # In backtesting, if no option provided, keep the current_asset (set via set_asset or init)
         
         if self.is_training:
             # Training: Randomize for diversity
@@ -239,6 +267,12 @@ class TradingEnv(gym.Env):
         
         return self._get_observation(), {}
         
+    def set_asset(self, asset):
+        """Set the current asset for the environment."""
+        if asset not in self.assets:
+            raise ValueError(f"Asset {asset} not found in environment assets.")
+        self.current_asset = asset
+
     def _validate_observation(self, obs):
         """Ensure observation shape matches space definition."""
         if obs.shape != self.observation_space.shape:
@@ -251,9 +285,9 @@ class TradingEnv(gym.Env):
         self.peeked_pnl_step = 0.0
         self.completed_trades = []
         
-        # Parse and execute trades
-        parsed_actions = self._parse_action(action)
-        self._execute_trades(parsed_actions)
+        # Parse and execute trades (ONLY for current asset)
+        parsed_action = self._parse_action(action)
+        self._execute_trades({self.current_asset: parsed_action})
         
         # Margin call check
         if self.equity <= 0:
@@ -294,47 +328,26 @@ class TradingEnv(gym.Env):
             'trades': self.completed_trades,
             'equity': self.equity,
             'drawdown': drawdown,
-            'timestamp': self._get_current_timestamp()
+            'timestamp': self._get_current_timestamp(),
+            'asset': self.current_asset
         }
         
         return self._validate_observation(self._get_observation()), reward, terminated, truncated, info
 
     def _parse_action(self, action):
-        """Parse raw action array into per-asset trading decisions."""
+        """Parse raw action array into trading decision (Direction only)."""
         # FIX: Validate action shape
         if len(action) != self.action_dim:
             raise ValueError(f"Action array has {len(action)} elements, expected {self.action_dim}")
             
-        parsed = {}
-        for i, asset in enumerate(self.assets):
-            if self.stage == 1:
-                # Stage 1: Direction only
-                direction_raw = action[i]
-                size_raw = 0.5  # Default size
-                sl_raw = 1.5    # Default SL mult
-                tp_raw = 3.0    # Default TP mult
-            elif self.stage == 2:
-                # Stage 2: Direction + Position Size
-                base_idx = i * 2
-                direction_raw = action[base_idx]
-                size_raw = np.clip((action[base_idx + 1] + 1) / 2, 0, 1)
-                sl_raw = 1.5
-                tp_raw = 3.0
-            else:
-                # Stage 3 Logic: Direction + Size + SL/TP
-                base_idx = i * 4
-                direction_raw = action[base_idx]
-                size_raw = np.clip((action[base_idx + 1] + 1) / 2, 0, 1)  # FIX: Bounds validation
-                sl_raw = np.clip((action[base_idx + 2] + 1) / 2 * 2.5 + 0.5, 0.5, 3.0)  # 0.5 to 3.0
-                tp_raw = np.clip((action[base_idx + 3] + 1) / 2 * 3.5 + 1.5, 1.5, 5.0)  # 1.5 to 5.0
+        direction_raw = action[0]
                 
-            parsed[asset] = {
-                'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
-                'size': size_raw,
-                'sl_mult': sl_raw,
-                'tp_mult': tp_raw
-            }
-        return parsed
+        return {
+            'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
+            'size': 0.5,     # Fixed: 25% of equity (0.5 * MAX_POS_SIZE_PCT)
+            'sl_mult': 2.0,  # Fixed: 2.0x ATR
+            'tp_mult': 4.0   # Fixed: 4.0x ATR
+        }
 
     def _execute_trades(self, actions):
         """Execute trading decisions for all assets."""
@@ -410,8 +423,12 @@ class TradingEnv(gym.Env):
         }
         
         # PEEK & LABEL: Simulate outcome and assign reward NOW
-        simulated_pnl = self._simulate_trade_outcome(asset)
+        simulated_pnl, fast_win = self._simulate_trade_outcome(asset)
         self.peeked_pnl_step += simulated_pnl
+        
+        # FAST WIN BONUS: Double reward if TP hit within 30 mins (6 candles)
+        if fast_win and simulated_pnl > 0:
+            self.peeked_pnl_step += simulated_pnl
         
         # Transaction costs (FIX: Use notional position size, not leveraged)
         # 0.00002 = 0.2 pips spread (entry cost only, exit cost applied on close)
@@ -493,9 +510,10 @@ class TradingEnv(gym.Env):
         """
         PEEK & LABEL: Look ahead to see if trade hits SL or TP.
         OPTIMIZED: Uses cached numpy arrays instead of pandas slicing.
+        Returns: (pnl, fast_win)
         """
         if self.positions[asset] is None:
-            return 0.0
+            return 0.0, False
         
         pos = self.positions[asset]
         direction = pos['direction']
@@ -507,7 +525,7 @@ class TradingEnv(gym.Env):
         end_idx = min(start_idx + 1000, len(self.raw_data))
         
         if start_idx >= end_idx:
-            return 0.0
+            return 0.0, False
             
         # OPTIMIZATION: Use pre-cached numpy arrays
         lows = self.low_arrays[asset][start_idx:end_idx]
@@ -523,16 +541,28 @@ class TradingEnv(gym.Env):
         sl_hit = sl_hit_mask.any()
         tp_hit = tp_hit_mask.any()
         
+        fast_win = False
+        
         # Determine outcome
         # FIX: When both hit on same candle, assume SL first (conservative)
         if sl_hit and tp_hit:
             first_sl_idx = np.argmax(sl_hit_mask)
             first_tp_idx = np.argmax(tp_hit_mask)
-            exit_price = sl if first_sl_idx <= first_tp_idx else tp
+            if first_sl_idx <= first_tp_idx:
+                exit_price = sl
+            else:
+                exit_price = tp
+                # Check for fast win (within 6 candles = 30 mins)
+                if first_tp_idx < 6:
+                    fast_win = True
         elif sl_hit:
             exit_price = sl
         elif tp_hit:
             exit_price = tp
+            # Check for fast win
+            first_tp_idx = np.argmax(tp_hit_mask)
+            if first_tp_idx < 6:
+                fast_win = True
         else:
             # Neither hit: use last available price from cached array
             exit_price = self.close_arrays[asset][end_idx - 1]
@@ -543,7 +573,7 @@ class TradingEnv(gym.Env):
         position_value = pos['size'] * self.leverage
         pnl = price_change_pct * position_value
         
-        return pnl
+        return pnl, fast_win
 
     def _simulate_trade_outcome_with_timing(self, asset):
         """
@@ -648,9 +678,9 @@ class TradingEnv(gym.Env):
             # Sum up actual P&L from completed trades this step
             step_pnl = sum(trade['net_pnl'] for trade in self.completed_trades)
             
-            # Normalize: 1% of starting equity = 0.1 reward
+            # Normalize: 1% of starting equity = 0.02 reward
             if step_pnl != 0:
-                normalized_pnl = (step_pnl / self.start_equity) * 10.0
+                normalized_pnl = (step_pnl / self.start_equity) * 2.0
                 reward += normalized_pnl
             
             return reward
@@ -661,14 +691,15 @@ class TradingEnv(gym.Env):
         
         # COMPONENT 1: Peeked P&L (Primary Signal)
         if self.peeked_pnl_step != 0:
-            # Normalize: 1% of starting equity = 0.1 reward
-            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 10.0
+            # Normalize: 1% of starting equity = 0.02 reward
+            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 2.0
             
-            # Loss Aversion (Prospect Theory): Losses hurt 1.5x more
+            # Loss Aversion (Prospect Theory): Losses hurt 2.25x more (1.5 * 1.5)
             if normalized_pnl < 0:
-                normalized_pnl = np.clip(normalized_pnl, -1.0, 0.0) * 1.5
+                normalized_pnl = np.clip(normalized_pnl, -5.0, 0.0) * 2.25
             else:
-                normalized_pnl = np.clip(normalized_pnl, 0.0, 1.0)
+                # Relaxed clipping to allow for Fast Win Bonus (up to 5.0)
+                normalized_pnl = np.clip(normalized_pnl, 0.0, 5.0)
             reward += normalized_pnl
         
         # COMPONENT 2: Progressive Drawdown Penalty

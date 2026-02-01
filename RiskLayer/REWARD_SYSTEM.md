@@ -1,90 +1,61 @@
 # Risk Management Environment - Reward System Documentation
 
 ## Overview
-The reward system consists of **4 main components** that are combined to form the final reward signal. All rewards are clipped to the range **[-100, 100]** to prevent extreme values that break value function learning.
+The reward system focuses on **trade quality (efficiency)** and **capital preservation**. All rewards are clipped to the range **[-20, 20]** to ensure training stability and prevent gradient explosions.
 
 ---
 
 ## Reward Components
 
-### 1. **PnL Reward** (Primary Component)
+### 1. **PnL Efficiency Reward** (Primary Component)
 **Formula:**
 ```python
-pnl_ratio = net_pnl / max(prev_equity, 1e-6)
-pnl_reward = clip(pnl_ratio * 10.0, -50.0, 50.0)
+atr_ratio = atr / entry_price
+denom = max(max_favorable_pct, atr_ratio, 1e-5)
+realized_pct = (exit_price - entry_price) / entry_price * direction
+pnl_efficiency = (realized_pct / denom) * 10.0
 ```
 
 **Calculation Steps:**
-1. **Gross PnL (Quote Currency):**
-   ```python
-   price_change = exit_price - entry_price
-   gross_pnl_quote = price_change * lots * CONTRACT_SIZE * direction
-   ```
+1. **Max Available Profit (Denominator):**
+   - Uses the distance from entry to the best price reached during the trade (`max_favorable_pct`).
+   - Floored at the current **ATR ratio** to prevent reward explosions on tiny moves.
+   - Ensures the agent is rewarded for capturing a high percentage of the *available* move.
 
-2. **Currency Conversion to USD:**
-   - **USD Quote pairs** (EURUSD, GBPUSD, XAUUSD): `gross_pnl_usd = gross_pnl_quote`
-   - **USD Base pairs** (USDJPY, USDCHF): `gross_pnl_usd = gross_pnl_quote / exit_price`
-   - **Cross pairs**: Uses fallback conversion
+2. **Realized Performance:**
+   - Calculates the actual percentage change captured by the trade.
 
-3. **Net PnL (After Costs):**
-   ```python
-   costs = position_val * TRADING_COST_PCT  # 0.0002 (2 pips/ticks)
-   net_pnl = gross_pnl_usd - costs
-   ```
+3. **Normalized Reward:**
+   - Ratio of realized performance to available performance, multiplied by 10.
+   - Target range: [-10.0, 10.0] (roughly).
 
-4. **Normalized Reward:**
-   - Normalized by previous equity to make rewards scale-independent
-   - Multiplied by 10.0 for scaling
-   - Clipped to [-50.0, 50.0] range
+**Purpose:** Rewards capturing the bulk of a move and punishes poor realization (e.g., getting stopped out early on a move that eventually went in your favor).
 
-**Range:** [-50.0, 50.0]
+**Range:** [~-10.0, 10.0]
 
 ---
 
-### 2. **Take Profit (TP) Bonus**
+### 2. **Bullet Dodger Bonus** (Capital Preservation)
 **Formula:**
 ```python
-if exited_on == 'TP':
-    tp_bonus = 0.5 * (tp_mult / 8.0)
-else:
-    tp_bonus = 0.0
+if exited_on == 'SL':
+    if avoided_loss_dist > (sl_pct_dist * 1.5):
+        saved_ratio = avoided_loss_dist / sl_pct_dist
+        bullet_bonus = min(saved_ratio, 3.0) * 2.0
 ```
 
 **Details:**
-- Only applied when trade exits via Take Profit
-- Scales with TP multiplier (0.5x to 4.0x ATR)
-- Maximum bonus: `0.5 * (4.0 / 8.0) = 0.25`
-- Encourages agent to set appropriate TP levels
+- Triggered when the agent hits a Stop Loss, but the price continues to crash significantly further.
+- **Avoided Loss:** The distance from the SL price to the eventual "worst" price.
+- **Bonus Scaling:** Scales with how much loss was avoided compared to the SL distance.
+- **Maximum Bonus:** +6.0
+- **Purpose:** Encourages placing protective stops that save capital during catastrophic moves.
 
-**Range:** [0.0, 0.25]
-
----
-
-### 3. **Drawdown Penalty** (Risk Control)
-**Formula:**
-```python
-prev_dd = 1.0 - (prev_equity / prev_peak_equity)
-new_dd = 1.0 - (current_equity / prev_peak_equity)
-dd_increase = max(0.0, new_dd - prev_dd)
-dd_penalty = -(dd_increase ** 2) * 50.0
-```
-
-**Details:**
-- **Quadratic penalty** on increasing drawdown
-- Only penalizes **increases** in drawdown (not absolute drawdown)
-- Multiplier: **50.0** (reduced from 2000.0 to prevent extreme values)
-- Strongly discourages actions that worsen drawdown
-
-**Example:**
-- If drawdown increases from 5% to 10%:
-  - `dd_increase = 0.05`
-  - `dd_penalty = -(0.05²) * 50.0 = -0.125`
-
-**Range:** [-∞, 0.0] (but effectively bounded by final clipping)
+**Range:** [0.0, 6.0]
 
 ---
 
-### 4. **Risk Violation Penalty**
+### 3. **Risk Violation Penalty**
 **Formula:**
 ```python
 if actual_risk_cash > intended_risk_cash * 2.0 and intended_risk > 1e-9:
@@ -100,10 +71,7 @@ if actual_risk_cash > intended_risk_cash * 2.0 and intended_risk > 1e-9:
 - Penalty scales with excess risk percentage
 - Clipped to [-10.0, 0.0] range
 
-**Purpose:** Prevents agent from accidentally taking excessive risk due to:
-- Rounding up to MIN_LOTS
-- Leverage/margin constraints
-- Position size clamping
+**Purpose:** Prevents agent from accidentally taking excessive risk due to rounding or leverage constraints.
 
 **Range:** [-10.0, 0.0]
 
@@ -112,11 +80,11 @@ if actual_risk_cash > intended_risk_cash * 2.0 and intended_risk > 1e-9:
 ## Final Reward Calculation
 
 ```python
-reward = pnl_reward + tp_bonus + dd_penalty + risk_violation_penalty
-reward = clip(reward, -100.0, 100.0)  # Final safety clip
+reward = pnl_efficiency + bullet_bonus + risk_violation_penalty
+reward = clip(reward, -20.0, 20.0)  # Final safety clip
 ```
 
-**Final Range:** [-100.0, 100.0]
+**Final Range:** [-20.0, 20.0]
 
 ---
 
@@ -125,18 +93,16 @@ reward = clip(reward, -100.0, 100.0)  # Final safety clip
 ### 1. **Skipped Trades** (Low Risk Request)
 **Condition:** `risk_raw < 1e-3` (agent requests < 0.1% risk)
 **Reward:** `0.0`
-**Info:** `{'exit': 'SKIPPED', 'pnl': 0.0}`
 
 ### 2. **Skipped Small Positions**
 **Condition:** Calculated lots < MIN_LOTS (0.01)
 **Reward:** `0.0`
-**Info:** `{'exit': 'SKIPPED_SMALL', 'pnl': 0.0}`
 
 ### 3. **Terminal Penalty** (Equity Drop)
 **Condition:** `equity < initial_equity * 0.3` (70% drawdown)
-**Penalty:** `-50.0` (reduced from -200.0)
+**Penalty:** `-20.0`
 **Result:** Episode terminates immediately
-**Final Reward:** `clip(reward - 50.0, -100.0, 100.0)`
+**Final Reward:** `clip(reward - 20.0, -20.0, 20.0)`
 
 ---
 
@@ -156,77 +122,26 @@ EPISODE_LENGTH = 100           # Fixed episode length
 
 ## Reward Scaling Rationale
 
-### Why Clip to [-100, 100]?
-1. **Value Function Stability:** Extreme rewards break value function learning (causes negative explained variance)
-2. **Gradient Stability:** Prevents gradient explosions in PPO
-3. **Training Stability:** Keeps loss curves smooth and predictable
+### Why Clip to [-20, 20]?
+1. **Value Function Stability:** Extreme rewards break value function learning (causes negative explained variance).
+2. **Gradient Stability:** Prevents gradient explosions in PPO.
+3. **Training Stability:** Keeps loss curves smooth and predictable.
 
-### Why Normalize PnL by Equity?
-1. **Scale Independence:** Same % gain/loss gives same reward regardless of account size
-2. **Fair Comparison:** Allows comparison across different equity levels
-3. **Stability:** Prevents extreme rewards when equity is small
-
-### Why Quadratic Drawdown Penalty?
-1. **Progressive Discouragement:** Small increases = small penalty, large increases = large penalty
-2. **Risk Aversion:** Strongly discourages actions that worsen drawdown
-3. **Smooth Gradient:** Quadratic function provides smooth gradients for learning
-
----
-
-## Example Reward Scenarios
-
-### Scenario 1: Profitable Trade with TP Hit
-- Net PnL: +$2.00 (2% of $100 equity)
-- TP Multiplier: 2.0x ATR
-- Drawdown: No change
-- Risk: Within limits
-
-**Calculation:**
-- `pnl_reward = clip(0.02 * 10.0, -50, 50) = 0.2`
-- `tp_bonus = 0.5 * (2.0 / 8.0) = 0.125`
-- `dd_penalty = 0.0`
-- `risk_penalty = 0.0`
-- **Total Reward: 0.325**
-
-### Scenario 2: Loss with Drawdown Increase
-- Net PnL: -$5.00 (5% of $100 equity)
-- Drawdown increases: 10% → 15%
-- No TP hit
-- Risk: Within limits
-
-**Calculation:**
-- `pnl_reward = clip(-0.05 * 10.0, -50, 50) = -0.5`
-- `tp_bonus = 0.0`
-- `dd_penalty = -(0.05²) * 50.0 = -0.125`
-- `risk_penalty = 0.0`
-- **Total Reward: -0.625**
-
-### Scenario 3: Risk Violation
-- Net PnL: +$1.00 (1% of $100 equity)
-- Actual risk: 50% (intended: 20%, exceeds 2x threshold)
-- Excess: 30% of account
-- Drawdown: No change
-
-**Calculation:**
-- `pnl_reward = clip(0.01 * 10.0, -50, 50) = 0.1`
-- `tp_bonus = 0.0`
-- `dd_penalty = 0.0`
-- `risk_penalty = -2.0 * 0.30 = -0.6` (clipped to -10.0 max)
-- **Total Reward: -0.5**
+### Why Efficiency instead of raw PnL?
+1. **Scale Independence:** Same efficiency score regardless of account size or asset price.
+2. **Quality Focus:** Forces the agent to optimize for the *best* exit, not just any profit.
+3. **ATR Normalization:** Prevents rewarding "luck" in high-volatility environments while maintaining signal strength in low-volatility ones.
 
 ---
 
 ## Training Implications
 
 ### What the Agent Learns:
-1. **Maximize PnL:** Primary objective through pnl_reward
-2. **Set Appropriate TP:** TP bonus encourages good TP placement
-3. **Control Drawdown:** Drawdown penalty discourages risky behavior
-4. **Respect Risk Limits:** Risk violation penalty prevents over-leveraging
+1. **Maximize Efficiency:** Primary objective is to capture as much of the favorable move as possible.
+2. **Capital Preservation:** Bullet Dodger bonus teaches that hitting a stop loss is better than riding a crash.
+3. **Respect Risk Limits:** Risk violation penalty prevents over-leveraging.
 
 ### Potential Issues Addressed:
-- ✅ **Reward Stability:** Clipping prevents extreme values
-- ✅ **Value Function Learning:** Normalized rewards help value function converge
-- ✅ **Gradient Stability:** Bounded rewards prevent gradient explosions
-- ✅ **Risk Control:** Multiple penalties encourage conservative risk management
-
+- ✅ **Reward Stability:** Tight clipping prevents extreme values.
+- ✅ **Risk Control:** Focus on avoiding large crashes via SL.
+- ✅ **No Drawdown Obsession:** Removal of the absolute drawdown penalty prevents the agent from becoming "too scared" to trade during normal market pullbacks.

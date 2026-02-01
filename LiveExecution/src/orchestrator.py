@@ -256,13 +256,7 @@ class Orchestrator:
                 return 
             
             # 5. Execute & Notify
-            if decision['allowed']:
-                yield self.execute_decision(decision, symbol_id)
-            else:
-                self.notifier.send_block_event({
-                    'symbol': asset_name,
-                    'reason': decision.get('reason', 'TradeGuard Block')
-                })
+            yield self.execute_decision(decision, symbol_id)
             
             total_time = time.time() - start_time
             self.logger.info(f"M5 Cycle for {asset_name} completed in {total_time:.3f}s (Inference: {inference_time:.3f}s)")
@@ -411,25 +405,6 @@ class Orchestrator:
             
             lots = np.clip(lots, 0.01, 100.0)
             
-            # 6. TradeGuard Prediction
-            trade_infos = {
-                asset_name: {
-                    'entry': current_price,
-                    'sl': sl_price,
-                    'tp': tp_price
-                }
-            }
-            
-            # Prepare TradeGuard context
-            self.portfolio_state[asset_name] = self.portfolio_state.get(asset_name, {})
-            self.portfolio_state[asset_name]['action_raw'] = direction
-            
-            tg_obs = self.fm.get_tradeguard_observation(trade_infos, self.portfolio_state)
-            tg_action = self.ml.get_tradeguard_action(tg_obs)
-            
-            allowed = (tg_action == 1)
-            self.logger.info(f"TradeGuard decision for {asset_name}: {'ALLOW' if allowed else 'BLOCK'}")
-            
             return {
                 'symbol_id': symbol_id,
                 'asset': asset_name,
@@ -439,8 +414,7 @@ class Orchestrator:
                 'tp': float(tp_price),
                 'relative_sl': relative_sl,
                 'relative_tp': relative_tp,
-                'risk_actions': risk_action,
-                'allowed': allowed
+                'risk_actions': risk_action
             }
             
         except Exception as e:
