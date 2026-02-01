@@ -16,10 +16,9 @@ class RiskManagementEnv(gym.Env):
         [0..39]:    Alpha Features (25 Asset-Specific + 15 Global)
         [40..44]:   Account State (Equity, Drawdown, Leverage, RiskCap, Padding)
         
-    Action Space (3):
+    Action Space (2):
         0: SL Multiplier (0.2x - 2.0x ATR)
         1: TP Multiplier (0.5x - 4.0x ATR)
-        2: Risk Factor (0.01% - 100% of Max Risk) -> Scaled to Actual Risk %
     """
     metadata = {'render_modes': ['human']}
     

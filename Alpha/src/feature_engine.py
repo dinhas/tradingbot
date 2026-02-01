@@ -70,7 +70,7 @@ class FeatureEngine:
         
         # 5. Normalize Features (Robust Scaling)
         logger.info("Normalizing features (this may take a minute)...")
-        # Do NOT copy, just pass the reference and modify if needed or create small temp arrays
+        # Create a copy for the normalized observation set
         # We'll create a normalized version for the agent, and keep raw for env simulation if needed.
         # But usually TradingEnv wants the processed_data for observation.
         

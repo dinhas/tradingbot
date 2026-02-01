@@ -178,7 +178,7 @@ def train():
     
     vec_env = VecMonitor(vec_env, LOG_DIR) # Monitor wrapper for logging
 
-    # Network Architecture (Expert Recommended: Larger for 165 features)
+    # Network Architecture (Expert Recommended: Larger for 45 features)
     policy_kwargs = dict(
         net_arch=dict(
             pi=[512, 256, 128],  # Policy network (actor)
