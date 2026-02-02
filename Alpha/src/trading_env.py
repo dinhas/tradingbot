@@ -430,9 +430,10 @@ class TradingEnv(gym.Env):
         if fast_win and simulated_pnl > 0:
             self.peeked_pnl_step += simulated_pnl
         
-        # Transaction costs (FIX: Use notional position size, not leveraged)
-        # 0.00002 = 0.2 pips spread (entry cost only, exit cost applied on close)
-        cost = position_size * 0.00002
+        # Transaction costs (FIX: Use notional position size for standard lot calculation)
+        # 0.00002 = 0.2 pips spread equivalent or commission
+        notional_value = position_size * self.leverage
+        cost = notional_value * 0.00002
         self.equity -= cost
 
     def _close_position(self, asset, price):
@@ -452,8 +453,9 @@ class TradingEnv(gym.Env):
         # Update equity
         self.equity += pnl
         
-        # Exit transaction cost (FIX: Use notional position size, not leveraged)
-        cost = pos['size'] * 0.00002
+        # Exit transaction cost (FIX: Use notional position size)
+        notional_value = pos['size'] * self.leverage
+        cost = notional_value * 0.00002
         self.equity -= cost
         
         # Prevent negative equity

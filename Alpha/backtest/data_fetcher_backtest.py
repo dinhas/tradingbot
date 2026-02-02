@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import pandas as pd
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 from twisted.internet import reactor, defer
 from twisted.internet.defer import inlineCallbacks
 from ctrader_open_api import Client, Protobuf, TcpProtocol, EndPoints
@@ -10,12 +11,15 @@ from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
 
+# Load environment variables from .env
+load_dotenv()
+
 # --- Configuration ---
-CT_APP_ID = "17481_ejoPRnjMkFdEkcZTHbjYt5n98n6wRE2wESCkSSHbLIvdWzRkRp"
-CT_APP_SECRET = "AaIrnTNyz47CC9t5nsCXU67sCXtKOm7samSkpNFIvqKOaz1vJ1"
-CT_ACCOUNT_ID = 45587524
-CT_ACCESS_TOKEN = "LdaPB-XNiM9fNkw53AqUXQU82xuq6vo5GVu9eYSEEDU"
-CT_HOST_TYPE = "demo"
+CT_APP_ID = os.getenv("CT_APP_ID")
+CT_APP_SECRET = os.getenv("CT_APP_SECRET")
+CT_ACCOUNT_ID = int(os.getenv("CT_ACCOUNT_ID", "0"))
+CT_ACCESS_TOKEN = os.getenv("CT_ACCESS_TOKEN")
+CT_HOST_TYPE = os.getenv("CT_HOST_TYPE", "demo")
 
 
 # Asset Universe (same as training)
@@ -163,6 +167,7 @@ class DataFetcherBacktest:
                     payload = Protobuf.extract(res_msg)
                     
                     if not hasattr(payload, 'trendbar') or not payload.trendbar:
+                        logging.warning(f"   {asset_name}: No trendbars in payload for {current_start} to {chunk_end}. Payload: {payload}")
                         # No data in this chunk, but request was successful
                         chunk_success = True
                         break

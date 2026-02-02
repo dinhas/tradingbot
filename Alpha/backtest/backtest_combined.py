@@ -217,7 +217,7 @@ class CombinedBacktest:
             'position_size': position_size
         }
     
-    def run_backtest(self, episodes=1):
+    def run_backtest(self, episodes=1, max_steps=None):
         """Run combined backtest"""
         metrics_tracker = BacktestMetrics()
         logger.info(f"Running {episodes} episodes...")
@@ -302,19 +302,48 @@ class CombinedBacktest:
                         if self.ENABLE_SLIPPAGE:
                             slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
                             slippage_price = slippage_pips * 0.0001 * price_raw
-                            price = price_raw + (direction * -1 * slippage_price)
+                            # FIX: Buy pays more (Ask), Sell gets less (Bid)
+                            # Direction 1 (Buy): price = raw + slip
+                            # Direction -1 (Sell): price = raw - slip
+                            price = price_raw + (direction * slippage_price)
                         else:
                             price = price_raw
                             
                         if current_pos is None:
                             self.env._open_position(asset, direction, act, price, atr)
                         elif current_pos['direction'] != direction:
-                            self.env._close_position(asset, price)
+                            # Reversal: Close existing then Open new
+                            # For Close: we are doing opposite of current position
+                            # If Current is Long (1), we Sell (-1). Price should be raw - slip.
+                            # If Current is Short (-1), we Buy (1). Price should be raw + slip.
+                            
+                            if self.ENABLE_SLIPPAGE:
+                                close_slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
+                                close_slippage_price = close_slippage_pips * 0.0001 * price_raw
+                                # Closing Long (Dir 1) -> Sell (-1) -> Price - Slip
+                                # Closing Short (Dir -1) -> Buy (1) -> Price + Slip
+                                close_dir = -1 * current_pos['direction']
+                                close_price = price_raw + (close_dir * close_slippage_price)
+                            else:
+                                close_price = price_raw
+                                
+                            self.env._close_position(asset, close_price)
                             self.env._open_position(asset, direction, act, price, atr)
                     else:
                         # No action for this asset: close existing position if any
                         if current_pos is not None:
-                            self.env._close_position(asset, price_raw)
+                            # FIX: Apply slippage on standard closes too
+                            if self.ENABLE_SLIPPAGE:
+                                close_slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
+                                close_slippage_price = close_slippage_pips * 0.0001 * price_raw
+                                # Closing Long (1) -> Sell (-1) -> Price - Slip
+                                # Closing Short (-1) -> Buy (1) -> Price + Slip
+                                close_dir = -1 * current_pos['direction']
+                                close_price = price_raw + (close_dir * close_slippage_price)
+                            else:
+                                close_price = price_raw
+                                
+                            self.env._close_position(asset, close_price)
                 
                 # Advance time and update
                 self.env.current_step += 1
@@ -339,6 +368,8 @@ class CombinedBacktest:
                 
                 step_count += 1
                 done = self.env.current_step >= self.env.max_steps
+                if max_steps is not None and step_count >= max_steps:
+                    done = True
                 
                 if step_count % 1000 == 0:
                     avg_alpha = alpha_actions_sum / (step_count * len(self.env.assets) + 1e-9)
@@ -462,7 +493,7 @@ def run_combined_backtest(args):
     )
 
     # Run backtest
-    metrics_tracker = backtest.run_backtest(episodes=args.episodes)
+    metrics_tracker = backtest.run_backtest(episodes=args.episodes, max_steps=args.max_steps)
 
 
 
@@ -577,6 +608,8 @@ if __name__ == "__main__":
                         help="Path to save results relative to project root")
     parser.add_argument("--episodes", type=int, default=1,
                         help="Number of episodes to run")
+    parser.add_argument("--max-steps", type=int, default=None,
+                        help="Maximum steps per episode")
     
     args = parser.parse_args()
     

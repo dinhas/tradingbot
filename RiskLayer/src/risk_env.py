@@ -30,7 +30,7 @@ class RiskManagementEnv(gym.Env):
         self.is_training = is_training
         
         # --- Configuration ---
-        self.EPISODE_LENGTH = 100
+        self.DRAWDOWN_TERMINATION_THRESHOLD = 0.95
         
         # USER REQUESTED CHANGES:
         self.MAX_RISK_PER_TRADE = 0.40  # 40% Max Risk per trade (Very Agressive)
@@ -249,16 +249,10 @@ class RiskManagementEnv(gym.Env):
         # Now 2 actions: [SL, TP]
         self.history_actions = deque([np.zeros(2) for _ in range(5)], maxlen=5)
         
-        # Sliding Window / Non-Overlapping Sampling
-        if self.is_training:
-            # Random block of 100 trades
-            max_start = self.n_samples - self.EPISODE_LENGTH - 1
-            if max_start > 0:
-                self.episode_start_idx = int(self.np_random.integers(0, max_start + 1))
-            else:
-                self.episode_start_idx = 0
+        # Random start point anywhere in the dataset
+        if self.is_training and self.n_samples > 1:
+            self.episode_start_idx = int(self.np_random.integers(0, self.n_samples - 1))
         else:
-            # Sequential for testing
             self.episode_start_idx = 0
             
         return self._get_observation(), {}
@@ -308,7 +302,8 @@ class RiskManagementEnv(gym.Env):
         # --- 2. Get Trade Data (Moved Before Logic) ---
         global_idx = self.episode_start_idx + self.current_step
         if global_idx >= self.n_samples:
-             return self._get_observation(), 0, True, True, {}
+             # End of data reached
+             return self._get_observation(), 0.0, False, True, {}
              
         entry_price_raw = self.entry_prices[global_idx]
         atr = self.atrs[global_idx]
@@ -526,9 +521,13 @@ class RiskManagementEnv(gym.Env):
         # --- 7. Termination ---
         self.current_step += 1
         terminated = False
-        truncated = (self.current_step >= self.EPISODE_LENGTH)
         
-        if self.equity < (self.initial_equity_base * 0.3): 
+        # Check if data ended for next step
+        truncated = (self.episode_start_idx + self.current_step >= self.n_samples)
+        
+        # Drawdown termination: 95% threshold
+        drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
+        if drawdown >= self.DRAWDOWN_TERMINATION_THRESHOLD:
             terminated = True
             reward -= 20.0 # Terminal penalty
             reward = np.clip(reward, -20.0, 20.0)
