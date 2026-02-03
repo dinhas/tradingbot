@@ -125,10 +125,15 @@ class CustomStatsCallback(BaseCallback):
     """
     def __init__(self, verbose=0):
         super(CustomStatsCallback, self).__init__(verbose)
-        self.episode_rewards = []
-        self.episode_lengths = []
+        from collections import deque
+        self.episode_rewards = deque(maxlen=100)
+        self.episode_lengths = deque(maxlen=100)
 
     def _on_step(self) -> bool:
+        # Heartbeat every 5000 steps to confirm callback is alive
+        if self.n_calls % 5000 == 0:
+            print(f"--- [Callback Heartbeat] Steps: {self.num_timesteps} | Finished Eps: {len(self.episode_rewards)} ---", flush=True)
+
         if 'infos' in self.locals:
             for info in self.locals['infos']:
                 if 'episode' in info:
@@ -136,13 +141,10 @@ class CustomStatsCallback(BaseCallback):
                     ep_len = info['episode']['l']
                     self.episode_rewards.append(ep_rew)
                     self.episode_lengths.append(ep_len)
-                    # Note: Immediate print is also handled in the Env, but this serves as backup
+                    # Immediate print for episode end
+                    print(f" >>> [Episode End] Reward: {ep_rew:.2f} | Length: {ep_len} | Avg Rew: {np.mean(self.episode_rewards):.2f}", flush=True)
         
-        # Keep only last 100 episodes for mean calculation
-        if len(self.episode_rewards) > 100:
-            self.episode_rewards = self.episode_rewards[-100:]
-            self.episode_lengths = self.episode_lengths[-100:]
-
+        # Periodically record to ensure the rollout group appears in SB3 table
         if len(self.episode_rewards) > 0:
             self.logger.record("rollout/ep_rew_mean", np.mean(self.episode_rewards))
             self.logger.record("rollout/ep_len_mean", np.mean(self.episode_lengths))

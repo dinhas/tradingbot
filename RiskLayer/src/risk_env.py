@@ -57,6 +57,8 @@ class RiskManagementEnv(gym.Env):
         self.TARGET_PROFIT_PCT = 0.001   # 0.1% Target Gain (10 pips)
         self.MAX_DRAWDOWN_PCT = 0.0005   # 0.05% Drawdown Tolerance (5 pips)
         
+        self.MAX_STEPS = 512 # Force episode end for faster feedback
+        
         # --- Load Data ---
         self._load_data()
         
@@ -521,14 +523,18 @@ class RiskManagementEnv(gym.Env):
         self.episode_reward += reward
         self.episode_len += 1
         
+        # --- NEW: Immediate Trade Log ---
+        if self.episode_len % 10 == 0: # Print every 10 trades to avoid spamming too much
+             print(f"  [Trade {self.episode_len:3}] Rew: {reward:6.2f} | PnL: {net_pnl:8.2f} | Eq: {self.equity:8.2f} | Exit: {exited_on}", flush=True)
+
         self.history_pnl.append(net_pnl / max(prev_equity, 1e-6))
         
         # --- 7. Termination ---
         self.current_step += 1
         terminated = False
         
-        # Check if data ended for next step
-        truncated = (self.episode_start_idx + self.current_step >= self.n_samples)
+        # Check if data ended for next step or MAX_STEPS reached
+        truncated = (self.episode_start_idx + self.current_step >= self.n_samples) or (self.episode_len >= self.MAX_STEPS)
         
         # Drawdown termination: 95% threshold
         drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
