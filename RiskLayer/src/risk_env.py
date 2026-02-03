@@ -297,76 +297,49 @@ class RiskManagementEnv(gym.Env):
 
     def step(self, action):
         # --- 1. Parse Action ---
-        # Clip actions to valid ranges (SCALPING ADJUSTED)
         sl_mult = np.clip((action[0] + 1) / 2 * 2.0 + 0.5, 0.5, 2.5)   # 0.5 - 2.5 ATR
         tp_mult = np.clip((action[1] + 1) / 2 * 4.5 + 0.5, 0.5, 5.0)   # 0.5 - 5.0 ATR
         
         # FIXED RISK: 2.0% per trade (Reverted to Fixed)
         risk_raw = 0.02 
 
-        # --- 2. Get Trade Data (Moved Before Logic) ---
-        global_idx = self.episode_start_idx + self.current_step
-        if global_idx >= self.n_samples:
-             # End of data reached
-             return self._get_observation(), 0.0, False, True, {}
+        # --- 2. Get Trade Data (Circular Looping) ---
+        global_idx = (self.episode_start_idx + self.current_step) % self.n_samples
              
         entry_price_raw = self.entry_prices[global_idx]
         atr = self.atrs[global_idx]
         direction = self.directions[global_idx]
-        
         is_usd_quote = self.is_usd_quote_arr[global_idx]
         is_usd_base = self.is_usd_base_arr[global_idx]
-        
-        # NEW: Load Correct Pip Size and Contract Size
         pip_scalar = self.pip_scalars[global_idx]
         contract_size = self.contract_sizes[global_idx]
         
-        # --- Apply Slippage (Adverse Entry) ---
-        # Slippage moves the entry price AGAINST the trade direction
+        # Outcomes for this signal
+        max_favorable = self.max_profit_pcts[global_idx] 
+        max_adverse = self.max_loss_pcts[global_idx]
+
+        # --- 3. Execute Logic ---
+        # Apply Slippage
         if self.ENABLE_SLIPPAGE:
             slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-            # FIX: Use correct pip_scalar
-            slippage_price = slippage_pips * pip_scalar
-            entry_price = entry_price_raw + (direction * -1 * slippage_price)
+            entry_price = entry_price_raw + (direction * -1 * slippage_pips * pip_scalar)
         else:
             entry_price = entry_price_raw
 
-        # --- Dynamic Spread Simulation (Bid/Ask Logic) ---
-        # Calculate Spread: Min + (Factor * ATR)
-        # FIX: Use correct pip_scalar
+        # Apply Spread
         spread_val = (self.SPREAD_MIN_PIPS * pip_scalar) + (self.SPREAD_ATR_FACTOR * atr)
-        spread_pct = spread_val / entry_price_raw
-        
-        # Adjust Entry for Spread
-        # For LONG: buy at ask (higher), for SHORT: sell at bid (lower)
-        # Bug Fix 1: Directional Spread Application
         entry_price += direction * spread_val
 
-        # Use pre-loaded Arrays for Shadow Simulation
-        max_favorable = self.max_profit_pcts[global_idx] 
-        max_adverse = self.max_loss_pcts[global_idx] # Always negative (e.g. -0.001)
-
-        # --- 4. Normal Trade Execution ---
-        
-        # Safer Drawdown Calc
+        # --- 4. Position Sizing ---
         peak_safe = max(self.peak_equity, 1e-9)
-        drawdown = 1.0 - (self.equity / peak_safe)
-        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
-        
-        # Actual Risk % (Capped by drawdown)
+        drawdown_val = 1.0 - (self.equity / peak_safe)
+        risk_cap_mult = max(0.2, 1.0 - (drawdown_val * 2.0))
         actual_risk_pct = risk_raw * risk_cap_mult
         
-        # Calculate Lots (Risk Based)
-        sl_dist_price = max(sl_mult * atr, 1e-9) # Safety clip
-        
-        # ATR-based Min SL (SCALPING ADJUSTED)
-        min_sl_dist = max(pip_scalar * 1.0, 0.5 * atr) # Min 1 pip or 0.5 ATR
-        if sl_dist_price < min_sl_dist: sl_dist_price = min_sl_dist
-        
+        sl_dist_price = max(sl_mult * atr, pip_scalar * 1.0, 0.5 * atr)
         risk_amount_cash = self.equity * actual_risk_pct
         
         lots = 0.0
-        # FIX: Use correct contract_size
         if sl_dist_price > 0:
             if is_usd_quote:
                  lots = risk_amount_cash / (sl_dist_price * contract_size)
@@ -376,188 +349,94 @@ class RiskManagementEnv(gym.Env):
                  lots = risk_amount_cash / (sl_dist_price * contract_size)
         
         # Leverage Clamping
-        # FIX: Use correct contract_size
-        if is_usd_quote:
-             lot_value_usd = contract_size * entry_price
-        elif is_usd_base:
-             lot_value_usd = contract_size * 1.0 
-        else:
-             lot_value_usd = contract_size * 1.0
-        
+        lot_value_usd = (contract_size * entry_price) if is_usd_quote else (contract_size * 1.0)
         max_position_value = (self.equity * self.MAX_MARGIN_PER_TRADE_PCT) * self.MAX_LEVERAGE
         max_lots_leverage = max_position_value / lot_value_usd
         lots = min(lots, max_lots_leverage)
         
-        # Check Min Lots
+        # --- Check for Small Trades ---
         if lots < self.MIN_LOTS:
-            # Skipped/no-trade
+            net_pnl = 0.0
             reward = 0.0
-            self.history_actions.append(np.array([0.0, 0.0], dtype=np.float32))
-            self.history_pnl.append(0.0)
-            self.current_step += 1
-            terminated = False
-            truncated = (self.episode_start_idx + self.current_step >= self.n_samples)
-            return self._get_observation(), reward, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED_SMALL', 'lots': 0.0, 'equity': self.equity}
-
-        lots = np.clip(lots, self.MIN_LOTS, 100.0)
-        
-        # Calculate Position Value
-        position_val = lots * lot_value_usd
-            
-        decoded_action = np.array([sl_mult, tp_mult], dtype=np.float32)
-        self.history_actions.append(decoded_action)
-
-        # --- 5. Simulate Outcome (Normal Trade) ---
-        tp_dist_price = tp_mult * atr
-        
-        sl_price = entry_price - (direction * sl_dist_price)
-        tp_price = entry_price + (direction * tp_dist_price)
-        
-        # Calculate raw percentage distances
-        sl_pct_dist_raw = abs(sl_dist_price / entry_price_raw)
-        tp_pct_dist_raw = abs(tp_dist_price / entry_price_raw)
-
-        # Bug Fix 2: Remove double-counting spread in hit logic
-        if direction == 1: # LONG
-             hit_sl = max_adverse <= -sl_pct_dist_raw
-             hit_tp = max_favorable >= tp_pct_dist_raw
-             
-             sl_pct_dist = -sl_pct_dist_raw
-             tp_pct_dist = tp_pct_dist_raw
-             
-        else: # SHORT
-             hit_sl = max_favorable >= sl_pct_dist_raw
-             hit_tp = max_adverse <= -tp_pct_dist_raw
-             
-             sl_pct_dist = sl_pct_dist_raw
-             tp_pct_dist = -tp_pct_dist_raw
-
-        if hit_sl and hit_tp:
-            if abs(sl_pct_dist) < abs(tp_pct_dist):
-                hit_tp = False
-            else:
-                hit_sl = False 
-        
-        exit_price = self.close_prices[global_idx]
-        exited_on = 'TIME'
-        
-        if hit_sl:
-            exit_price = sl_price
-            exited_on = 'SL'
-        elif hit_tp:
-            exit_price = tp_price
-            exited_on = 'TP'
+            exited_on = 'SKIPPED'
         else:
-            if self.has_time_limit and self.hours_to_exits[global_idx] > 24:
-                exited_on = 'TIME_LIMIT'
+            lots = np.clip(lots, self.MIN_LOTS, 100.0)
+            position_val = lots * lot_value_usd
+            
+            # Simulate Outcome
+            tp_dist_price = tp_mult * atr
+            sl_price = entry_price - (direction * sl_dist_price)
+            tp_price = entry_price + (direction * tp_dist_price)
+            
+            sl_pct_dist_raw = abs(sl_dist_price / entry_price_raw)
+            tp_pct_dist_raw = abs(tp_dist_price / entry_price_raw)
+
+            if direction == 1: # LONG
+                 hit_sl = max_adverse <= -sl_pct_dist_raw
+                 hit_tp = max_favorable >= tp_pct_dist_raw
+            else: # SHORT
+                 hit_sl = max_favorable >= sl_pct_dist_raw
+                 hit_tp = max_adverse <= -tp_pct_dist_raw
+
+            if hit_sl and hit_tp:
+                if sl_pct_dist_raw < tp_pct_dist_raw: hit_tp = False
+                else: hit_sl = False 
+            
+            exited_on = 'TIME'
             exit_price = self.close_prices[global_idx]
+            if hit_sl:
+                exit_price, exited_on = sl_price, 'SL'
+            elif hit_tp:
+                exit_price, exited_on = tp_price, 'TP'
             
-        # --- 6. Calculate Rewards ---
-        price_change = exit_price - entry_price
-        # FIX: Use correct contract_size
-        gross_pnl_quote = price_change * lots * contract_size * direction
-        
-        gross_pnl_usd = 0.0
-        if is_usd_quote:
-             gross_pnl_usd = gross_pnl_quote
-        elif is_usd_base:
-             gross_pnl_usd = gross_pnl_quote / exit_price 
-        else:
-             # Non-USD pairs need cross rate - not implemented
-             gross_pnl_usd = gross_pnl_quote # INCORRECT - needs fixing
+            # PnL Calc
+            price_change = exit_price - entry_price
+            gross_pnl_quote = price_change * lots * contract_size * direction
+            gross_pnl_usd = gross_pnl_quote if is_usd_quote else (gross_pnl_quote / exit_price if is_usd_base else gross_pnl_quote)
+            costs = position_val * self.TRADING_COST_PCT
+            net_pnl = gross_pnl_usd - costs
+            
+            # Reward Calculation
+            realized_pct = (price_change / entry_price) * direction
+            atr_ratio = atr / entry_price_raw
+            denom = max(max_favorable, atr_ratio, 1e-5)
+            pnl_efficiency = (realized_pct / denom) * 10.0
+            
+            bullet_bonus = 0.0
+            if exited_on == 'SL':
+                avoided_loss_dist = abs(max_adverse) if direction == 1 else abs(max_favorable)
+                if avoided_loss_dist > (sl_pct_dist_raw * 1.5):
+                    bullet_bonus = min(avoided_loss_dist / sl_pct_dist_raw, 3.0) * 2.0
+            
+            reward = np.clip(pnl_efficiency + bullet_bonus, -20.0, 20.0)
+            
+            # Update Equity
+            self.equity += net_pnl
+            self.peak_equity = max(self.peak_equity, self.equity)
 
-        costs = position_val * self.TRADING_COST_PCT
-        net_pnl = gross_pnl_usd - costs
-        
-        # Update Equity
-        prev_equity = self.equity
-        self.equity += net_pnl
-        prev_peak = self.peak_equity
-        self.peak_equity = max(self.peak_equity, self.equity)
-
-        # --- NEW REWARD LOGIC ---
-        
-        # 1. PnL Efficiency: (Realized / Max_Available) * 10
-        # Denominator: Use Max Available Profit, but floored at ATR to prevent explosion on choppy days
-        # Max_Available is always positive (distance from entry to best price)
-        # Note: max_favorable is ratio (e.g. 0.005). atr is absolute price? No, self.atrs is price.
-        # Need to convert ATR to ratio for comparison.
-        atr_ratio = atr / entry_price_raw
-        
-        denom = max(max_favorable, atr_ratio, 1e-5) # Prevent div/0
-        
-        # Calculate Realized Ratio (PnL / Entry Price equivalent)
-        # Approximate: Net PnL / Position Value approx equals Price Change Pct
-        # But easier: (exit - entry) / entry * direction
-        # Bug Fix 3: Use execution entry price
-        realized_pct = (price_change / entry_price) * direction
-        
-        # Base Efficiency Score
-        # Range: -10 to +10 roughly
-        pnl_efficiency = (realized_pct / denom) * 10.0
-        
-        # 2. Bullet Dodger (Bonus for Saving Capital)
-        bullet_bonus = 0.0
-        # Whipsaw penalty removed as requested
-        
-        if exited_on == 'SL':
-            # Check 2: Bullet Dodger? (Price crashed deep)
-            # Bug Fix 6: Bullet Dodger Logic Split
-            avoided_loss_dist = 0.0
-            if direction == 1: # LONG - Stopped out at Low, check if went Lower
-                 avoided_loss_dist = abs(max_adverse) 
-            else: # SHORT - Stopped out at High, check if went Higher
-                 avoided_loss_dist = abs(max_favorable)
-                 
-            if avoided_loss_dist > (sl_pct_dist_raw * 1.5):
-                # How much did we save?
-                saved_ratio = avoided_loss_dist / max(sl_pct_dist_raw, 1e-9)
-                # Cap at 3.0, Scale by 2.0 -> Max +6.0
-                bullet_bonus = min(saved_ratio, 3.0) * 2.0
-        
-        # Total Reward Summation
-        reward = pnl_efficiency + bullet_bonus
-        
-        # Final Clip to [-20, 20] to stabilize training
-        reward = np.clip(reward, -20.0, 20.0)
-        
+        # Update Episode Stats
         self.episode_reward += reward
         self.episode_len += 1
-        
-        # --- NEW: Immediate Trade Log ---
-        if self.episode_len % 10 == 0: # Print every 10 trades to avoid spamming too much
-             print(f"  [Trade {self.episode_len:3}] Rew: {reward:6.2f} | PnL: {net_pnl:8.2f} | Eq: {self.equity:8.2f} | Exit: {exited_on}", flush=True)
-
-        self.history_pnl.append(net_pnl / max(prev_equity, 1e-6))
-        
-        # --- 7. Termination ---
         self.current_step += 1
-        terminated = False
+        self.history_actions.append(np.array([sl_mult, tp_mult], dtype=np.float32))
+        self.history_pnl.append(net_pnl / max(self.equity, 1e-6))
         
-        # Check if data ended for next step or MAX_STEPS reached
-        truncated = (self.episode_start_idx + self.current_step >= self.n_samples) or (self.episode_len >= self.MAX_STEPS)
-        
-        # Drawdown termination: 95% threshold
-        drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
-        if drawdown >= self.DRAWDOWN_TERMINATION_THRESHOLD:
-            terminated = True
-            reward -= 20.0 # Terminal penalty
-            reward = np.clip(reward, -20.0, 20.0)
-            # Add to cumulative reward for the print
-            self.episode_reward -= 20.0
+        if self.episode_len % 10 == 0:
+            print(f"  [Trade {self.episode_len:3}] Rew: {reward:6.2f} | PnL: {net_pnl:8.2f} | Eq: {self.equity:8.2f} | Exit: {exited_on}", flush=True)
 
+        # --- Termination Logic ---
+        drawdown_end = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
+        terminated = drawdown_end >= self.DRAWDOWN_TERMINATION_THRESHOLD
+        truncated = self.episode_len >= self.MAX_STEPS
+        
+        if terminated:
+            reward -= 20.0
+            self.episode_reward -= 20.0
+            
         if terminated or truncated:
             import sys
-            print(f"--- EPISODE FINISHED --- Reward: {self.episode_reward:.2f} | Length: {self.episode_len} | Equity: {self.equity:.2f} | Reason: {'STOPOUT' if terminated else 'DATA_END'}", flush=True)
+            print(f"--- EPISODE FINISHED --- Reward: {self.episode_reward:.2f} | Length: {self.episode_len} | Equity: {self.equity:.2f} | Reason: {'STOPOUT' if terminated else 'MAX_STEPS'}", flush=True)
             sys.stdout.flush()
             
-        info = {
-            'pnl': net_pnl,
-            'exit': exited_on,
-            'lots': lots,
-            'equity': self.equity,
-            'efficiency': pnl_efficiency,
-            'bullet': bullet_bonus
-        }
-        
-        return self._get_observation(), reward, terminated, truncated, info
+        return self._get_observation(), reward, terminated, truncated, {'pnl': net_pnl, 'equity': self.equity, 'lots': lots}
+
