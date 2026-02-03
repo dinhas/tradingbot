@@ -391,7 +391,7 @@ class RiskManagementEnv(gym.Env):
             self.history_pnl.append(0.0)
             self.current_step += 1
             terminated = False
-            truncated = (self.current_step >= self.EPISODE_LENGTH)
+            truncated = (self.episode_start_idx + self.current_step >= self.n_samples)
             return self._get_observation(), reward, terminated, truncated, {'pnl': 0.0, 'exit': 'SKIPPED_SMALL', 'lots': 0.0, 'equity': self.equity}
 
         lots = np.clip(lots, self.MIN_LOTS, 100.0)
