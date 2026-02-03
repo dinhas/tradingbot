@@ -128,26 +128,34 @@ class CustomStatsCallback(BaseCallback):
         from collections import deque
         self.episode_rewards = deque(maxlen=100)
         self.episode_lengths = deque(maxlen=100)
+        self.last_step_count = 0
 
     def _on_step(self) -> bool:
-        # Heartbeat every 5000 steps to confirm callback is alive
-        if self.n_calls % 5000 == 0:
-            print(f"--- [Callback Heartbeat] Steps: {self.num_timesteps} | Finished Eps: {len(self.episode_rewards)} ---", flush=True)
+        # Heartbeat every 10000 steps to confirm callback is alive
+        if self.num_timesteps - self.last_step_count >= 10000:
+            print(f"--- [Callback Heartbeat] Steps: {self.num_timesteps} | Finished Eps: {len(self.episode_rewards)} | Total Env Steps: {self.num_timesteps} ---", flush=True)
+            self.last_step_count = self.num_timesteps
 
         if 'infos' in self.locals:
             for info in self.locals['infos']:
+                # Individual Monitor wrapper uses 'episode'
+                # VecMonitor might use something else, but 'episode' is standard
                 if 'episode' in info:
                     ep_rew = info['episode']['r']
                     ep_len = info['episode']['l']
                     self.episode_rewards.append(ep_rew)
                     self.episode_lengths.append(ep_len)
-                    # Immediate print for episode end
-                    print(f" >>> [Episode End] Reward: {ep_rew:.2f} | Length: {ep_len} | Avg Rew: {np.mean(self.episode_rewards):.2f}", flush=True)
+                    print(f" >>> [Episode End] Reward: {ep_rew:.2f} | Length: {ep_len} | Total Avg: {np.mean(self.episode_rewards):.2f}", flush=True)
         
         # Periodically record to ensure the rollout group appears in SB3 table
         if len(self.episode_rewards) > 0:
             self.logger.record("rollout/ep_rew_mean", np.mean(self.episode_rewards))
             self.logger.record("rollout/ep_len_mean", np.mean(self.episode_lengths))
+        elif self.num_timesteps > 50000:
+            # Force record 0s if nothing is happening so we see the rows in the table
+            self.logger.record("rollout/ep_rew_mean", 0.0)
+            self.logger.record("rollout/ep_len_mean", 0.0)
+            
         return True
 
 class TensorboardCallback(BaseCallback):
@@ -171,10 +179,14 @@ class TensorboardCallback(BaseCallback):
                      self.logger.record('custom/lots', info['lots'])
         return True
 
+from stable_baselines3.common.monitor import Monitor
+
 def make_env(rank, seed=0):
     """Utility function for multiprocessed env."""
     def _init():
         env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
+        # Wrap each individual env in a Monitor for reliable logging
+        env = Monitor(env)
         env.reset(seed=seed + rank)
         return env
     return _init
@@ -198,7 +210,8 @@ def train():
     env_fns = [make_env(i) for i in range(N_ENVS)]
     vec_env = SubprocVecEnv(env_fns)
     
-    # Monitor wrapper MUST be before VecNormalize to log RAW rewards
+    # We no longer need VecMonitor if we use Monitor on individual envs, 
+    # but we'll keep it as a backup for the log file generation.
     vec_env = VecMonitor(vec_env, LOG_DIR) 
 
     # CRITICAL: Normalize observations. 
@@ -211,9 +224,7 @@ def train():
         clip_reward=10.0,
     )
     
-    # vec_env = VecMonitor(vec_env, LOG_DIR) # MOVED UP
-
-    # Network Architecture (Optimized for 45 features)
+    # Network Architecture (Expert Recommended: Larger for 45 features)
     policy_kwargs = dict(
         net_arch=dict(
             pi=[256, 128],  # Policy network (actor) - Reduced to prevent noise memorization

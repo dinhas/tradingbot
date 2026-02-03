@@ -58,6 +58,7 @@ class RiskManagementEnv(gym.Env):
         self.MAX_DRAWDOWN_PCT = 0.0005   # 0.05% Drawdown Tolerance (5 pips)
         
         self.MAX_STEPS = 512 # Force episode end for faster feedback
+        print(f"[{os.getpid()}] RiskEnv Initialized: MAX_STEPS={self.MAX_STEPS}, Threshold={self.DRAWDOWN_TERMINATION_THRESHOLD}")
         
         # --- Load Data ---
         self._load_data()
