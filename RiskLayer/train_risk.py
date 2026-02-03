@@ -68,24 +68,24 @@ if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
 # PPO Hyperparameters (Expert Tuned for Financial Data)
-# HYPERPARAMETERS - "Max Efficiency Edition" 🚀
+# HYPERPARAMETERS - "Optimal Balanced Edition" ⚖️
 
 TOTAL_TIMESTEPS = 1_000_000 
-LEARNING_RATE = 1.5e-4    # 📈 Increased for maximum learning in 5M steps.
-N_STEPS = 16384           # ⬆️ INCREASED. Large window for stable gradient updates.
-BATCH_SIZE = 2048         # ⬆️ INCREASED. Stability with higher Learning Rate.
-GAMMA = 0.98              # 📉 Slightly lower. Focus on high-quality trades, not infinite future.
+LEARNING_RATE = 1e-4      # 📉 Slower for more stable integration of noisy data.
+N_STEPS = 16384           # ⬆️ KEPT LARGE. Stable window for gradient updates.
+BATCH_SIZE = 4096         # ⬆️ INCREASED. Better gradient estimation in noise.
+GAMMA = 0.98              
 GAE_LAMBDA = 0.95         
-ENT_COEF = 0.08           # ⬆️ Increased starting entropy for aggressive exploration.
+ENT_COEF = 0.05           # 📉 Lowered starting entropy for more focused initial search.
 VF_COEF = 0.5
 MAX_GRAD_NORM = 0.5       
 CLIP_RANGE = 0.2          
-N_EPOCHS = 10             # ⬆️ INCREASED. Squeeze more learning from each batch.
+N_EPOCHS = 4              # 📉 DECREASED. Prevent over-fitting to local noise in batches.
 
 # Why this works:
-# 1. 1.5e-4 LR + 5M Steps = Aggressive but stable convergence.
-# 2. 16384 Steps = ~160 episodes per env per update (High sample efficiency).
-# 3. 5M Timesteps = Focused learning on core reward dynamics.
+# 1. 1e-4 LR + 1M Steps = Stable convergence on core patterns.
+# 2. 4096 Batch Size = Reduces variance in gradient updates.
+# 3. 4 Epochs = Avoids the "policy drift" caused by noise-heavy samples.
 
 # Paths
 # Using absolute paths based on script location for robustness
@@ -106,7 +106,7 @@ class EntropyDecayCallback(BaseCallback):
     Decays entropy coefficient linearly over time to encourage 
     exploration early (learning to block) and exploitation later.
     """
-    def __init__(self, initial_ent=0.08, final_ent=0.005, decay_steps=4_000_000):
+    def __init__(self, initial_ent=0.05, final_ent=0.01, decay_steps=4_000_000):
         super().__init__()
         self.initial_ent = initial_ent
         self.final_ent = final_ent
@@ -213,11 +213,11 @@ def train():
     
     # vec_env = VecMonitor(vec_env, LOG_DIR) # MOVED UP
 
-    # Network Architecture (Expert Recommended: Larger for 45 features)
+    # Network Architecture (Optimized for 45 features)
     policy_kwargs = dict(
         net_arch=dict(
-            pi=[512, 256, 128],  # Policy network (actor)
-            vf=[512, 256, 128]   # Value network (critic)
+            pi=[256, 128],  # Policy network (actor) - Reduced to prevent noise memorization
+            vf=[256, 128]   # Value network (critic)
         ),
         activation_fn=LeakyReLU,  # Better for financial data
         log_std_init=-1.0,  # Start with lower action variance
@@ -252,7 +252,7 @@ def train():
     
     entropy_callback = EntropyDecayCallback(
         initial_ent=ENT_COEF, 
-        final_ent=0.001, 
+        final_ent=0.01, # Higher floor to prevent premature convergence in noisy environments
         decay_steps=TOTAL_TIMESTEPS // 2
     )
     tb_callback = TensorboardCallback()
