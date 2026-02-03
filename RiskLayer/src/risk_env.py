@@ -57,7 +57,7 @@ class RiskManagementEnv(gym.Env):
         self.TARGET_PROFIT_PCT = 0.001   # 0.1% Target Gain (10 pips)
         self.MAX_DRAWDOWN_PCT = 0.0005   # 0.05% Drawdown Tolerance (5 pips)
         
-        self.MAX_STEPS = 512 # Force episode end for faster feedback
+        self.MAX_STEPS = 1000 # Force episode end for faster feedback
         print(f"[{os.getpid()}] RiskEnv Initialized: MAX_STEPS={self.MAX_STEPS}, Threshold={self.DRAWDOWN_TERMINATION_THRESHOLD}")
         
         # --- Load Data ---
@@ -421,7 +421,7 @@ class RiskManagementEnv(gym.Env):
         self.history_actions.append(np.array([sl_mult, tp_mult], dtype=np.float32))
         self.history_pnl.append(net_pnl / max(self.equity, 1e-6))
         
-        if self.episode_len % 100 == 0:
+        if self.episode_len % 1000 == 0:
             print(f"  [Trade {self.episode_len:3}] Rew: {reward:6.2f} | PnL: {net_pnl:8.2f} | Eq: {self.equity:8.2f} | Exit: {exited_on}", flush=True)
 
         # --- Termination Logic ---
