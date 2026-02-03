@@ -242,6 +242,8 @@ class RiskManagementEnv(gym.Env):
         self.equity = self.initial_equity_base
         self.peak_equity = self.initial_equity_base
         self.current_step = 0
+        self.episode_reward = 0.0
+        self.episode_len = 0
         
         # Reset History (Zero-filled)
         self.history_pnl = deque([0.0]*5, maxlen=5)
@@ -516,6 +518,9 @@ class RiskManagementEnv(gym.Env):
         # Final Clip to [-20, 20] to stabilize training
         reward = np.clip(reward, -20.0, 20.0)
         
+        self.episode_reward += reward
+        self.episode_len += 1
+        
         self.history_pnl.append(net_pnl / max(prev_equity, 1e-6))
         
         # --- 7. Termination ---
@@ -531,6 +536,13 @@ class RiskManagementEnv(gym.Env):
             terminated = True
             reward -= 20.0 # Terminal penalty
             reward = np.clip(reward, -20.0, 20.0)
+            # Add to cumulative reward for the print
+            self.episode_reward -= 20.0
+
+        if terminated or truncated:
+            import sys
+            print(f"--- EPISODE FINISHED --- Reward: {self.episode_reward:.2f} | Length: {self.episode_len} | Equity: {self.equity:.2f} | Reason: {'STOPOUT' if terminated else 'DATA_END'}", flush=True)
+            sys.stdout.flush()
             
         info = {
             'pnl': net_pnl,

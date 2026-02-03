@@ -118,6 +118,36 @@ class EntropyDecayCallback(BaseCallback):
         self.model.ent_coef = new_ent
         return True
 
+class CustomStatsCallback(BaseCallback):
+    """
+    Forces episode statistics into the SB3 console table and 
+    provides immediate console feedback when an episode finishes.
+    """
+    def __init__(self, verbose=0):
+        super(CustomStatsCallback, self).__init__(verbose)
+        self.episode_rewards = []
+        self.episode_lengths = []
+
+    def _on_step(self) -> bool:
+        if 'infos' in self.locals:
+            for info in self.locals['infos']:
+                if 'episode' in info:
+                    ep_rew = info['episode']['r']
+                    ep_len = info['episode']['l']
+                    self.episode_rewards.append(ep_rew)
+                    self.episode_lengths.append(ep_len)
+                    # Note: Immediate print is also handled in the Env, but this serves as backup
+        
+        # Keep only last 100 episodes for mean calculation
+        if len(self.episode_rewards) > 100:
+            self.episode_rewards = self.episode_rewards[-100:]
+            self.episode_lengths = self.episode_lengths[-100:]
+
+        if len(self.episode_rewards) > 0:
+            self.logger.record("rollout/ep_rew_mean", np.mean(self.episode_rewards))
+            self.logger.record("rollout/ep_len_mean", np.mean(self.episode_lengths))
+        return True
+
 class TensorboardCallback(BaseCallback):
     """
     Custom callback for logging additional values in tensorboard.
@@ -166,6 +196,9 @@ def train():
     env_fns = [make_env(i) for i in range(N_ENVS)]
     vec_env = SubprocVecEnv(env_fns)
     
+    # Monitor wrapper MUST be before VecNormalize to log RAW rewards
+    vec_env = VecMonitor(vec_env, LOG_DIR) 
+
     # CRITICAL: Normalize observations. 
     # Financial features are on vastly different scales (Prices vs Slopes vs PnL)
     vec_env = VecNormalize(
@@ -176,7 +209,7 @@ def train():
         clip_reward=10.0,
     )
     
-    vec_env = VecMonitor(vec_env, LOG_DIR) # Monitor wrapper for logging
+    # vec_env = VecMonitor(vec_env, LOG_DIR) # MOVED UP
 
     # Network Architecture (Expert Recommended: Larger for 45 features)
     policy_kwargs = dict(
@@ -221,12 +254,13 @@ def train():
         decay_steps=TOTAL_TIMESTEPS // 2
     )
     tb_callback = TensorboardCallback()
+    stats_callback = CustomStatsCallback()
 
     # 4. Train
     try:
         model.learn(
             total_timesteps=TOTAL_TIMESTEPS, 
-            callback=[checkpoint_callback, entropy_callback, tb_callback],
+            callback=[checkpoint_callback, entropy_callback, tb_callback, stats_callback],
             progress_bar=True
         )
         
