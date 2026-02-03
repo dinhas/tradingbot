@@ -70,9 +70,9 @@ if torch.cuda.is_available():
 # PPO Hyperparameters (Expert Tuned for Financial Data)
 # HYPERPARAMETERS - "Optimal Balanced Edition" ⚖️
 
-TOTAL_TIMESTEPS = 1_000_000 
+TOTAL_TIMESTEPS = 5_000_000 
 LEARNING_RATE = 1e-4      # 📉 Slower for more stable integration of noisy data.
-N_STEPS = 16384           # ⬆️ KEPT LARGE. Stable window for gradient updates.
+N_STEPS = 8192            # ⚖️ Balanced window for gradient updates vs frequency.
 BATCH_SIZE = 4096         # ⬆️ INCREASED. Better gradient estimation in noise.
 GAMMA = 0.98              
 GAE_LAMBDA = 0.95         
@@ -263,8 +263,8 @@ def train():
     
     entropy_callback = EntropyDecayCallback(
         initial_ent=ENT_COEF, 
-        final_ent=0.01, # Higher floor to prevent premature convergence in noisy environments
-        decay_steps=TOTAL_TIMESTEPS // 2
+        final_ent=0.01, 
+        decay_steps=TOTAL_TIMESTEPS // 2 # Decays over first 2.5M steps
     )
     tb_callback = TensorboardCallback()
     stats_callback = CustomStatsCallback()
