@@ -312,7 +312,7 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
         # Prepare storage for results
         batch_results = {
             'timestamp': [],
-            'asset': [],
+            'pair': [],
             'direction': [],
             'entry_price': [],
             'atr': [],
@@ -401,7 +401,7 @@ def generate_dataset_batched(model_path, data_dir, output_file, vec_norm_path=No
 
                 # Append to lists
                 batch_results['timestamp'].append(timestamps[b_start + local_idx])
-                batch_results['asset'].append(asset)
+                batch_results['pair'].append(asset)
                 batch_results['direction'].append(direction)
                 batch_results['entry_price'].append(entry_price)
                 batch_results['atr'].append(atr)
