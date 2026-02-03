@@ -421,7 +421,7 @@ class RiskManagementEnv(gym.Env):
         self.history_actions.append(np.array([sl_mult, tp_mult], dtype=np.float32))
         self.history_pnl.append(net_pnl / max(self.equity, 1e-6))
         
-        if self.episode_len % 10 == 0:
+        if self.episode_len % 100 == 0:
             print(f"  [Trade {self.episode_len:3}] Rew: {reward:6.2f} | PnL: {net_pnl:8.2f} | Eq: {self.equity:8.2f} | Exit: {exited_on}", flush=True)
 
         # --- Termination Logic ---

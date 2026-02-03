@@ -274,6 +274,7 @@ def train():
         model.learn(
             total_timesteps=TOTAL_TIMESTEPS, 
             callback=[checkpoint_callback, entropy_callback, tb_callback, stats_callback],
+            log_interval=1,
             progress_bar=True
         )
         
