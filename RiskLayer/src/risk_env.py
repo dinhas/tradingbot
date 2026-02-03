@@ -57,8 +57,9 @@ class RiskManagementEnv(gym.Env):
         self.TARGET_PROFIT_PCT = 0.001   # 0.1% Target Gain (10 pips)
         self.MAX_DRAWDOWN_PCT = 0.0005   # 0.05% Drawdown Tolerance (5 pips)
         
-        self.MAX_STEPS = 1000 # Force episode end for faster feedback
-        print(f"[{os.getpid()}] RiskEnv Initialized: MAX_STEPS={self.MAX_STEPS}, Threshold={self.DRAWDOWN_TERMINATION_THRESHOLD}")
+        import sys
+        self.MAX_STEPS = sys.maxsize # Infinite steps (ends on data exhaustion or drawdown)
+        print(f"[{os.getpid()}] RiskEnv Initialized: MAX_STEPS=Infinite, Threshold={self.DRAWDOWN_TERMINATION_THRESHOLD}")
         
         # --- Load Data ---
         self._load_data()
@@ -354,65 +355,61 @@ class RiskManagementEnv(gym.Env):
         max_lots_leverage = max_position_value / lot_value_usd
         lots = min(lots, max_lots_leverage)
         
-        # --- Check for Small Trades ---
-        if lots < self.MIN_LOTS:
-            net_pnl = 0.0
-            reward = 0.0
-            exited_on = 'SKIPPED'
-        else:
-            lots = np.clip(lots, self.MIN_LOTS, 100.0)
-            position_val = lots * lot_value_usd
-            
-            # Simulate Outcome
-            tp_dist_price = tp_mult * atr
-            sl_price = entry_price - (direction * sl_dist_price)
-            tp_price = entry_price + (direction * tp_dist_price)
-            
-            sl_pct_dist_raw = abs(sl_dist_price / entry_price_raw)
-            tp_pct_dist_raw = abs(tp_dist_price / entry_price_raw)
+        # --- Trade Execution (Unconditional) ---
+        # User requested to remove skipping. We force MIN_LOTS.
+        lots = np.clip(lots, self.MIN_LOTS, 100.0)
+        position_val = lots * lot_value_usd
+        
+        # Simulate Outcome
+        tp_dist_price = tp_mult * atr
+        sl_price = entry_price - (direction * sl_dist_price)
+        tp_price = entry_price + (direction * tp_dist_price)
+        
+        sl_pct_dist_raw = abs(sl_dist_price / entry_price_raw)
+        tp_pct_dist_raw = abs(tp_dist_price / entry_price_raw)
 
-            if direction == 1: # LONG
-                 hit_sl = max_adverse <= -sl_pct_dist_raw
-                 hit_tp = max_favorable >= tp_pct_dist_raw
-            else: # SHORT
-                 hit_sl = max_favorable >= sl_pct_dist_raw
-                 hit_tp = max_adverse <= -tp_pct_dist_raw
+        if direction == 1: # LONG
+             hit_sl = max_adverse <= -sl_pct_dist_raw
+             hit_tp = max_favorable >= tp_pct_dist_raw
+        else: # SHORT
+             hit_sl = max_favorable >= sl_pct_dist_raw
+             hit_tp = max_adverse <= -tp_pct_dist_raw
 
-            if hit_sl and hit_tp:
-                if sl_pct_dist_raw < tp_pct_dist_raw: hit_tp = False
-                else: hit_sl = False 
-            
-            exited_on = 'TIME'
-            exit_price = self.close_prices[global_idx]
-            if hit_sl:
-                exit_price, exited_on = sl_price, 'SL'
-            elif hit_tp:
-                exit_price, exited_on = tp_price, 'TP'
-            
-            # PnL Calc
-            price_change = exit_price - entry_price
-            gross_pnl_quote = price_change * lots * contract_size * direction
-            gross_pnl_usd = gross_pnl_quote if is_usd_quote else (gross_pnl_quote / exit_price if is_usd_base else gross_pnl_quote)
-            costs = position_val * self.TRADING_COST_PCT
-            net_pnl = gross_pnl_usd - costs
-            
-            # Reward Calculation
-            realized_pct = (price_change / entry_price) * direction
-            atr_ratio = atr / entry_price_raw
-            denom = max(max_favorable, atr_ratio, 1e-5)
-            pnl_efficiency = (realized_pct / denom) * 10.0
-            
-            bullet_bonus = 0.0
-            if exited_on == 'SL':
-                avoided_loss_dist = abs(max_adverse) if direction == 1 else abs(max_favorable)
-                if avoided_loss_dist > (sl_pct_dist_raw * 1.5):
-                    bullet_bonus = min(avoided_loss_dist / sl_pct_dist_raw, 3.0) * 2.0
-            
-            reward = np.clip(pnl_efficiency + bullet_bonus, -20.0, 20.0)
-            
-            # Update Equity
-            self.equity += net_pnl
-            self.peak_equity = max(self.peak_equity, self.equity)
+        if hit_sl and hit_tp:
+            if sl_pct_dist_raw < tp_pct_dist_raw: hit_tp = False
+            else: hit_sl = False 
+        
+        exited_on = 'TIME'
+        exit_price = self.close_prices[global_idx]
+        if hit_sl:
+            exit_price, exited_on = sl_price, 'SL'
+        elif hit_tp:
+            exit_price, exited_on = tp_price, 'TP'
+        
+        # PnL Calc
+        price_change = exit_price - entry_price
+        gross_pnl_quote = price_change * lots * contract_size * direction
+        gross_pnl_usd = gross_pnl_quote if is_usd_quote else (gross_pnl_quote / exit_price if is_usd_base else gross_pnl_quote)
+        costs = position_val * self.TRADING_COST_PCT
+        net_pnl = gross_pnl_usd - costs
+        
+        # Reward Calculation
+        realized_pct = (price_change / entry_price) * direction
+        atr_ratio = atr / entry_price_raw
+        denom = max(max_favorable, atr_ratio, 1e-5)
+        pnl_efficiency = (realized_pct / denom) * 10.0
+        
+        bullet_bonus = 0.0
+        if exited_on == 'SL':
+            avoided_loss_dist = abs(max_adverse) if direction == 1 else abs(max_favorable)
+            if avoided_loss_dist > (sl_pct_dist_raw * 1.5):
+                bullet_bonus = min(avoided_loss_dist / sl_pct_dist_raw, 3.0) * 2.0
+        
+        reward = np.clip(pnl_efficiency + bullet_bonus, -20.0, 20.0)
+        
+        # Update Equity
+        self.equity += net_pnl
+        self.peak_equity = max(self.peak_equity, self.equity)
 
         # Update Episode Stats
         self.episode_reward += reward
@@ -427,7 +424,10 @@ class RiskManagementEnv(gym.Env):
         # --- Termination Logic ---
         drawdown_end = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
         terminated = drawdown_end >= self.DRAWDOWN_TERMINATION_THRESHOLD
-        truncated = self.episode_len >= self.MAX_STEPS
+        
+        # Check for Data Exhaustion
+        next_global_idx = self.episode_start_idx + self.current_step
+        truncated = next_global_idx >= (self.n_samples - 1)
         
         if terminated:
             reward -= 20.0
@@ -435,7 +435,8 @@ class RiskManagementEnv(gym.Env):
             
         if terminated or truncated:
             import sys
-            print(f"--- EPISODE FINISHED --- Reward: {self.episode_reward:.2f} | Length: {self.episode_len} | Equity: {self.equity:.2f} | Reason: {'STOPOUT' if terminated else 'MAX_STEPS'}", flush=True)
+            reason = 'STOPOUT' if terminated else ('DATA_END' if truncated else 'UNKNOWN')
+            print(f"--- EPISODE FINISHED --- Reward: {self.episode_reward:.2f} | Length: {self.episode_len} | Equity: {self.equity:.2f} | Reason: {reason}", flush=True)
             sys.stdout.flush()
             
         return self._get_observation(), reward, terminated, truncated, {'pnl': net_pnl, 'equity': self.equity, 'lots': lots}
