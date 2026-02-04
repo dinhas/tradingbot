@@ -28,6 +28,13 @@ class TradingEnv(gym.Env):
         self.stage = stage
         self.trading_cost_pct = trading_cost_pct
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+        self.CONTRACT_SIZES = {
+            'EURUSD': 100000,
+            'GBPUSD': 100000,
+            'USDJPY': 100000,
+            'USDCHF': 100000,
+            'XAUUSD': 100
+        }
         
         # Configuration Constants
         self.MIN_POSITION_SIZE = 0.1
@@ -391,22 +398,31 @@ class TradingEnv(gym.Env):
 
     def _open_position(self, asset, direction, act, price, atr):
         """Open a new position with PEEK & LABEL reward assignment."""
-        # Risk Validation: Position size
-        size_pct = act['size'] * self.MAX_POS_SIZE_PCT
-        position_size = size_pct * self.equity
+        # Risk Validation: Calculate number of Lots
+        # size_pct * equity gives the USD margin we want to use
+        # with leverage, this gives us the USD value we want to control
+        target_usd_value = act['size'] * self.MAX_POS_SIZE_PCT * self.equity * self.leverage
         
-        # Minimum position check
-        if position_size < self.MIN_POSITION_SIZE:
+        # Convert USD value to Lots based on Contract Size and Price
+        # Lots = USD Value / (Contract Size * Price)
+        contract_size = self.CONTRACT_SIZES.get(asset, 100000)
+        lots = target_usd_value / (contract_size * price)
+        
+        # Round to 2 decimal places for realism (standard lot step)
+        lots = round(max(lots, 0.01), 2)
+        
+        # Actual Notional Value of the rounded lot size
+        notional_value = lots * contract_size * price
+        
+        # Minimum position check (approx $1000 notional)
+        if notional_value < 1000:
             return
-        
-        # Maximum position check
-        position_size = min(position_size, self.equity * 0.5)
         
         # Global exposure check
-        if not self._check_global_exposure(position_size):
+        if not self._check_global_exposure(notional_value / self.leverage):
             return
             
-        # Calculate SL/TP levels (Match RiskManagementEnv logic)
+        # Calculate SL/TP levels
         pip_scalar = 0.01 if 'JPY' in asset or 'XAU' in asset else 0.0001
         sl_dist = max(act['sl_mult'] * atr, pip_scalar * 1.0, 0.5 * atr)
         tp_dist = act['tp_mult'] * atr
@@ -417,7 +433,9 @@ class TradingEnv(gym.Env):
         self.positions[asset] = {
             'direction': direction,
             'entry_price': price,
-            'size': position_size,
+            'size': lots, # Now stores LOTS
+            'notional_value': notional_value,
+            'contract_size': contract_size,
             'sl': sl,
             'tp': tp,
             'entry_step': self.current_step,
@@ -428,23 +446,13 @@ class TradingEnv(gym.Env):
         # PEEK & LABEL: Simulate outcome and assign reward NOW
         simulated_pnl, fast_win = self._simulate_trade_outcome(asset)
         
-        # FIX: Subtract costs from simulated reward to prevent churning
-        notional_value = position_size * self.leverage
-        total_costs = notional_value * self.trading_cost_pct * 2.0  # Entry + Exit
-        
+        # FIX: Subtract costs from simulated reward
+        total_costs = notional_value * self.trading_cost_pct * 2.0
         self.peeked_pnl_step += (simulated_pnl - total_costs)
         
-        # FAST WIN BONUS REMOVED: Incompatible with Lock-In Strategy
-        # The PEEK reward simulates the outcome, doubling it encourages churn.
-
-        
-        # Transaction costs (FIX: Use notional position size for standard lot calculation)
-        # 0.00002 = 0.2 pips spread equivalent or commission
-        notional_value = position_size * self.leverage
+        # Transaction costs
         entry_cost = notional_value * self.trading_cost_pct
         self.equity -= entry_cost
-        
-        # Store entry cost for correct Net PnL calculation later
         self.positions[asset]['entry_cost'] = entry_cost
 
     def _close_position(self, asset, price):
@@ -454,18 +462,15 @@ class TradingEnv(gym.Env):
             return
         
         equity_before = self.equity
+        notional_value = pos['notional_value']
         
-        # Calculate P&L
-        price_change = (price - pos['entry_price']) * pos['direction']
-        price_change_pct = price_change / pos['entry_price'] if pos['entry_price'] != 0 else 0
-        position_value = pos['size'] * self.leverage
-        pnl = price_change_pct * position_value
+        # Calculate P&L: (Exit - Entry) * Direction * Lots * ContractSize
+        pnl = (price - pos['entry_price']) * pos['direction'] * pos['size'] * pos['contract_size']
         
         # Update equity
         self.equity += pnl
         
         # Exit transaction cost
-        notional_value = pos['size'] * self.leverage
         exit_cost = notional_value * self.trading_cost_pct
         self.equity -= exit_cost
         
@@ -482,14 +487,14 @@ class TradingEnv(gym.Env):
             'timestamp': self._get_current_timestamp(),
             'asset': asset,
             'action': 'BUY' if pos['direction'] == 1 else 'SELL',
-            'size': pos['size'],
+            'size': pos['size'], # Now shows LOTS
             'entry_price': pos['entry_price'],
             'exit_price': price,
             'sl': pos['sl'],
             'tp': pos['tp'],
             'pnl': pnl,
-            'net_pnl': pnl - total_fees,  # Correct Net PnL
-            'fees': total_fees,           # Correct Total Fees
+            'net_pnl': pnl - total_fees,
+            'fees': total_fees,
             'equity_before': equity_before,
             'equity_after': self.equity,
             'hold_time': hold_time,
@@ -584,11 +589,8 @@ class TradingEnv(gym.Env):
             # Neither hit: use last available price from cached array
             exit_price = self.close_arrays[asset][end_idx - 1]
         
-        # Calculate P&L (FIX: Use correct formula matching _close_position)
-        price_change = (exit_price - pos['entry_price']) * direction
-        price_change_pct = price_change / pos['entry_price'] if pos['entry_price'] != 0 else 0
-        position_value = pos['size'] * self.leverage
-        pnl = price_change_pct * position_value
+        # Calculate P&L: (Exit - Entry) * Direction * Lots * ContractSize
+        pnl = (exit_price - pos['entry_price']) * direction * pos['size'] * pos['contract_size']
         
         return pnl, fast_win
 
@@ -659,11 +661,8 @@ class TradingEnv(gym.Env):
             exit_reason = 'OPEN'
             closed = False
         
-        # Calculate P&L
-        price_change = (exit_price - pos['entry_price']) * direction
-        price_change_pct = price_change / pos['entry_price'] if pos['entry_price'] != 0 else 0
-        position_value = pos['size'] * self.leverage
-        pnl = price_change_pct * position_value
+        # Calculate P&L: (Exit - Entry) * Direction * Lots * ContractSize
+        pnl = (exit_price - pos['entry_price']) * direction * pos['size'] * pos['contract_size']
         
         bars_held = exit_idx - self.current_step
         
