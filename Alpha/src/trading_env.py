@@ -20,12 +20,13 @@ class TradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, data_dir='data', is_training=True, data=None, stage=1):
+    def __init__(self, data_dir='data', is_training=True, data=None, stage=1, trading_cost_pct=0.00002):
         super(TradingEnv, self).__init__()
         
         self.data_dir = data_dir
         self.is_training = is_training
         self.stage = stage
+        self.trading_cost_pct = trading_cost_pct
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         
         # Configuration Constants
@@ -346,7 +347,7 @@ class TradingEnv(gym.Env):
             'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
             'size': 0.5,     # Fixed: 25% of equity (0.5 * MAX_POS_SIZE_PCT)
             'sl_mult': 2.0,  # Fixed: 2.0x ATR
-            'tp_mult': 4.0   # Fixed: 4.0x ATR
+            'tp_mult': 5.0   # Fixed: 5.0x ATR
         }
 
     def _execute_trades(self, actions):
@@ -403,9 +404,9 @@ class TradingEnv(gym.Env):
         if not self._check_global_exposure(position_size):
             return
             
-        # Calculate SL/TP levels (FIX: Handle zero ATR edge case)
-        atr = max(atr, price * self.MIN_ATR_MULTIPLIER)  # Minimum 0.01% of price
-        sl_dist = act['sl_mult'] * atr
+        # Calculate SL/TP levels (Match RiskManagementEnv logic)
+        pip_scalar = 0.01 if 'JPY' in asset or 'XAU' in asset else 0.0001
+        sl_dist = max(act['sl_mult'] * atr, pip_scalar * 1.0, 0.5 * atr)
         tp_dist = act['tp_mult'] * atr
         sl = price - (direction * sl_dist)
         tp = price + (direction * tp_dist)
@@ -433,7 +434,7 @@ class TradingEnv(gym.Env):
         # Transaction costs (FIX: Use notional position size for standard lot calculation)
         # 0.00002 = 0.2 pips spread equivalent or commission
         notional_value = position_size * self.leverage
-        cost = notional_value * 0.00002
+        cost = notional_value * self.trading_cost_pct
         self.equity -= cost
 
     def _close_position(self, asset, price):
@@ -455,7 +456,7 @@ class TradingEnv(gym.Env):
         
         # Exit transaction cost (FIX: Use notional position size)
         notional_value = pos['size'] * self.leverage
-        cost = notional_value * 0.00002
+        cost = notional_value * self.trading_cost_pct
         self.equity -= cost
         
         # Prevent negative equity

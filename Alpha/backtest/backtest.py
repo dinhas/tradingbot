@@ -285,6 +285,7 @@ def run_backtest(args):
     # Track which task is currently assigned to which env
     # active_tasks[env_idx] = {'asset': ..., 'episode': ...}
     active_tasks = [None] * num_envs
+    env_step_counts = np.zeros(num_envs, dtype=int)
     
     # Initial Task Assignment
     for i in range(num_envs):
@@ -307,6 +308,7 @@ def run_backtest(args):
     while completed_tasks < total_tasks or any(t is not None for t in active_tasks):
         action, _ = model.predict(obs, deterministic=True)
         obs, rewards, dones, infos = env.step(action)
+        env_step_counts += 1
         
         for i in range(num_envs):
             # If this env has an active task
@@ -323,8 +325,12 @@ def run_backtest(args):
                 if 'equity' in info and 'timestamp' in info:
                     env_buffers[i].add_equity_point(info['timestamp'], info['equity'])
                 
-                # Check for completion
-                if dones[i]:
+                # Check for completion (Normal or Max Steps)
+                is_done = dones[i]
+                if args.max_steps is not None and env_step_counts[i] >= args.max_steps:
+                    is_done = True
+                
+                if is_done:
                     task = active_tasks[i]
                     final_equity = info.get('equity', 0)
                     
@@ -352,6 +358,9 @@ def run_backtest(args):
                     else:
                         active_tasks[i] = None
                         # Env will continue stepping but we ignore it
+                    
+                    # Reset step count for next task
+                    env_step_counts[i] = 0
                         
     env.close()
     
@@ -676,6 +685,8 @@ if __name__ == "__main__":
                         help="Specific asset to test (e.g., EURUSD) or 'all' to test the full basket")
     parser.add_argument("--workers", type=int, default=2,
                         help="Number of parallel environment workers (default: 2)")
+    parser.add_argument("--max-steps", type=int, default=None,
+                        help="Maximum steps to run per episode")
     
     args = parser.parse_args()
     
