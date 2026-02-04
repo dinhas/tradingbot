@@ -1,28 +1,28 @@
 # =========================================================================
-# OPTIMIZED ALPHA CONFIG — Fast Convergence for 2.25M Steps
+# STABILIZED ALPHA CONFIG — 1.5M Steps
 # =========================================================================
 
-# Learning Rate: Increased to standard baseline for faster adaptation
-learning_rate: 0.0003
+# Learning Rate: Reduced for more stable updates and to prevent divergence
+learning_rate: 0.0001
 
 # Rollout Settings: 
-# Reduced n_steps to 1024 to increase update frequency (approx 120 updates per 1M steps)
-n_steps: 1024
-batch_size: 256
+# Increased n_steps to 2048 to provide more stable gradient estimates
+n_steps: 2048
+batch_size: 512
 n_epochs: 10
 
 # Temporal Discounting
-gamma: 0.95
+# Increased gamma to 0.99 for a more balanced long-term perspective
+gamma: 0.99
 gae_lambda: 0.95
 
 # PPO Clipping
 clip_range: 0.2
 clip_range_vf: null
 
-# Entropy Regularization: Reduced to 0.01 to balance exploration with 
-# stability, helping to mitigate excessive trade churning and allow 
-# earlier exploitation of learned patterns.
-ent_coef: 0.01
+# Entropy Regularization: Reduced slightly to 0.005 to reduce noise 
+# while still encouraging exploration.
+ent_coef: 0.005
 
 # Loss Coefficients
 vf_coef: 0.5
