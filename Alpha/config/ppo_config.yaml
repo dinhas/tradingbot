@@ -1,5 +1,5 @@
 # =========================================================================
-# OPTIMIZED ALPHA CONFIG — Fast Convergence for 1M Steps
+# OPTIMIZED ALPHA CONFIG — Fast Convergence for 2.25M Steps
 # =========================================================================
 
 # Learning Rate: Increased to standard baseline for faster adaptation
@@ -31,7 +31,7 @@ vf_coef: 0.5
 max_grad_norm: 0.5
 
 # Training Budget
-total_timesteps: 1000000
+total_timesteps: 2250000
 
 # Network Architecture
 policy_kwargs:
