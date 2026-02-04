@@ -2,25 +2,26 @@
 # SIMPLIFIED ALPHA CONFIG — Optimized for Directional Trading
 # =========================================================================
 
-# Learning Rate: Slightly lower for stability with heavy penalties
-learning_rate: 0.0003
+# Learning Rate: Lowered for stability with hybrid reward
+learning_rate: 0.0001
 
-# Rollout Settings: Increased n_steps and batch_size for more stable gradients
-# across multiple assets (since we now train on one pair at a time).
-n_steps: 4096
+# Rollout Settings: Increased n_steps for stable gradients
+n_steps: 8192
 batch_size: 512
 n_epochs: 15
 
 # Temporal Discounting
-gamma: 0.99
+# Lower gamma (0.95) because PEEK reward is immediate/short-horizon
+gamma: 0.95
 gae_lambda: 0.95
 
 # PPO Clipping
 clip_range: 0.2
+clip_range_vf: null
 
-# Entropy Coefficient: Increased to ensure thorough exploration of 
-# Fast Win signals despite heavy loss penalties.
-ent_coef: 0.02
+# Entropy Regularization
+# Increased to 0.03 to prevent premature convergence
+ent_coef: 0.03
 
 # Loss Coefficients
 vf_coef: 0.5

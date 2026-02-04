@@ -59,8 +59,11 @@ class TradingEnv(gym.Env):
         self.current_asset = self.assets[0] # Default, will be randomized in reset
         self.max_steps = len(self.processed_data) - 1
         
+        # STRATEGY SETTINGS
+        self.FORCE_HOLD = True  # Enable Option 1: Lock-in Mechanism
+        
         # PRD Risk Constants
-        self.MAX_POS_SIZE_PCT = 0.50
+        self.MAX_POS_SIZE_PCT = 0.08   # 8% of Equity as requested
         self.MAX_TOTAL_EXPOSURE = 0.60
         self.DRAWDOWN_LIMIT = 0.25
         
@@ -351,7 +354,7 @@ class TradingEnv(gym.Env):
         }
 
     def _execute_trades(self, actions):
-        """Execute trading decisions for all assets."""
+        """Execute trading decisions for all assets. Includes LOCK-IN logic."""
         current_prices = self._get_current_prices()
         atrs = self._get_current_atrs()
         
@@ -366,18 +369,23 @@ class TradingEnv(gym.Env):
                 if direction != 0:
                     self._open_position(asset, direction, act, price, atr)
             
-            elif current_pos['direction'] == direction:
-                # Same direction: hold
-                pass
-            
-            elif direction != 0 and current_pos['direction'] != direction:
-                # Opposite direction: close and reverse
-                self._close_position(asset, price)
-                self._open_position(asset, direction, act, price, atr)
+            elif current_pos is not None:
+                # =========================================================
+                # LOCK-IN MECHANISM (Option 1+3)
+                # =========================================================
+                # Once a trade is open, we IGNORE any agent action to close or reverse.
+                # The trade MUST hit SL or TP (handled in _update_positions).
+                if self.FORCE_HOLD:
+                    continue  # Skip all exit logic below
                 
-            elif direction == 0 and current_pos is not None:
-                # Flat signal: close position
-                self._close_position(asset, price)
+                # Default Logic (Disabled when FORCE_HOLD=True)
+                elif current_pos['direction'] == direction:
+                    pass  # Same direction: hold
+                elif direction != 0 and current_pos['direction'] != direction:
+                    self._close_position(asset, price)
+                    self._open_position(asset, direction, act, price, atr)
+                elif direction == 0 and current_pos is not None:
+                    self._close_position(asset, price)
 
     def _check_global_exposure(self, new_position_size):
         """Check if adding position would exceed 60% exposure limit."""
@@ -427,15 +435,18 @@ class TradingEnv(gym.Env):
         simulated_pnl, fast_win = self._simulate_trade_outcome(asset)
         self.peeked_pnl_step += simulated_pnl
         
-        # FAST WIN BONUS: Double reward if TP hit within 30 mins (6 candles)
-        if fast_win and simulated_pnl > 0:
-            self.peeked_pnl_step += simulated_pnl
+        # FAST WIN BONUS REMOVED: Incompatible with Lock-In Strategy
+        # The PEEK reward simulates the outcome, doubling it encourages churn.
+
         
         # Transaction costs (FIX: Use notional position size for standard lot calculation)
         # 0.00002 = 0.2 pips spread equivalent or commission
         notional_value = position_size * self.leverage
-        cost = notional_value * self.trading_cost_pct
-        self.equity -= cost
+        entry_cost = notional_value * self.trading_cost_pct
+        self.equity -= entry_cost
+        
+        # Store entry cost for correct Net PnL calculation later
+        self.positions[asset]['entry_cost'] = entry_cost
 
     def _close_position(self, asset, price):
         """Close position and record trade."""
@@ -454,10 +465,14 @@ class TradingEnv(gym.Env):
         # Update equity
         self.equity += pnl
         
-        # Exit transaction cost (FIX: Use notional position size)
+        # Exit transaction cost
         notional_value = pos['size'] * self.leverage
-        cost = notional_value * self.trading_cost_pct
-        self.equity -= cost
+        exit_cost = notional_value * self.trading_cost_pct
+        self.equity -= exit_cost
+        
+        # Calculate Total Fees (Entry + Exit)
+        entry_cost = pos.get('entry_cost', 0.0)
+        total_fees = entry_cost + exit_cost
         
         # Prevent negative equity
         self.equity = max(self.equity, 0.01)
@@ -474,8 +489,8 @@ class TradingEnv(gym.Env):
             'sl': pos['sl'],
             'tp': pos['tp'],
             'pnl': pnl,
-            'net_pnl': pnl - cost,
-            'fees': cost,
+            'net_pnl': pnl - total_fees,  # Correct Net PnL
+            'fees': total_fees,           # Correct Total Fees
             'equity_before': equity_before,
             'equity_after': self.equity,
             'hold_time': hold_time,
@@ -662,15 +677,17 @@ class TradingEnv(gym.Env):
 
     def _calculate_reward(self) -> float:
         """
-        Reward function with separate modes for training and backtesting.
+        Reward function with HYBRID SYSTEM (Option 3):
         
-        Training Mode (is_training=True):
-            - Uses PEEK & LABEL for credit assignment
-            - Progressive drawdown penalty
-            
-        Backtesting Mode (is_training=False):
-            - Uses actual realized P&L from completed trades
-            - Reflects real portfolio performance
+        1. PEEK Reward (Entry Quality): 50% weight
+           - Immediate signal based on future SL/TP hit (Solver of Credit Assignment)
+           
+        2. Realized P&L (Exit Quality): 50% weight
+           - Reality check based on actual trade outcomes
+           - Rewards the agent for actually capturing the move
+           
+        3. Hold Bonus (Patience):
+           - Rewards holding profitable positions (Combats Churning)
         """
         reward = 0.0
         
@@ -689,25 +706,55 @@ class TradingEnv(gym.Env):
             return reward
         
         # =====================================================================
-        # TRAINING MODE: PEEK & LABEL + Drawdown Penalty
+        # TRAINING MODE: Hybrid (PEEK + REALIZED + HOLD)
         # =====================================================================
         
-        # COMPONENT 1: Peeked P&L (Primary Signal)
+        # COMPONENT 1: Peeked P&L (Entry Quality) - Weight 0.5
         if self.peeked_pnl_step != 0:
             # Normalize: 1% of starting equity = 0.02 reward
             normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 2.0
             
-            # Loss Aversion (Prospect Theory): Losses hurt 2.25x more (1.5 * 1.5)
+            # Loss Aversion: Losses hurt 2.25x more
             if normalized_pnl < 0:
                 normalized_pnl = np.clip(normalized_pnl, -5.0, 0.0) * 2.25
             else:
-                # Relaxed clipping to allow for Fast Win Bonus (up to 5.0)
                 normalized_pnl = np.clip(normalized_pnl, 0.0, 5.0)
-            reward += normalized_pnl
+                
+            reward += normalized_pnl * 0.5  # 50% Weight
+            
+        # COMPONENT 2: Realized P&L (Exit Quality) - Weight 0.5
+        step_pnl = sum(trade['net_pnl'] for trade in self.completed_trades)
+        if step_pnl != 0:
+            normalized_realized = (step_pnl / self.start_equity) * 2.0
+            # Same clipping protection
+            if normalized_realized < 0:
+                normalized_realized = np.clip(normalized_realized, -5.0, 0.0) * 2.25
+            else:
+                normalized_realized = np.clip(normalized_realized, 0.0, 5.0)
+            
+            reward += normalized_realized * 0.5  # 50% Weight
+            
+        # COMPONENT 3: Hold Bonus (Patience)
+        # Encourage holding profitable positions
+        current_prices = self._get_current_prices()
+        for asset, pos in self.positions.items():
+            if pos is not None:
+                # Calculate unrealized P&L
+                price = current_prices[asset]
+                price_change = (price - pos['entry_price']) * pos['direction']
+                price_change_pct = price_change / pos['entry_price']
+                unrealized_pnl = price_change_pct * (pos['size'] * self.leverage)
+                
+                # Bonus for holding winners longer than 15 mins (3 bars)
+                bars_held = self.current_step - pos['entry_step']
+                if bars_held > 3 and unrealized_pnl > 0:
+                    # Small drip feed based on time held to encourage trend following
+                    # Max bonus 0.01 per step per asset
+                    hold_bonus = 0.01 * min(bars_held / 100, 1.0)
+                    reward += hold_bonus
         
-        # COMPONENT 2: Progressive Drawdown Penalty
+        # COMPONENT 4: Progressive Drawdown Penalty
         drawdown = 1.0 - (self.equity / self.peak_equity)
-        
         if drawdown > 0.05:
             severity = min((drawdown - 0.05) / 0.20, 1.0)
             penalty = -0.15 * (severity ** 1.5)
@@ -721,9 +768,9 @@ class TradingEnv(gym.Env):
             logging.debug(
                 f"[Reward] step={self.current_step} "
                 f"peeked={self.peeked_pnl_step:.2f} "
+                f"realized={step_pnl:.2f} "
                 f"drawdown={drawdown:.2%} "
-                f"current={reward:.4f} "
-                f"best_step={self.max_step_reward:.4f}"
+                f"current={reward:.4f}"
             )
         
         return reward
