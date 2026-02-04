@@ -18,9 +18,9 @@ gae_lambda: 0.95
 # PPO Clipping
 clip_range: 0.2
 
-# Entropy Coefficient: Increased to ensure thorough exploration of 
-# Fast Win signals despite heavy loss penalties.
-ent_coef: 0.02
+# Entropy Coefficient: Reduced to 0.01 to balance exploration with 
+# stability, helping to mitigate excessive trade churning.
+ent_coef: 0.01
 
 # Loss Coefficients
 vf_coef: 0.5

@@ -20,7 +20,7 @@ class TradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, data_dir='data', is_training=True, data=None, stage=1, trading_cost_pct=0.00002):
+    def __init__(self, data_dir='data', is_training=True, data=None, stage=1, trading_cost_pct=0.00012):
         super(TradingEnv, self).__init__()
         
         self.data_dir = data_dir
@@ -140,7 +140,7 @@ class TradingEnv(gym.Env):
         
         # Update Global Dynamic
         total_exposure = sum(pos['size'] for pos in self.positions.values() if pos is not None)
-        full_obs[self.dynamic_indices['equity']] = self.equity
+        full_obs[self.dynamic_indices['equity']] = self.equity / self.start_equity
         full_obs[self.dynamic_indices['margin_usage_pct']] = total_exposure / self.equity if self.equity > 0 else 0
         full_obs[self.dynamic_indices['drawdown']] = 1.0 - (self.equity / self.peak_equity)
         full_obs[self.dynamic_indices['num_open_positions']] = sum(1 for p in self.positions.values() if p is not None)
@@ -158,10 +158,10 @@ class TradingEnv(gym.Env):
                 full_obs[indices['has_position']] = 1.0
                 full_obs[indices['position_size']] = pos['size'] / self.equity
                 full_obs[indices['unrealized_pnl']] = unrealized_pnl
-                full_obs[indices['position_age']] = self.current_step - pos['entry_step']
-                full_obs[indices['entry_price']] = pos['entry_price']
-                full_obs[indices['current_sl']] = pos['sl']
-                full_obs[indices['current_tp']] = pos['tp']
+                full_obs[indices['position_age']] = (self.current_step - pos['entry_step']) / 288.0  # Normalized (days approx)
+                full_obs[indices['entry_price']] = (pos['entry_price'] / current_prices[asset]) - 1.0
+                full_obs[indices['current_sl']] = (pos['sl'] / current_prices[asset]) - 1.0
+                full_obs[indices['current_tp']] = (pos['tp'] / current_prices[asset]) - 1.0
 
         # 2. Extract the 40 features for current_asset
         # [25 asset features] + [15 global features]
@@ -425,17 +425,19 @@ class TradingEnv(gym.Env):
         
         # PEEK & LABEL: Simulate outcome and assign reward NOW
         simulated_pnl, fast_win = self._simulate_trade_outcome(asset)
-        self.peeked_pnl_step += simulated_pnl
+        
+        # FIX: Subtract costs from simulated reward to prevent churning
+        notional_value = position_size * self.leverage
+        total_costs = notional_value * self.trading_cost_pct * 2.0  # Entry + Exit
+        
+        self.peeked_pnl_step += (simulated_pnl - total_costs)
         
         # FAST WIN BONUS: Double reward if TP hit within 30 mins (6 candles)
         if fast_win and simulated_pnl > 0:
             self.peeked_pnl_step += simulated_pnl
         
-        # Transaction costs (FIX: Use notional position size for standard lot calculation)
-        # 0.00002 = 0.2 pips spread equivalent or commission
-        notional_value = position_size * self.leverage
-        cost = notional_value * self.trading_cost_pct
-        self.equity -= cost
+        # Update equity with entry cost
+        self.equity -= (notional_value * self.trading_cost_pct)
 
     def _close_position(self, asset, price):
         """Close position and record trade."""
@@ -681,9 +683,9 @@ class TradingEnv(gym.Env):
             # Sum up actual P&L from completed trades this step
             step_pnl = sum(trade['net_pnl'] for trade in self.completed_trades)
             
-            # Normalize: 1% of starting equity = 0.02 reward
+            # Normalize: 1% of starting equity = 0.2 reward
             if step_pnl != 0:
-                normalized_pnl = (step_pnl / self.start_equity) * 2.0
+                normalized_pnl = (step_pnl / self.start_equity) * 20.0
                 reward += normalized_pnl
             
             return reward
@@ -694,15 +696,14 @@ class TradingEnv(gym.Env):
         
         # COMPONENT 1: Peeked P&L (Primary Signal)
         if self.peeked_pnl_step != 0:
-            # Normalize: 1% of starting equity = 0.02 reward
-            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 2.0
+            # Normalize: 1% of starting equity = 0.2 reward
+            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 20.0
             
-            # Loss Aversion (Prospect Theory): Losses hurt 2.25x more (1.5 * 1.5)
+            # Loss Aversion: Losses hurt 2x more
             if normalized_pnl < 0:
-                normalized_pnl = np.clip(normalized_pnl, -5.0, 0.0) * 2.25
+                normalized_pnl = np.clip(normalized_pnl, -10.0, 0.0) * 2.0
             else:
-                # Relaxed clipping to allow for Fast Win Bonus (up to 5.0)
-                normalized_pnl = np.clip(normalized_pnl, 0.0, 5.0)
+                normalized_pnl = np.clip(normalized_pnl, 0.0, 10.0)
             reward += normalized_pnl
         
         # COMPONENT 2: Progressive Drawdown Penalty
@@ -710,7 +711,7 @@ class TradingEnv(gym.Env):
         
         if drawdown > 0.05:
             severity = min((drawdown - 0.05) / 0.20, 1.0)
-            penalty = -0.15 * (severity ** 1.5)
+            penalty = -1.0 * (severity ** 1.5)
             reward += penalty
         
         # Track best step reward
