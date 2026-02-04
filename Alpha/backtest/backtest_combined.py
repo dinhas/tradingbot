@@ -429,9 +429,15 @@ def run_combined_backtest(args):
 
     # Load Alpha normalizer
     alpha_norm_path = str(alpha_model_path).replace('.zip', '_vecnormalize.pkl')
-    # FALLBACK: Handle ppo_final_model.zip -> ppo_final_vecnormalize.pkl
+    # FALLBACK: Handle ppo_final_model(1).zip -> ppo_final_model(1)_vecnormalize.pkl (already handled by above)
+    # or handle cases where (1) might be missing in some naming conventions
     if not os.path.exists(alpha_norm_path):
-        alpha_norm_path = str(alpha_model_path).replace('_model.zip', '_vecnormalize.pkl')
+        # Specific check for the user's special directory naming
+        if "modej" in str(alpha_model_path):
+             alpha_norm_path = alpha_model_path.parent / "ppo_final_vecnormalize(1).pkl"
+        
+        if not os.path.exists(alpha_norm_path):
+             alpha_norm_path = str(alpha_model_path).replace('_model.zip', '_vecnormalize.pkl')
         
     alpha_norm_env = None
     if os.path.exists(alpha_norm_path):

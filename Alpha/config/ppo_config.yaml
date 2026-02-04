@@ -31,7 +31,7 @@ vf_coef: 0.5
 max_grad_norm: 0.5
 
 # Training Budget
-total_timesteps: 2250000
+total_timesteps: 1500000
 
 # Network Architecture
 policy_kwargs:
