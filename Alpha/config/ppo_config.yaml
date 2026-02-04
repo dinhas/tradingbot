@@ -19,8 +19,9 @@ gae_lambda: 0.95
 clip_range: 0.2
 clip_range_vf: null
 
-# Entropy Regularization
-# Reduced to 0.01 to allow earlier exploitation of learned patterns
+# Entropy Regularization: Reduced to 0.01 to balance exploration with 
+# stability, helping to mitigate excessive trade churning and allow 
+# earlier exploitation of learned patterns.
 ent_coef: 0.01
 
 # Loss Coefficients
