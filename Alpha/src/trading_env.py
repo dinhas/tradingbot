@@ -322,12 +322,6 @@ class TradingEnv(gym.Env):
         self.peak_equity = max(self.peak_equity, self.equity)
         drawdown = 1.0 - (self.equity / self.peak_equity)
         
-        # Drawdown termination: Only apply during training
-        # During backtesting, we want to see full performance over entire dataset
-        if drawdown > self.DRAWDOWN_LIMIT and self.is_training:
-            terminated = True
-            reward -= 0.5  # Terminal drawdown penalty
-        
         info = {
             'trades': self.completed_trades,
             'equity': self.equity,
@@ -682,17 +676,10 @@ class TradingEnv(gym.Env):
 
     def _calculate_reward(self) -> float:
         """
-        Reward function with HYBRID SYSTEM (Option 3):
+        Reward function based solely on PEEK Reward (Entry Quality):
         
-        1. PEEK Reward (Entry Quality): 50% weight
+        1. PEEK Reward (Entry Quality): 100% weight
            - Immediate signal based on future SL/TP hit (Solver of Credit Assignment)
-           
-        2. Realized P&L (Exit Quality): 50% weight
-           - Reality check based on actual trade outcomes
-           - Rewards the agent for actually capturing the move
-           
-        3. Hold Bonus (Patience):
-           - Rewards holding profitable positions (Combats Churning)
         """
         reward = 0.0
         
@@ -711,69 +698,31 @@ class TradingEnv(gym.Env):
             return reward
         
         # =====================================================================
-        # TRAINING MODE: Hybrid (PEEK + REALIZED + HOLD)
+        # TRAINING MODE: PEEK ONLY
         # =====================================================================
         
-        # COMPONENT 1: Peeked P&L (Entry Quality) - Weight 0.5
+        # COMPONENT 1: Peeked P&L (Entry Quality) - Weight 1.0
         if self.peeked_pnl_step != 0:
             # Normalize: 1% of starting equity = 0.2 reward
             normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 20.0
             
-            # Loss Aversion: Losses hurt 2.25x more (Increased for stability)
+            # Loss Aversion: Losses hurt 2.25x more
             if normalized_pnl < 0:
                 normalized_pnl = np.clip(normalized_pnl, -10.0, 0.0) * 2.25
             else:
                 normalized_pnl = np.clip(normalized_pnl, 0.0, 5.0)
                 
-            reward += normalized_pnl * 0.5  # 50% Weight
+            reward += normalized_pnl  # 100% Weight
             
-        # COMPONENT 2: Realized P&L (Exit Quality) - Weight 0.5
-        step_pnl = sum(trade['net_pnl'] for trade in self.completed_trades)
-        if step_pnl != 0:
-            normalized_realized = (step_pnl / self.start_equity) * 20.0
-            # Same clipping protection
-            if normalized_realized < 0:
-                normalized_realized = np.clip(normalized_realized, -10.0, 0.0) * 2.25
-            else:
-                normalized_realized = np.clip(normalized_realized, 0.0, 5.0)
-            
-            reward += normalized_realized * 0.5  # 50% Weight
-            
-        # COMPONENT 3: Hold Bonus (Patience)
-        # Encourage holding profitable positions
-        current_prices = self._get_current_prices()
-        for asset, pos in self.positions.items():
-            if pos is not None:
-                # Calculate unrealized P&L
-                price = current_prices[asset]
-                price_change = (price - pos['entry_price']) * pos['direction']
-                price_change_pct = price_change / pos['entry_price']
-                unrealized_pnl = price_change_pct * (pos['size'] * self.leverage)
-                
-                # Bonus for holding winners longer than 15 mins (3 bars)
-                bars_held = self.current_step - pos['entry_step']
-                if bars_held > 3 and unrealized_pnl > 0:
-                    # Small drip feed based on time held to encourage trend following
-                    # Max bonus 0.01 per step per asset
-                    hold_bonus = 0.01 * min(bars_held / 100, 1.0)
-                    reward += hold_bonus
-        
-        # COMPONENT 4: Progressive Drawdown Penalty
-        drawdown = 1.0 - (self.equity / self.peak_equity)
-        if drawdown > 0.05:
-            severity = min((drawdown - 0.05) / 0.20, 1.0)
-            penalty = -1.0 * (severity ** 1.5)
-            reward += penalty
-        
         # Track best step reward
         if reward > self.max_step_reward:
             self.max_step_reward = reward
 
         if self.current_step % self.REWARD_LOG_INTERVAL == 0:
+            drawdown = 1.0 - (self.equity / self.peak_equity)
             logging.debug(
                 f"[Reward] step={self.current_step} "
                 f"peeked={self.peeked_pnl_step:.2f} "
-                f"realized={step_pnl:.2f} "
                 f"drawdown={drawdown:.2%} "
                 f"current={reward:.4f}"
             )
