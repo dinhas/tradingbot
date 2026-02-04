@@ -1,17 +1,17 @@
 # =========================================================================
-# SIMPLIFIED ALPHA CONFIG — Optimized for Directional Trading
+# OPTIMIZED ALPHA CONFIG — Fast Convergence for 1M Steps
 # =========================================================================
 
-# Learning Rate: Lowered for stability with hybrid reward
-learning_rate: 0.0001
+# Learning Rate: Increased to standard baseline for faster adaptation
+learning_rate: 0.0003
 
-# Rollout Settings: Increased n_steps for stable gradients
-n_steps: 8192
-batch_size: 512
-n_epochs: 15
+# Rollout Settings: 
+# Reduced n_steps to 1024 to increase update frequency (approx 120 updates per 1M steps)
+n_steps: 1024
+batch_size: 256
+n_epochs: 10
 
 # Temporal Discounting
-# Lower gamma (0.95) because PEEK reward is immediate/short-horizon
 gamma: 0.95
 gae_lambda: 0.95
 
@@ -20,8 +20,8 @@ clip_range: 0.2
 clip_range_vf: null
 
 # Entropy Regularization
-# Increased to 0.03 to prevent premature convergence
-ent_coef: 0.03
+# Reduced to 0.01 to allow earlier exploitation of learned patterns
+ent_coef: 0.01
 
 # Loss Coefficients
 vf_coef: 0.5
@@ -29,11 +29,10 @@ vf_coef: 0.5
 # Gradient Clipping
 max_grad_norm: 0.5
 
-# Training Budget: 3.5M steps for robust generalization across all 5 pairs
-total_timesteps: 3500000
+# Training Budget
+total_timesteps: 1000000
 
-# Network Architecture: Lighter weight architecture (192, 192, 96) 
-# appropriate for 40 features and a single output.
+# Network Architecture
 policy_kwargs:
   net_arch: [192, 192, 96]
   activation_fn: "ReLU"
