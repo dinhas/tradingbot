@@ -301,15 +301,15 @@ class TradingEnv(gym.Env):
         self._execute_trades({self.current_asset: parsed_action})
         
         # Margin call check
-        if self.equity <= 0:
-            self.equity = 0.01
+        if self.equity <= 2.0:
+            self.equity = 2.0
             # FIX: Clear positions on margin call to reflect liquidation
             self.positions = {asset: None for asset in self.assets}
             return (
                 self._validate_observation(self._get_observation()),
                 -1.0,  # Strong terminal penalty
                 True, False,
-                {'trades': [], 'equity': 0.01, 'termination_reason': 'margin_call'}
+                {'trades': [], 'equity': 2.0, 'termination_reason': 'margin_call'}
             )
         
         # Advance time
@@ -349,7 +349,7 @@ class TradingEnv(gym.Env):
                 
         return {
             'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
-            'size': 0.5,     # Fixed: 25% of equity (0.5 * MAX_POS_SIZE_PCT)
+            'size': 0.5,     # Fixed: Half of max exposure
             'sl_mult': 2.0,  # Fixed: 2.0x ATR
             'tp_mult': 5.0   # Fixed: 5.0x ATR
         }
@@ -443,12 +443,16 @@ class TradingEnv(gym.Env):
             'tp_dist': tp_dist
         }
         
-        # PEEK & LABEL: Simulate outcome and assign reward NOW
-        simulated_pnl, fast_win = self._simulate_trade_outcome(asset)
+        # PEEK & LABEL: Simulate outcome and assign discrete reward NOW
+        outcome = self._simulate_trade_outcome_with_timing(asset)
         
-        # FIX: Subtract costs from simulated reward
-        total_costs = notional_value * self.trading_cost_pct * 2.0
-        self.peeked_pnl_step += (simulated_pnl - total_costs)
+        if outcome['exit_reason'] == 'SL':
+            self.peeked_pnl_step += -2.0
+        elif outcome['exit_reason'] == 'TP':
+            self.peeked_pnl_step += 3.0
+        else:
+            # For OPEN or TIME (neither hit within 1000 steps), reward is 0
+            self.peeked_pnl_step += 0.0
         
         # Transaction costs
         entry_cost = notional_value * self.trading_cost_pct
@@ -479,7 +483,7 @@ class TradingEnv(gym.Env):
         total_fees = entry_cost + exit_cost
         
         # Prevent negative equity
-        self.equity = max(self.equity, 0.01)
+        self.equity = max(self.equity, 2.0)
         
         # Record trade for backtesting
         hold_time = (self.current_step - pos['entry_step']) * 5  # 5 min per step
@@ -528,71 +532,6 @@ class TradingEnv(gym.Env):
                 elif price <= pos['tp']:
                     self._close_position(asset, pos['tp'])
 
-    def _simulate_trade_outcome(self, asset):
-        """
-        PEEK & LABEL: Look ahead to see if trade hits SL or TP.
-        OPTIMIZED: Uses cached numpy arrays instead of pandas slicing.
-        Returns: (pnl, fast_win)
-        """
-        if self.positions[asset] is None:
-            return 0.0, False
-        
-        pos = self.positions[asset]
-        direction = pos['direction']
-        sl = pos['sl']
-        tp = pos['tp']
-        
-        # Look forward up to 1000 steps
-        start_idx = self.current_step + 1
-        end_idx = min(start_idx + 1000, len(self.raw_data))
-        
-        if start_idx >= end_idx:
-            return 0.0, False
-            
-        # OPTIMIZATION: Use pre-cached numpy arrays
-        lows = self.low_arrays[asset][start_idx:end_idx]
-        highs = self.high_arrays[asset][start_idx:end_idx]
-        
-        if direction == 1:  # Long
-            sl_hit_mask = lows <= sl
-            tp_hit_mask = highs >= tp
-        else:  # Short
-            sl_hit_mask = highs >= sl
-            tp_hit_mask = lows <= tp
-        
-        sl_hit = sl_hit_mask.any()
-        tp_hit = tp_hit_mask.any()
-        
-        fast_win = False
-        
-        # Determine outcome
-        # FIX: When both hit on same candle, assume SL first (conservative)
-        if sl_hit and tp_hit:
-            first_sl_idx = np.argmax(sl_hit_mask)
-            first_tp_idx = np.argmax(tp_hit_mask)
-            if first_sl_idx <= first_tp_idx:
-                exit_price = sl
-            else:
-                exit_price = tp
-                # Check for fast win (within 6 candles = 30 mins)
-                if first_tp_idx < 6:
-                    fast_win = True
-        elif sl_hit:
-            exit_price = sl
-        elif tp_hit:
-            exit_price = tp
-            # Check for fast win
-            first_tp_idx = np.argmax(tp_hit_mask)
-            if first_tp_idx < 6:
-                fast_win = True
-        else:
-            # Neither hit: use last available price from cached array
-            exit_price = self.close_arrays[asset][end_idx - 1]
-        
-        # Calculate P&L: (Exit - Entry) * Direction * Lots * ContractSize
-        pnl = (exit_price - pos['entry_price']) * direction * pos['size'] * pos['contract_size']
-        
-        return pnl, fast_win
 
     def _simulate_trade_outcome_with_timing(self, asset):
         """
@@ -700,18 +639,9 @@ class TradingEnv(gym.Env):
         # TRAINING MODE: PEEK ONLY
         # =====================================================================
         
-        # COMPONENT 1: Peeked P&L (Entry Quality) - Weight 1.0
+        # COMPONENT 1: Peeked Reward (Entry Quality) - Weight 1.0 (Discrete)
         if self.peeked_pnl_step != 0:
-            # Normalize: 1% of starting equity = 0.2 reward
-            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 20.0
-            
-            # Loss Aversion: Losses hurt 2.25x more
-            if normalized_pnl < 0:
-                normalized_pnl = np.clip(normalized_pnl, -10.0, 0.0) * 2.25
-            else:
-                normalized_pnl = np.clip(normalized_pnl, 0.0, 5.0)
-                
-            reward += normalized_pnl  # 100% Weight
+            reward += self.peeked_pnl_step  # 100% Weight (using +3/-2 values)
             
         # Track best step reward
         if reward > self.max_step_reward:
