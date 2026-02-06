@@ -449,7 +449,16 @@ class TradingEnv(gym.Env):
         if outcome['exit_reason'] == 'SL':
             self.peeked_pnl_step += -2.0
         elif outcome['exit_reason'] == 'TP':
-            self.peeked_pnl_step += 3.0
+            # SNIPER BONUS: Scale reward based on MAE (Option 1)
+            # Reward = 3.0 * (1.0 - (MAE / SL_Distance))
+            # If trade hits TP with 0 drawdown, reward is 3.0.
+            # If trade almost hit SL (MAE ~ SL_Dist) then hits TP, reward is ~0.
+            sl_dist = self.positions[asset]['sl_dist']
+            mae_ratio = min(1.0, outcome['mae_dist'] / sl_dist) if sl_dist > 0 else 1.0
+            sniper_reward = 3.0 * (1.0 - mae_ratio)
+            
+            # Ensure a minimum reward for hitting TP even if messy
+            self.peeked_pnl_step += max(0.5, sniper_reward)
         else:
             # For OPEN or TIME (neither hit within 1000 steps), reward is 0
             self.peeked_pnl_step += 0.0
@@ -560,10 +569,13 @@ class TradingEnv(gym.Env):
         if direction == 1:  # Long
             sl_hit_mask = lows <= sl
             tp_hit_mask = highs >= tp
+            # MAE is the lowest price hit before exit
+            # We'll calculate it properly below
         else:  # Short
             sl_hit_mask = highs >= sl
             tp_hit_mask = lows <= tp
-        
+            # MAE is the highest price hit before exit
+
         sl_hit = sl_hit_mask.any()
         tp_hit = tp_hit_mask.any()
         
@@ -571,35 +583,48 @@ class TradingEnv(gym.Env):
         exit_idx = end_idx - 1
         closed = False
         
-        # Determine outcome
+        # Determine outcome and capture window for MAE calculation
         if sl_hit and tp_hit:
             first_sl_idx = np.argmax(sl_hit_mask)
             first_tp_idx = np.argmax(tp_hit_mask)
             if first_sl_idx <= first_tp_idx:
-                exit_price = sl
                 exit_reason = 'SL'
                 exit_idx = start_idx + first_sl_idx
             else:
-                exit_price = tp
                 exit_reason = 'TP'
                 exit_idx = start_idx + first_tp_idx
             closed = True
         elif sl_hit:
-            exit_price = sl
             exit_reason = 'SL'
             exit_idx = start_idx + np.argmax(sl_hit_mask)
             closed = True
         elif tp_hit:
-            exit_price = tp
             exit_reason = 'TP'
             exit_idx = start_idx + np.argmax(tp_hit_mask)
             closed = True
         else:
-            # Neither hit: use last available price
-            exit_price = self.close_arrays[asset][end_idx - 1]
             exit_reason = 'OPEN'
             closed = False
+
+        # Calculate MAE (Maximum Adverse Excursion) during the trade's life
+        trade_window_lows = self.low_arrays[asset][start_idx:exit_idx+1]
+        trade_window_highs = self.high_arrays[asset][start_idx:exit_idx+1]
         
+        if direction == 1:
+            worst_price = np.min(trade_window_lows)
+            mae_dist = max(0, pos['entry_price'] - worst_price)
+        else:
+            worst_price = np.max(trade_window_highs)
+            mae_dist = max(0, worst_price - pos['entry_price'])
+
+        # Determine exit price based on reason
+        if exit_reason == 'SL':
+            exit_price = sl
+        elif exit_reason == 'TP':
+            exit_price = tp
+        else:
+            exit_price = self.close_arrays[asset][exit_idx]
+
         # Calculate P&L: (Exit - Entry) * Direction * Lots * ContractSize
         pnl = (exit_price - pos['entry_price']) * direction * pos['size'] * pos['contract_size']
         
@@ -609,7 +634,8 @@ class TradingEnv(gym.Env):
             'closed': closed,
             'pnl': pnl,
             'bars_held': bars_held,
-            'exit_reason': exit_reason
+            'exit_reason': exit_reason,
+            'mae_dist': mae_dist
         }
 
     def _calculate_reward(self) -> float:
