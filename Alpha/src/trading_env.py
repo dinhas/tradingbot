@@ -449,16 +449,15 @@ class TradingEnv(gym.Env):
         if outcome['exit_reason'] == 'SL':
             self.peeked_pnl_step += -2.0
         elif outcome['exit_reason'] == 'TP':
-            # SNIPER BONUS: Scale reward based on MAE (Option 1)
-            # Reward = 3.0 * (1.0 - (MAE / SL_Distance))
-            # If trade hits TP with 0 drawdown, reward is 3.0.
-            # If trade almost hit SL (MAE ~ SL_Dist) then hits TP, reward is ~0.
+            # SNIPER BONUS: Base +3.0 for TP hit, extra +3.0 if MAE < 50% of SL_Distance
             sl_dist = self.positions[asset]['sl_dist']
-            mae_ratio = min(1.0, outcome['mae_dist'] / sl_dist) if sl_dist > 0 else 1.0
-            sniper_reward = 3.0 * (1.0 - mae_ratio)
+            mae_ratio = outcome['mae_dist'] / sl_dist if sl_dist > 0 else 1.0
             
-            # Ensure a minimum reward for hitting TP even if messy
-            self.peeked_pnl_step += max(0.5, sniper_reward)
+            reward = 3.0  # Base reward for hitting TP
+            if mae_ratio < 0.5:
+                reward += 3.0  # Bonus for clean entry
+            
+            self.peeked_pnl_step += reward
         else:
             # For OPEN or TIME (neither hit within 1000 steps), reward is 0
             self.peeked_pnl_step += 0.0
