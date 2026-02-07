@@ -355,7 +355,7 @@ class TradingEnv(gym.Env):
             'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
             'size': 0.5,     # Fixed: Half of max exposure
             'sl_mult': 2.0,  # Fixed: 2.0x ATR
-            'tp_mult': 5.0   # Fixed: 5.0x ATR
+            'tp_mult': 4.0   # Fixed: 4.0x ATR
         }
 
     def _execute_trades(self, actions):
