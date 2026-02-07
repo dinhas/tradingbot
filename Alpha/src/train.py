@@ -171,7 +171,7 @@ def train(args):
         env = DummyVecEnv([make_env(0, data_dir=data_dir_path)])
     
     # Apply Normalization
-    env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10.)
+    env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10., clip_reward=50.)
     
     # 2. Initialize Model
     ppo_config = load_ppo_config(config_path)
