@@ -451,22 +451,29 @@ class TradingEnv(gym.Env):
             'tp_dist': tp_dist
         }
         
-        # PEEK & LABEL: Simulate outcome and assign discrete reward NOW
+        # PEEK & LABEL: Simulate outcome and assign percentage-based reward NOW
         outcome = self._simulate_trade_outcome_with_timing(asset)
+        
+        # Calculate expected Net P&L (including fees) for the reward signal
+        total_expected_fees = lots * self.fee_per_lot
+        expected_net_pnl = outcome['pnl'] - total_expected_fees
+        
+        # Reward = Percentage change in equity (e.g., 1.5% profit = 1.5 reward)
+        percentage_reward = (expected_net_pnl / self.equity) * 100.0
         
         self.episode_trades += 1
         if outcome['exit_reason'] == 'SL':
-            self.peeked_pnl_step += -10.0
+            self.peeked_pnl_step += percentage_reward
         elif outcome['exit_reason'] == 'TP':
             self.episode_wins += 1
-            # Fast TP Reward: hits TP in under 45 mins (9 bars of 5m)
+            # Fast TP Reward: 2x the base reward (equity change) if under 45 mins
             if outcome.get('bars_held', 999) <= 9:
-                self.peeked_pnl_step += 20.0  # 2x base reward
+                self.peeked_pnl_step += percentage_reward * 2.0
             else:
-                self.peeked_pnl_step += 10.0
+                self.peeked_pnl_step += percentage_reward
         else:
-            # For OPEN or TIME (neither hit within 1000 steps), reward is 0
-            self.peeked_pnl_step += 0.0
+            # For OPEN or TIME, use the simulated percentage change at that cutoff
+            self.peeked_pnl_step += percentage_reward
         
         # Transaction costs
         # $0.06 per 0.01 lot = $6.00 per standard lot total. 
