@@ -42,6 +42,7 @@ class MetricsCallback(BaseCallback):
         self.plot_freq = plot_freq
         self.episode_rewards = []
         self.episode_lengths = []
+        self.episode_win_rates = []
         self.timesteps = []
         
     def _on_step(self) -> bool:
@@ -51,17 +52,31 @@ class MetricsCallback(BaseCallback):
             if len(self.model.ep_info_buffer) > 0:
                 ep_info = self.model.ep_info_buffer[-1]
                 
+                # Calculate Win Rate
+                wins = ep_info.get("wins", 0)
+                total = ep_info.get("total_trades", 0)
+                win_rate = (wins / total * 100) if total > 0 else 0
+                
                 # Log to TensorBoard
                 self.logger.record("train/episode_reward", ep_info.get("r", 0))
                 self.logger.record("train/episode_length", ep_info.get("l", 0))
+                self.logger.record("train/win_rate", win_rate)
                 
                 # Store for plotting
                 self.episode_rewards.append(ep_info.get("r", 0))
                 self.episode_lengths.append(ep_info.get("l", 0))
+                self.episode_win_rates.append(win_rate)
                 self.timesteps.append(self.num_timesteps)
                 
                 if self.verbose > 0:
-                    logger.info(f"Step {self.num_timesteps}: Reward={ep_info.get('r', 0):.2f}, Length={ep_info.get('l', 0)}")
+                    # Calculate mean of last 100 episodes if available
+                    import numpy as np
+                    mean_reward = np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0
+                    mean_win_rate = np.mean(self.episode_win_rates[-100:]) if self.episode_win_rates else 0
+                    
+                    logger.info(f"Step {self.num_timesteps}: Reward={ep_info.get('r', 0):.2f} (Avg: {mean_reward:.2f}), "
+                              f"WinRate={win_rate:.1f}% (Avg: {mean_win_rate:.1f}%), "
+                              f"Length={ep_info.get('l', 0)}")
             else:
                 if self.verbose > 0:
                     logger.info(f"Step {self.num_timesteps}: No completed episodes yet...")
@@ -82,7 +97,7 @@ class MetricsCallback(BaseCallback):
             plot_dir.mkdir(parents=True, exist_ok=True)
             
             # Create figure with subplots
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 12))
             
             # Plot 1: Episode Rewards
             ax1.plot(self.timesteps, self.episode_rewards, alpha=0.6, label='Episode Reward')
@@ -97,14 +112,27 @@ class MetricsCallback(BaseCallback):
             ax1.set_title('Training Progress: Episode Rewards')
             ax1.legend()
             ax1.grid(True, alpha=0.3)
-            
-            # Plot 2: Episode Lengths
-            ax2.plot(self.timesteps, self.episode_lengths, alpha=0.6, color='green', label='Episode Length')
+
+            # Plot 2: Win Rate
+            ax2.plot(self.timesteps, self.episode_win_rates, alpha=0.6, color='blue', label='Win Rate %')
+            if len(self.episode_win_rates) > 10:
+                window = min(50, len(self.episode_win_rates) // 10)
+                import numpy as np
+                moving_avg = np.convolve(self.episode_win_rates, np.ones(window)/window, mode='valid')
+                ax2.plot(self.timesteps[window-1:], moving_avg, 'k-', linewidth=2, label=f'{window}-Episode MA')
             ax2.set_xlabel('Timesteps')
-            ax2.set_ylabel('Episode Length (steps)')
-            ax2.set_title('Episode Lengths Over Time')
+            ax2.set_ylabel('Win Rate (%)')
+            ax2.set_title('Win Rate Over Time')
             ax2.legend()
             ax2.grid(True, alpha=0.3)
+            
+            # Plot 3: Episode Lengths
+            ax3.plot(self.timesteps, self.episode_lengths, alpha=0.6, color='green', label='Episode Length')
+            ax3.set_xlabel('Timesteps')
+            ax3.set_ylabel('Episode Length (steps)')
+            ax3.set_title('Episode Lengths Over Time')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
             
             plt.tight_layout()
             # Save to a fixed filename (no timestamp/steps) as requested

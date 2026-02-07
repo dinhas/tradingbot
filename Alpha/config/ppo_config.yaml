@@ -3,12 +3,12 @@
 # =========================================================================
 
 # Learning Rate: Reduced for more stable updates and to prevent divergence
-learning_rate: 0.0001
+learning_rate: 0.0003
 
 # Rollout Settings: 
 # Increased n_steps to 2048 to provide more stable gradient estimates
 n_steps: 2048
-batch_size: 512
+batch_size: 256
 n_epochs: 10
 
 # Temporal Discounting
@@ -22,7 +22,7 @@ clip_range_vf: null
 
 # Entropy Regularization: Reduced slightly to 0.005 to reduce noise 
 # while still encouraging exploration.
-ent_coef: 0.005
+ent_coef: 0.02
 
 # Loss Coefficients
 vf_coef: 0.5
@@ -35,5 +35,5 @@ total_timesteps: 1500000
 
 # Network Architecture
 policy_kwargs:
-  net_arch: [192, 192, 96]
+  net_arch: [256, 256, 128]
   activation_fn: "ReLU"

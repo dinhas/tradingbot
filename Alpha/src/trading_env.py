@@ -275,6 +275,8 @@ class TradingEnv(gym.Env):
         # Reset trade tracking
         self.completed_trades = []
         self.all_trades = []
+        self.episode_wins = 0
+        self.episode_trades = 0
         
         return self._get_observation(), {}
         
@@ -334,7 +336,9 @@ class TradingEnv(gym.Env):
             'equity': self.equity,
             'drawdown': drawdown,
             'timestamp': self._get_current_timestamp(),
-            'asset': self.current_asset
+            'asset': self.current_asset,
+            'wins': self.episode_wins,
+            'total_trades': self.episode_trades
         }
         
         return self._validate_observation(self._get_observation()), reward, terminated, truncated, info
@@ -450,9 +454,11 @@ class TradingEnv(gym.Env):
         # PEEK & LABEL: Simulate outcome and assign discrete reward NOW
         outcome = self._simulate_trade_outcome_with_timing(asset)
         
+        self.episode_trades += 1
         if outcome['exit_reason'] == 'SL':
             self.peeked_pnl_step += -10.0
         elif outcome['exit_reason'] == 'TP':
+            self.episode_wins += 1
             # Fast TP Reward: hits TP in under 45 mins (9 bars of 5m)
             if outcome.get('bars_held', 999) <= 9:
                 self.peeked_pnl_step += 20.0  # 2x base reward
