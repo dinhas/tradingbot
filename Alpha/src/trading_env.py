@@ -374,6 +374,10 @@ class TradingEnv(gym.Env):
                 # =========================================================
                 # LOCK-IN MECHANISM (Option 1+3)
                 # =========================================================
+                # NEW: If action is FLAT (0), keep the existing position as requested.
+                if direction == 0:
+                    continue
+                    
                 # Once a trade is open, we IGNORE any agent action to close or reverse.
                 # The trade MUST hit SL or TP (handled in _update_positions).
                 if self.FORCE_HOLD:
@@ -385,8 +389,8 @@ class TradingEnv(gym.Env):
                 elif direction != 0 and current_pos['direction'] != direction:
                     self._close_position(asset, price)
                     self._open_position(asset, direction, act, price, atr)
-                elif direction == 0 and current_pos is not None:
-                    self._close_position(asset, price)
+                # elif direction == 0 and current_pos is not None:
+                #    self._close_position(asset, price)
 
     def _check_global_exposure(self, new_position_size):
         """Check if adding position would exceed 60% exposure limit."""
@@ -449,7 +453,11 @@ class TradingEnv(gym.Env):
         if outcome['exit_reason'] == 'SL':
             self.peeked_pnl_step += -10.0
         elif outcome['exit_reason'] == 'TP':
-            self.peeked_pnl_step += 10.0  # Flat reward for hitting TP
+            # Fast TP Reward: hits TP in under 45 mins (9 bars of 5m)
+            if outcome.get('bars_held', 999) <= 9:
+                self.peeked_pnl_step += 20.0  # 2x base reward
+            else:
+                self.peeked_pnl_step += 10.0
         else:
             # For OPEN or TIME (neither hit within 1000 steps), reward is 0
             self.peeked_pnl_step += 0.0
