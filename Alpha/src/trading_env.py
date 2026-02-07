@@ -20,13 +20,13 @@ class TradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, data_dir='data', is_training=True, data=None, stage=1, trading_cost_pct=0.00012):
+    def __init__(self, data_dir='data', is_training=True, data=None, stage=1):
         super(TradingEnv, self).__init__()
         
         self.data_dir = data_dir
         self.is_training = is_training
         self.stage = stage
-        self.trading_cost_pct = trading_cost_pct
+        self.fee_per_lot = 6.0  # Fixed: $0.06 per 0.01 lot = $6.00 per standard lot (Round Turn)
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         self.CONTRACT_SIZES = {
             'EURUSD': 100000,
@@ -254,12 +254,12 @@ class TradingEnv(gym.Env):
         if self.is_training:
             # Training: Randomize for diversity
             self.equity = np.random.uniform(5000.0, 15000.0)
-            self.leverage = 100
+            self.leverage = 400
             self.current_step = np.random.randint(500, self.max_steps - 288)
         else:
             # Backtesting: Fixed equity, randomize start point
             self.equity = 10000.0
-            self.leverage = 100
+            self.leverage = 400
             # Backtesting: Start from step 500 for indicator warmup
             self.current_step = 500
             
@@ -469,7 +469,9 @@ class TradingEnv(gym.Env):
             self.peeked_pnl_step += 0.0
         
         # Transaction costs
-        entry_cost = notional_value * self.trading_cost_pct
+        # $0.06 per 0.01 lot = $6.00 per standard lot total. 
+        # Charged $3.00 at entry and $3.00 at exit to represent the round turn.
+        entry_cost = lots * (self.fee_per_lot / 2)
         self.equity -= entry_cost
         self.positions[asset]['entry_cost'] = entry_cost
 
@@ -488,8 +490,8 @@ class TradingEnv(gym.Env):
         # Update equity
         self.equity += pnl
         
-        # Exit transaction cost
-        exit_cost = notional_value * self.trading_cost_pct
+        # Exit transaction cost ($3.00 per lot)
+        exit_cost = pos['size'] * (self.fee_per_lot / 2)
         self.equity -= exit_cost
         
         # Calculate Total Fees (Entry + Exit)
