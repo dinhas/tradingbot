@@ -463,16 +463,20 @@ class TradingEnv(gym.Env):
         
         self.episode_trades += 1
         if outcome['exit_reason'] == 'SL':
-            self.peeked_pnl_step += percentage_reward
+            # Fixed SL Penalty to equalize assets
+            self.peeked_pnl_step -= 35.0
         elif outcome['exit_reason'] == 'TP':
             self.episode_wins += 1
-            # Fast TP Reward: 2x the base reward (equity change) if under 45 mins
-            if outcome.get('bars_held', 999) <= 9:
-                self.peeked_pnl_step += percentage_reward * 2.0
+            # Fixed TP Reward: +50 base
+            base_tp_reward = 50.0
+            
+            # Fast TP Reward: 1.1x the base reward if under 30 mins (6 candles)
+            if outcome.get('bars_held', 999) <= 6:
+                self.peeked_pnl_step += base_tp_reward * 1.1
             else:
-                self.peeked_pnl_step += percentage_reward
+                self.peeked_pnl_step += base_tp_reward
         else:
-            # For OPEN or TIME, use the simulated percentage change at that cutoff
+            # For OPEN or TIME, use percentage-based reward as a fallback
             self.peeked_pnl_step += percentage_reward
         
         # Transaction costs
