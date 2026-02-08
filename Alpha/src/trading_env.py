@@ -255,11 +255,11 @@ class TradingEnv(gym.Env):
                 self.current_step = np.random.randint(500, self.max_steps - 288)
             
             self.equity = np.random.uniform(5000.0, 15000.0)
-            self.leverage = 400
+            self.leverage = 100
         else:
             # Backtesting: Fixed equity, randomize start point
             self.equity = 10000.0
-            self.leverage = 400
+            self.leverage = 100
             # Backtesting: Start from step 500 for indicator warmup
             self.current_step = 500
             
@@ -443,30 +443,24 @@ class TradingEnv(gym.Env):
             'tp_dist': tp_dist
         }
         
-        # PEEK & LABEL: Simulate outcome and assign percentage-based reward NOW
+        # PEEK & LABEL: Simulate outcome and assign absolute reward signal
         outcome = self._simulate_trade_outcome_with_timing(asset)
         
         # Calculate expected Net P&L (including fees) for the reward signal
-        total_expected_fees = lots * self.fee_per_lot
+        # Reverted to V1-style spread cost: 0.00002 of margin for entry and exit
+        margin_allocated = notional_value / self.leverage
+        total_expected_fees = margin_allocated * 0.00004 
         expected_net_pnl = outcome['pnl'] - total_expected_fees
         
-        # Reward = Percentage change in equity (e.g., 1.5% profit = 1.5 reward)
-        percentage_reward = (expected_net_pnl / self.equity) * 100.0
-        
         self.episode_trades += 1
-        if outcome['exit_reason'] == 'SL':
-            self.peeked_pnl_step += percentage_reward
-        elif outcome['exit_reason'] == 'TP':
-            self.episode_wins += 1
-            self.peeked_pnl_step += percentage_reward
-        else:
-            # For OPEN or TIME, use the simulated percentage change at that cutoff
-            self.peeked_pnl_step += percentage_reward
+        # Store absolute P&L for V1-style sensitivity
+        self.peeked_pnl_step += expected_net_pnl
         
-        # Transaction costs
-        # $0.06 per 0.01 lot = $6.00 per standard lot total. 
-        # Charged $3.00 at entry and $3.00 at exit to represent the round turn.
-        entry_cost = lots * (self.fee_per_lot / 2)
+        if outcome['exit_reason'] == 'TP':
+            self.episode_wins += 1
+        
+        # Transaction costs: Reverted to V1 spread-based (0.2 pips approx)
+        entry_cost = margin_allocated * 0.00002
         self.equity -= entry_cost
         self.positions[asset]['entry_cost'] = entry_cost
 
@@ -485,8 +479,9 @@ class TradingEnv(gym.Env):
         # Update equity
         self.equity += pnl
         
-        # Exit transaction cost ($3.00 per lot)
-        exit_cost = pos['size'] * (self.fee_per_lot / 2)
+        # Exit transaction cost (V1 spread-based: 0.00002 of margin)
+        margin_allocated = notional_value / self.leverage
+        exit_cost = margin_allocated * 0.00002
         self.equity -= exit_cost
         
         # Calculate Total Fees (Entry + Exit)
@@ -650,11 +645,10 @@ class TradingEnv(gym.Env):
         # TRAINING MODE: PEEK & LABEL + Drawdown Penalty
         # =====================================================================
         
-        # COMPONENT 1: Peeked Reward (Entry Quality) - Matches V1 Normalization & Loss Aversion
+        # COMPONENT 1: Peeked Reward (Entry Quality) - Reverted to V1 Sensitivity
         if self.peeked_pnl_step != 0:
-            # V2 peeked_pnl_step is percentage (e.g. 1.5 for 1.5%)
-            # Convert to V1 scale: 1% = 0.1 reward
-            normalized_pnl = self.peeked_pnl_step / 10.0
+            # Normalize: 1% of starting equity = 0.1 reward
+            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 10.0
             
             # Loss Aversion (Prospect Theory): Losses hurt 1.5x more
             if normalized_pnl < 0:
