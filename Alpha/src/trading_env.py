@@ -250,8 +250,8 @@ class TradingEnv(gym.Env):
         if not hasattr(self, 'enable_persistence'): self.enable_persistence = False
         
         if self.is_training:
-            # Only randomize step if persistence is OFF or if it's the very first reset
-            if not self.enable_persistence or not hasattr(self, 'current_step') or self.current_step == 0:
+            # Only randomize step if persistence is OFF or if it's the very first reset OR if we reached the end
+            if not self.enable_persistence or not hasattr(self, 'current_step') or self.current_step == 0 or self.current_step >= self.max_steps:
                 self.current_step = np.random.randint(500, self.max_steps - 288)
             
             self.equity = np.random.uniform(5000.0, 15000.0)
