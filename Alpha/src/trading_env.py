@@ -466,11 +466,7 @@ class TradingEnv(gym.Env):
             self.peeked_pnl_step += percentage_reward
         elif outcome['exit_reason'] == 'TP':
             self.episode_wins += 1
-            # Fast TP Reward: 2x the base reward (equity change) if under 45 mins
-            if outcome.get('bars_held', 999) <= 9:
-                self.peeked_pnl_step += percentage_reward * 2.0
-            else:
-                self.peeked_pnl_step += percentage_reward
+            self.peeked_pnl_step += percentage_reward
         else:
             # For OPEN or TIME, use the simulated percentage change at that cutoff
             self.peeked_pnl_step += percentage_reward
