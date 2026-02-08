@@ -149,9 +149,9 @@ class TradingEnv(gym.Env):
         full_obs = self.master_obs_matrix[self.current_step].copy()
         
         # Update Global Dynamic
-        total_exposure = sum(pos['size'] for pos in self.positions.values() if pos is not None)
+        total_margin_used = sum((pos['notional_value'] / self.leverage) for pos in self.positions.values() if pos is not None)
         full_obs[self.dynamic_indices['equity']] = self.equity / self.start_equity
-        full_obs[self.dynamic_indices['margin_usage_pct']] = total_exposure / self.equity if self.equity > 0 else 0
+        full_obs[self.dynamic_indices['margin_usage_pct']] = total_margin_used / self.equity if self.equity > 0 else 0
         full_obs[self.dynamic_indices['drawdown']] = 1.0 - (self.equity / self.peak_equity)
         full_obs[self.dynamic_indices['num_open_positions']] = sum(1 for p in self.positions.values() if p is not None)
         
@@ -161,13 +161,11 @@ class TradingEnv(gym.Env):
             pos = self.positions[asset]
             indices = self.asset_dynamic_indices[asset]
             if pos:
-                price_change = (current_prices[asset] - pos['entry_price']) * pos['direction']
-                price_change_pct = price_change / pos['entry_price'] if pos['entry_price'] != 0 else 0
-                unrealized_pnl = price_change_pct * (pos['size'] * self.leverage)
+                pnl = (current_prices[asset] - pos['entry_price']) * pos['direction'] * pos['size'] * pos['contract_size']
                 
                 full_obs[indices['has_position']] = 1.0
-                full_obs[indices['position_size']] = pos['size'] / self.equity
-                full_obs[indices['unrealized_pnl']] = unrealized_pnl
+                full_obs[indices['position_size']] = (pos['notional_value'] / self.leverage) / self.equity
+                full_obs[indices['unrealized_pnl']] = pnl / self.equity
                 full_obs[indices['position_age']] = (self.current_step - pos['entry_step']) / 288.0  # Normalized (days approx)
                 full_obs[indices['entry_price']] = (pos['entry_price'] / current_prices[asset]) - 1.0
                 full_obs[indices['current_sl']] = (pos['sl'] / current_prices[asset]) - 1.0
@@ -391,7 +389,7 @@ class TradingEnv(gym.Env):
     def _check_global_exposure(self, new_position_size):
         """Check if adding position would exceed 60% exposure limit."""
         current_exposure = sum(
-            pos['size'] for pos in self.positions.values() if pos is not None
+            (pos['notional_value'] / self.leverage) for pos in self.positions.values() if pos is not None
         )
         total_allocated = current_exposure + new_position_size
         return total_allocated <= (self.equity * self.MAX_TOTAL_EXPOSURE)
@@ -627,10 +625,8 @@ class TradingEnv(gym.Env):
 
     def _calculate_reward(self) -> float:
         """
-        Reward function based solely on PEEK Reward (Entry Quality):
-        
-        1. PEEK Reward (Entry Quality): 100% weight
-           - Immediate signal based on future SL/TP hit (Solver of Credit Assignment)
+        Reward function with separate modes for training and backtesting.
+        Matches V1 Perfect settings.
         """
         reward = 0.0
         
@@ -641,32 +637,49 @@ class TradingEnv(gym.Env):
             # Sum up actual P&L from completed trades this step
             step_pnl = sum(trade['net_pnl'] for trade in self.completed_trades)
             
-            # Normalize: 1% of starting equity = 0.2 reward
+            # Normalize: 1% of starting equity = 0.1 reward
             if step_pnl != 0:
-                normalized_pnl = (step_pnl / self.start_equity) * 20.0
+                normalized_pnl = (step_pnl / self.start_equity) * 10.0
                 reward += normalized_pnl
             
             return reward
         
         # =====================================================================
-        # TRAINING MODE: PEEK ONLY
+        # TRAINING MODE: PEEK & LABEL + Drawdown Penalty
         # =====================================================================
         
-        # COMPONENT 1: Peeked Reward (Entry Quality) - Weight 1.0 (Discrete)
+        # COMPONENT 1: Peeked Reward (Entry Quality) - Matches V1 Normalization & Loss Aversion
         if self.peeked_pnl_step != 0:
-            reward += self.peeked_pnl_step  # 100% Weight (using +10/-10 values)
+            # V2 peeked_pnl_step is percentage (e.g. 1.5 for 1.5%)
+            # Convert to V1 scale: 1% = 0.1 reward
+            normalized_pnl = self.peeked_pnl_step / 10.0
             
+            # Loss Aversion (Prospect Theory): Losses hurt 1.5x more
+            if normalized_pnl < 0:
+                normalized_pnl = np.clip(normalized_pnl, -1.0, 0.0) * 1.5
+            else:
+                normalized_pnl = np.clip(normalized_pnl, 0.0, 1.0)
+            reward += normalized_pnl
+        
+        # COMPONENT 2: Progressive Drawdown Penalty (Exactly as V1)
+        drawdown = 1.0 - (self.equity / self.peak_equity)
+        
+        if drawdown > 0.05:
+            severity = min((drawdown - 0.05) / 0.20, 1.0)
+            penalty = -0.15 * (severity ** 1.5)
+            reward += penalty
+        
         # Track best step reward
         if reward > self.max_step_reward:
             self.max_step_reward = reward
 
         if self.current_step % self.REWARD_LOG_INTERVAL == 0:
-            drawdown = 1.0 - (self.equity / self.peak_equity)
             logging.debug(
                 f"[Reward] step={self.current_step} "
-                f"peeked={self.peeked_pnl_step:.2f} "
+                f"peeked={self.peeked_pnl_step:.2f}% "
                 f"drawdown={drawdown:.2%} "
-                f"current={reward:.4f}"
+                f"current={reward:.4f} "
+                f"best_step={self.max_step_reward:.4f}"
             )
         
         return reward
