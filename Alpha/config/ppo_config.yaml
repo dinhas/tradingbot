@@ -1,28 +1,28 @@
 # =========================================================================
-# STABILIZED ALPHA CONFIG — 1.5M Steps
+# STABILIZED ALPHA CONFIG — 1.5M Steps (Optimized for V2)
 # =========================================================================
 
-# Learning Rate: Reduced for more stable updates and to prevent divergence
-learning_rate: 0.0003
+# Learning Rate: Reduced for stability with larger network
+learning_rate: 0.0001
 
 # Rollout Settings: 
-# Increased n_steps to 2048 to provide more stable gradient estimates
-n_steps: 2048
-batch_size: 256
-n_epochs: 10
+# Increased n_steps to 4096 for better gradient estimation
+n_steps: 4096
+batch_size: 512
+n_epochs: 15
 
 # Temporal Discounting
-# Increased gamma to 0.99 for a more balanced long-term perspective
-gamma: 0.99
+# Reduced gamma to 0.95 to focus on the immediate "Peek & Label" trade outcome
+# while still maintaining some horizon for drawdown avoidance.
+gamma: 0.95
 gae_lambda: 0.95
 
 # PPO Clipping
 clip_range: 0.2
 clip_range_vf: null
 
-# Entropy Regularization: Reduced slightly to 0.005 to reduce noise 
-# while still encouraging exploration.
-ent_coef: 0.02
+# Entropy Regularization: Lowered to 0.01 to allow convergence while preventing premature stagnation
+ent_coef: 0.01
 
 # Loss Coefficients
 vf_coef: 0.5
@@ -34,6 +34,9 @@ max_grad_norm: 0.5
 total_timesteps: 1500000
 
 # Network Architecture
+# Reverted to V1 Baseline [256, 256, 128]
+# While inputs are fewer (40 vs 140), the 'Peek & Label' task (predicting 1000 steps ahead) 
+# requires deep non-linearity. 2.5M data points support this capacity without overfitting.
 policy_kwargs:
   net_arch: [256, 256, 128]
   activation_fn: "ReLU"
