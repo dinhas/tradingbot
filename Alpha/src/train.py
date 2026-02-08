@@ -31,10 +31,10 @@ def make_env(rank, seed=0, data_dir='data'):
         assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         asset = assets[rank % len(assets)]
         
-        # Initialize env with persistence enabled
+        # Initialize env with persistence DISABLED for V1-style "random slice" training
         env = TradingEnv(data_dir=data_dir, is_training=True)
         env.set_asset(asset)
-        env.enable_persistence = True # Prevent time randomization on reset
+        env.enable_persistence = False # Enable time randomization on reset
         
         env = Monitor(env)
         env.reset(seed=seed + rank)
