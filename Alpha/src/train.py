@@ -24,9 +24,18 @@ logger = logging.getLogger(__name__)
 def make_env(rank, seed=0, data_dir='data'):
     """
     Utility function for multiprocessed env.
+    Workers are dedicated to specific assets based on rank.
     """
     def _init():
+        # Dedicated asset assignment: 0:EURUSD, 1:GBPUSD, 2:USDJPY, 3:USDCHF, 4:XAUUSD
+        assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+        asset = assets[rank % len(assets)]
+        
+        # Initialize env with persistence enabled
         env = TradingEnv(data_dir=data_dir, is_training=True)
+        env.set_asset(asset)
+        env.enable_persistence = True # Prevent time randomization on reset
+        
         env = Monitor(env)
         env.reset(seed=seed + rank)
         return env
@@ -189,7 +198,8 @@ def train(args):
 
     # 1. Setup Vectorized Environment
     n_cpu = multiprocessing.cpu_count()
-    n_envs = n_cpu if not args.dry_run else 1
+    # Ensure at least 5 envs for the 5 specialized assets
+    n_envs = max(n_cpu, 5) if not args.dry_run else 1
     
     logger.info(f"Creating {n_envs} environment(s)...")
     

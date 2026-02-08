@@ -244,16 +244,18 @@ class TradingEnv(gym.Env):
         # Support forcing a specific asset via options (useful for backtesting/shuffling)
         if options and 'asset' in options:
             self.current_asset = options['asset']
-        elif self.is_training:
-            # Randomly select asset for this episode
-            self.current_asset = np.random.choice(self.assets)
-        # In backtesting, if no option provided, keep the current_asset (set via set_asset or init)
+        
+        # Persistence Logic: If enabled, don't randomize step on reset
+        # This allows training to continue from where it stopped (e.g. after drawdown)
+        if not hasattr(self, 'enable_persistence'): self.enable_persistence = False
         
         if self.is_training:
-            # Training: Randomize for diversity
+            # Only randomize step if persistence is OFF or if it's the very first reset
+            if not self.enable_persistence or not hasattr(self, 'current_step') or self.current_step == 0:
+                self.current_step = np.random.randint(500, self.max_steps - 288)
+            
             self.equity = np.random.uniform(5000.0, 15000.0)
             self.leverage = 400
-            self.current_step = np.random.randint(500, self.max_steps - 288)
         else:
             # Backtesting: Fixed equity, randomize start point
             self.equity = 10000.0
