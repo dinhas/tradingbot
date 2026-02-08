@@ -20,13 +20,12 @@ class TradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, data_dir='data', is_training=True, data=None, stage=1, fixed_asset=None):
+    def __init__(self, data_dir='data', is_training=True, data=None, stage=1):
         super(TradingEnv, self).__init__()
         
         self.data_dir = data_dir
         self.is_training = is_training
         self.stage = stage
-        self.fixed_asset = fixed_asset
         self.fee_per_lot = 6.0  # Fixed: $0.06 per 0.01 lot = $6.00 per standard lot (Round Turn)
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         self.CONTRACT_SIZES = {
@@ -59,13 +58,11 @@ class TradingEnv(gym.Env):
         self.action_dim = 1
         self.action_space = spaces.Box(low=-1, high=1, shape=(self.action_dim,), dtype=np.float32)
         
-        # Define Observation Space (45 features: 25 asset-specific + 15 global + 5 one-hot)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(45,), dtype=np.float32)
+        # Define Observation Space (40 features: 25 asset-specific + 15 global)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(40,), dtype=np.float32)
         
         # State Variables
         self.current_step = 0
-        self.last_failure_step = None
-        self.last_termination_reason = None
         self.current_asset = self.assets[0] # Default, will be randomized in reset
         self.max_steps = len(self.processed_data) - 1
         
@@ -146,7 +143,7 @@ class TradingEnv(gym.Env):
 
     def _get_observation(self):
         """
-        Optimized observation retrieval. Extracts 45 features for current asset.
+        Optimized observation retrieval. Extracts 40 features for current asset.
         """
         # 1. Update master matrix with dynamic features (Internal 140-dim representation)
         full_obs = self.master_obs_matrix[self.current_step].copy()
@@ -174,17 +171,13 @@ class TradingEnv(gym.Env):
                 full_obs[indices['current_sl']] = (pos['sl'] / current_prices[asset]) - 1.0
                 full_obs[indices['current_tp']] = (pos['tp'] / current_prices[asset]) - 1.0
 
-        # 2. Extract the features for current_asset
-        # [25 asset features] + [15 global features] + [5 one-hot ID]
+        # 2. Extract the 40 features for current_asset
+        # [25 asset features] + [15 global features]
         asset_start_idx = self.assets.index(self.current_asset) * 25
         asset_features = full_obs[asset_start_idx : asset_start_idx + 25]
         global_features = full_obs[125:140]
         
-        # 3. Add One-Hot Asset ID (5)
-        asset_id = np.zeros(len(self.assets), dtype=np.float32)
-        asset_id[self.assets.index(self.current_asset)] = 1.0
-        
-        return np.concatenate([asset_features, global_features, asset_id])
+        return np.concatenate([asset_features, global_features])
 
     def _cache_data_arrays(self):
         """Cache DataFrame columns as numpy arrays for performance."""
@@ -251,11 +244,8 @@ class TradingEnv(gym.Env):
         # Support forcing a specific asset via options (useful for backtesting/shuffling)
         if options and 'asset' in options:
             self.current_asset = options['asset']
-        elif self.fixed_asset:
-            # Use the assigned fixed asset for this worker
-            self.current_asset = self.fixed_asset
         elif self.is_training:
-            # Randomly select asset for this episode (legacy behavior)
+            # Randomly select asset for this episode
             self.current_asset = np.random.choice(self.assets)
         # In backtesting, if no option provided, keep the current_asset (set via set_asset or init)
         
@@ -263,21 +253,7 @@ class TradingEnv(gym.Env):
             # Training: Randomize for diversity
             self.equity = np.random.uniform(5000.0, 15000.0)
             self.leverage = 400
-            
-            # RESUME LOGIC: If we failed due to drawdown, start from where we stopped
-            if self.last_termination_reason == 'drawdown' and self.last_failure_step is not None:
-                # Ensure we aren't at the very end of the data
-                if self.last_failure_step < self.max_steps - 100:
-                    self.current_step = self.last_failure_step
-                    logging.debug(f"[{self.current_asset}] Resuming from failure step {self.current_step}")
-                else:
-                    self.current_step = np.random.randint(500, self.max_steps - 288)
-            else:
-                # Normal case: Randomize for diversity
-                self.current_step = np.random.randint(500, self.max_steps - 288)
-            
-            # Reset reason for next run
-            self.last_termination_reason = None
+            self.current_step = np.random.randint(500, self.max_steps - 288)
         else:
             # Backtesting: Fixed equity, randomize start point
             self.equity = 10000.0
@@ -352,13 +328,6 @@ class TradingEnv(gym.Env):
         # Update peak equity BEFORE calculating drawdown
         self.peak_equity = max(self.peak_equity, self.equity)
         drawdown = 1.0 - (self.equity / self.peak_equity)
-
-        # Drawdown termination: Only apply during training
-        if drawdown > self.DRAWDOWN_LIMIT and self.is_training:
-            terminated = True
-            reward -= 0.5  # Terminal drawdown penalty
-            self.last_termination_reason = 'drawdown'
-            self.last_failure_step = self.current_step
         
         info = {
             'trades': self.completed_trades,
@@ -482,20 +451,15 @@ class TradingEnv(gym.Env):
         # Reward = Percentage change in equity (e.g., 1.5% profit = 1.5 reward)
         percentage_reward = (expected_net_pnl / self.equity) * 100.0
         
-        # NORMALIZE BY VOLATILITY: Ensure 1-ATR moves give similar rewards across assets
-        # This prevents Gold (high vol) from drowning out Forex (low vol)
-        atr_pct = (atr / price) * 100.0
-        normalized_reward = percentage_reward / (atr_pct * 5.0) if atr_pct > 0 else percentage_reward
-        
         self.episode_trades += 1
         if outcome['exit_reason'] == 'SL':
-            self.peeked_pnl_step += normalized_reward
+            self.peeked_pnl_step += percentage_reward
         elif outcome['exit_reason'] == 'TP':
             self.episode_wins += 1
-            self.peeked_pnl_step += normalized_reward
+            self.peeked_pnl_step += percentage_reward
         else:
             # For OPEN or TIME, use the simulated percentage change at that cutoff
-            self.peeked_pnl_step += normalized_reward
+            self.peeked_pnl_step += percentage_reward
         
         # Transaction costs
         # $0.06 per 0.01 lot = $6.00 per standard lot total. 
