@@ -440,7 +440,7 @@ class TradingEnv(gym.Env):
         
         # Calculate expected Net P&L (including fees) for the reward signal
         # Reverted to V1-style spread cost: 0.00002 of margin for entry and exit
-        margin_allocated = notional_value / self.leverage
+        margin_allocated = position_size
         total_expected_fees = margin_allocated * 0.00004 
         expected_net_pnl = outcome['pnl'] - total_expected_fees
         
@@ -472,7 +472,7 @@ class TradingEnv(gym.Env):
         self.equity += pnl
         
         # Exit transaction cost (V1 spread-based: 0.00002 of margin)
-        margin_allocated = notional_value / self.leverage
+        margin_allocated = pos['size']
         exit_cost = margin_allocated * 0.00002
         self.equity -= exit_cost
         
