@@ -482,16 +482,20 @@ class TradingEnv(gym.Env):
         # Reward = Percentage change in equity (e.g., 1.5% profit = 1.5 reward)
         percentage_reward = (expected_net_pnl / self.equity) * 100.0
         
+        # NORMALIZE BY VOLATILITY: Ensure 1-ATR moves give similar rewards across assets
+        # This prevents Gold (high vol) from drowning out Forex (low vol)
+        atr_pct = (atr / price) * 100.0
+        normalized_reward = percentage_reward / (atr_pct * 5.0) if atr_pct > 0 else percentage_reward
+        
         self.episode_trades += 1
-        # Reverted to raw percentage reward to stabilize episode length
         if outcome['exit_reason'] == 'SL':
-            self.peeked_pnl_step += percentage_reward
+            self.peeked_pnl_step += normalized_reward
         elif outcome['exit_reason'] == 'TP':
             self.episode_wins += 1
-            self.peeked_pnl_step += percentage_reward
+            self.peeked_pnl_step += normalized_reward
         else:
             # For OPEN or TIME, use the simulated percentage change at that cutoff
-            self.peeked_pnl_step += percentage_reward
+            self.peeked_pnl_step += normalized_reward
         
         # Transaction costs
         # $0.06 per 0.01 lot = $6.00 per standard lot total. 
@@ -680,15 +684,17 @@ class TradingEnv(gym.Env):
         # TRAINING MODE: PEEK & LABEL + Drawdown Penalty
         # =====================================================================
         
-        # COMPONENT 1: Peeked Reward (Entry Quality) - Reverted to direct percentage scale
+        # COMPONENT 1: Peeked Reward (Entry Quality) - Matches V1 Normalization & Loss Aversion
         if self.peeked_pnl_step != 0:
-            normalized_pnl = self.peeked_pnl_step
+            # V2 peeked_pnl_step is percentage (e.g. 1.5 for 1.5%)
+            # Convert to V1 scale: 1% = 0.1 reward
+            normalized_pnl = self.peeked_pnl_step / 10.0
             
             # Loss Aversion (Prospect Theory): Losses hurt 1.5x more
             if normalized_pnl < 0:
-                normalized_pnl = np.clip(normalized_pnl, -5.0, 0.0) * 1.5
+                normalized_pnl = np.clip(normalized_pnl, -1.0, 0.0) * 1.5
             else:
-                normalized_pnl = np.clip(normalized_pnl, 0.0, 5.0)
+                normalized_pnl = np.clip(normalized_pnl, 0.0, 1.0)
             reward += normalized_pnl
         
         # COMPONENT 2: Progressive Drawdown Penalty (Exactly as V1)
