@@ -21,12 +21,12 @@ except (ImportError, ValueError):
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def make_env(rank, seed=0, data_dir='data'):
+def make_env(rank, asset_name, seed=0, data_dir='data'):
     """
     Utility function for multiprocessed env.
     """
     def _init():
-        env = TradingEnv(data_dir=data_dir, is_training=True)
+        env = TradingEnv(data_dir=data_dir, is_training=True, fixed_asset=asset_name)
         env = Monitor(env)
         env.reset(seed=seed + rank)
         return env
@@ -187,16 +187,16 @@ def train(args):
     
     import multiprocessing
 
-    # 1. Setup Vectorized Environment
-    n_cpu = multiprocessing.cpu_count()
-    n_envs = n_cpu if not args.dry_run else 1
+    # 1. Setup Vectorized Environment (Fixed to 5 assets)
+    assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+    n_envs = len(assets) if not args.dry_run else 1
     
-    logger.info(f"Creating {n_envs} environment(s)...")
+    logger.info(f"Creating {n_envs} environment(s) with fixed asset assignments...")
     
-    if n_envs > 1:
-        env = SubprocVecEnv([make_env(i, data_dir=data_dir_path) for i in range(n_envs)])
+    if not args.dry_run:
+        env = SubprocVecEnv([make_env(i, assets[i], data_dir=data_dir_path) for i in range(n_envs)])
     else:
-        env = DummyVecEnv([make_env(0, data_dir=data_dir_path)])
+        env = DummyVecEnv([make_env(0, assets[0], data_dir=data_dir_path)])
     
     # Apply Normalization
     env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10., clip_reward=50.)

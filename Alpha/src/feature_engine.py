@@ -12,7 +12,7 @@ class FeatureEngine:
         self._define_feature_names()
 
     def _define_feature_names(self):
-        """Defines the list of 40 features (25 asset-specific + 15 global)."""
+        """Defines the list of 45 features (25 asset-specific + 15 global + 5 one-hot)."""
         # 1. Per-Asset Features (25)
         self.feature_names = [
             "close", "return_1", "return_12",
@@ -32,6 +32,9 @@ class FeatureEngine:
             "hour_sin", "hour_cos", "day_sin", "day_cos",
             "session_asian", "session_london", "session_ny", "session_overlap"
         ])
+
+        # 3. One-Hot Asset ID (5)
+        self.feature_names.extend([f"is_{asset.lower()}" for asset in self.assets])
 
     def preprocess_data(self, data_dict):
         """
@@ -261,13 +264,13 @@ class FeatureEngine:
 
     def get_observation(self, current_step_data, portfolio_state, asset):
         """
-        Constructs the 40-feature observation vector for a single asset.
+        Constructs the 45-feature observation vector for a single asset.
         Args:
             current_step_data: Row of preprocessed DataFrame for current timestamp.
             portfolio_state: Dictionary containing portfolio metrics.
             asset: The specific asset to get features for.
         Returns:
-            np.array: 40-dimensional vector.
+            np.array: 45-dimensional vector.
         """
         obs = []
         
@@ -352,5 +355,9 @@ class FeatureEngine:
             current_step_data.get('session_ny', 0),
             current_step_data.get('session_overlap', 0)
         ])
+
+        # 3. One-Hot Asset ID (5)
+        for a in self.assets:
+            obs.append(1.0 if a == asset else 0.0)
         
         return np.array(obs, dtype=np.float32)
