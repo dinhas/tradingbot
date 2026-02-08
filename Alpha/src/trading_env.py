@@ -161,11 +161,13 @@ class TradingEnv(gym.Env):
             pos = self.positions[asset]
             indices = self.asset_dynamic_indices[asset]
             if pos:
-                pnl = (current_prices[asset] - pos['entry_price']) * pos['direction'] * pos['size'] * pos['contract_size']
+                # Calculate Unrealized P&L (V1 Style)
+                price_change_pct = (current_prices[asset] - pos['entry_price']) / pos['entry_price'] * pos['direction']
+                unrealized_pnl = price_change_pct * (pos['size'] * self.leverage)
                 
                 full_obs[indices['has_position']] = 1.0
-                full_obs[indices['position_size']] = (pos['notional_value'] / self.leverage) / self.equity
-                full_obs[indices['unrealized_pnl']] = pnl / self.equity
+                full_obs[indices['position_size']] = pos['size'] / self.equity
+                full_obs[indices['unrealized_pnl']] = unrealized_pnl / self.equity
                 full_obs[indices['position_age']] = (self.current_step - pos['entry_step']) / 288.0  # Normalized (days approx)
                 full_obs[indices['entry_price']] = (pos['entry_price'] / current_prices[asset]) - 1.0
                 full_obs[indices['current_sl']] = (pos['sl'] / current_prices[asset]) - 1.0
@@ -390,35 +392,26 @@ class TradingEnv(gym.Env):
     def _check_global_exposure(self, new_position_size):
         """Check if adding position would exceed 60% exposure limit."""
         current_exposure = sum(
-            (pos['notional_value'] / self.leverage) for pos in self.positions.values() if pos is not None
+            pos['size'] for pos in self.positions.values() if pos is not None
         )
         total_allocated = current_exposure + new_position_size
         return total_allocated <= (self.equity * self.MAX_TOTAL_EXPOSURE)
 
     def _open_position(self, asset, direction, act, price, atr):
         """Open a new position with PEEK & LABEL reward assignment."""
-        # Risk Validation: Calculate number of Lots
-        # size_pct * equity gives the USD margin we want to use
-        # with leverage, this gives us the USD value we want to control
-        target_usd_value = act['size'] * self.MAX_POS_SIZE_PCT * self.equity * self.leverage
+        # V1 Logic: Margin-based allocation
+        size_pct = act['size'] * self.MAX_POS_SIZE_PCT
+        position_size = size_pct * self.equity
         
-        # Convert USD value to Lots based on Contract Size and Price
-        # Lots = USD Value / (Contract Size * Price)
-        contract_size = self.CONTRACT_SIZES.get(asset, 100000)
-        lots = target_usd_value / (contract_size * price)
-        
-        # Round to 2 decimal places for realism (standard lot step)
-        lots = round(max(lots, 0.01), 2)
-        
-        # Actual Notional Value of the rounded lot size
-        notional_value = lots * contract_size * price
-        
-        # Minimum position check (approx $1000 notional)
-        if notional_value < 1000:
+        # Minimum position check
+        if position_size < self.MIN_POSITION_SIZE:
             return
+            
+        # Maximum position check (50% of equity)
+        position_size = min(position_size, self.equity * 0.5)
         
         # Global exposure check
-        if not self._check_global_exposure(notional_value / self.leverage):
+        if not self._check_global_exposure(position_size):
             return
             
         # Calculate SL/TP levels
@@ -432,9 +425,9 @@ class TradingEnv(gym.Env):
         self.positions[asset] = {
             'direction': direction,
             'entry_price': price,
-            'size': lots, # Now stores LOTS
-            'notional_value': notional_value,
-            'contract_size': contract_size,
+            'size': position_size, # Stores MARGIN used (V1 Style)
+            'notional_value': position_size * self.leverage,
+            'contract_size': self.CONTRACT_SIZES.get(asset, 100000),
             'sl': sl,
             'tp': tp,
             'entry_step': self.current_step,
@@ -470,10 +463,10 @@ class TradingEnv(gym.Env):
             return
         
         equity_before = self.equity
-        notional_value = pos['notional_value']
         
-        # Calculate P&L: (Exit - Entry) * Direction * Lots * ContractSize
-        pnl = (price - pos['entry_price']) * pos['direction'] * pos['size'] * pos['contract_size']
+        # Calculate P&L (V1 Style): price_change_pct * (margin * leverage)
+        price_change_pct = (price - pos['entry_price']) / pos['entry_price'] * pos['direction']
+        pnl = price_change_pct * (pos['size'] * self.leverage)
         
         # Update equity
         self.equity += pnl
@@ -607,8 +600,9 @@ class TradingEnv(gym.Env):
         else:
             exit_price = self.close_arrays[asset][exit_idx]
 
-        # Calculate P&L: (Exit - Entry) * Direction * Lots * ContractSize
-        pnl = (exit_price - pos['entry_price']) * direction * pos['size'] * pos['contract_size']
+        # Calculate P&L (V1 Style): price_change_pct * (margin * leverage)
+        price_change_pct = (exit_price - pos['entry_price']) / pos['entry_price'] * direction
+        pnl = price_change_pct * (pos['size'] * self.leverage)
         
         bars_held = exit_idx - self.current_step
         
