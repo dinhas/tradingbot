@@ -9,6 +9,25 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyV
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.monitor import Monitor
+from typing import Callable, Union
+
+def linear_schedule(initial_value: float, final_value: float = 0.0) -> Callable[[float], float]:
+    """
+    Linear schedule.
+    :param initial_value: (float)
+    :param final_value: (float)
+    :return: (callable)
+    """
+    def func(progress_remaining: float) -> float:
+        """
+        Progress will decrease from 1 (beginning) to 0
+        :param progress_remaining: (float)
+        :return: (float)
+        """
+        return final_value + (initial_value - final_value) * progress_remaining
+
+    return func
+
 try:
     from .trading_env import TradingEnv
 except (ImportError, ValueError):
@@ -219,6 +238,18 @@ def train(args):
     if args.total_timesteps:
         total_timesteps = args.total_timesteps
     
+    # Apply Linear Learning Rate Decay
+    initial_lr = ppo_config.get('learning_rate', 0.00005)
+    # Set schedule: Start at 5e-5, End at 1e-5
+    ppo_config['learning_rate'] = linear_schedule(initial_lr, final_value=0.00001)
+    
+    # Apply Linear Clip Range Decay (0.3 -> 0.15)
+    ppo_config['clip_range'] = linear_schedule(0.3, 0.15)
+    
+    # Set starting entropy to 0.03
+    initial_ent_coef = 0.03
+    ppo_config['ent_coef'] = initial_ent_coef
+    
     if args.load_model:
         load_model_path = project_root / args.load_model
         logger.info(f"Loading model from {load_model_path}")
@@ -238,6 +269,25 @@ def train(args):
         eval_freq=1000,
         plot_freq=10000,
         verbose=1
+    )
+    
+    # Custom Callback for Entropy Decay with 0.01 Floor
+    class DecayEntCoefCallback(BaseCallback):
+        def __init__(self, initial_ent: float, floor_ent: float, total_ts: int):
+            super().__init__()
+            self.initial_ent = initial_ent
+            self.floor_ent = floor_ent
+            self.total_ts = total_ts
+        def _on_step(self) -> bool:
+            progress = 1.0 - (self.num_timesteps / self.total_ts)
+            new_ent = self.floor_ent + (self.initial_ent - self.floor_ent) * progress
+            self.model.ent_coef = max(self.floor_ent, new_ent)
+            return True
+
+    ent_decay_callback = DecayEntCoefCallback(
+        initial_ent=0.03,
+        floor_ent=0.01,
+        total_ts=total_timesteps
     )
     
     # 4. Train
@@ -262,7 +312,7 @@ def train(args):
     
     model.learn(
         total_timesteps=total_timesteps, 
-        callback=[checkpoint_callback, metrics_callback],
+        callback=[checkpoint_callback, metrics_callback, ent_decay_callback],
         progress_bar=False
     )
     

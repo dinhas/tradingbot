@@ -643,11 +643,8 @@ class TradingEnv(gym.Env):
             # Normalize: 1% of starting equity = 0.1 reward
             normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 10.0
             
-            # Loss Aversion (Prospect Theory): Losses hurt 1.5x more
-            if normalized_pnl < 0:
-                normalized_pnl = np.clip(normalized_pnl, -1.0, 0.0) * 1.5
-            else:
-                normalized_pnl = np.clip(normalized_pnl, 0.0, 1.0)
+            # Symmetrical rewards (removed 1.5x loss weighting)
+            normalized_pnl = np.clip(normalized_pnl, -1.0, 1.0)
             reward += normalized_pnl
         
         # COMPONENT 2: Progressive Drawdown Penalty (Exactly as V1)
