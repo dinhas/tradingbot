@@ -346,20 +346,8 @@ class CombinedBacktest:
                             self.env._close_position(asset, close_price)
                             self.env._open_position(asset, direction, act, price, atr)
                     else:
-                        # No action for this asset: close existing position if any
-                        if current_pos is not None:
-                            # FIX: Apply slippage on standard closes too
-                            if self.ENABLE_SLIPPAGE:
-                                close_slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-                                close_slippage_price = close_slippage_pips * 0.0001 * price_raw
-                                # Closing Long (1) -> Sell (-1) -> Price - Slip
-                                # Closing Short (-1) -> Buy (1) -> Price + Slip
-                                close_dir = -1 * current_pos['direction']
-                                close_price = price_raw + (close_dir * close_slippage_price)
-                            else:
-                                close_price = price_raw
-                                
-                            self.env._close_position(asset, close_price)
+                        # No action (Hold): Keep existing position if any (user requested)
+                        continue
                 
                 # Advance time and update
                 self.env.current_step += 1

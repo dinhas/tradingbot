@@ -393,19 +393,23 @@ class RiskManagementEnv(gym.Env):
         costs = position_val * self.TRADING_COST_PCT
         net_pnl = gross_pnl_usd - costs
         
-        # Reward Calculation
+        # Reward Calculation (RL Friendly Tuning)
         realized_pct = (price_change / entry_price) * direction
         atr_ratio = atr / entry_price_raw
         denom = max(max_favorable, atr_ratio, 1e-5)
-        pnl_efficiency = (realized_pct / denom) * 10.0
+        # Scale down from 10.0 to 5.0 for stability
+        pnl_efficiency = (realized_pct / denom) * 5.0
         
         bullet_bonus = 0.0
         if exited_on == 'SL':
             avoided_loss_dist = abs(max_adverse) if direction == 1 else abs(max_favorable)
             if avoided_loss_dist > (sl_pct_dist_raw * 1.5):
-                bullet_bonus = min(avoided_loss_dist / sl_pct_dist_raw, 3.0) * 2.0
+                # Scale down from 2.0 to 1.0
+                bullet_bonus = min(avoided_loss_dist / sl_pct_dist_raw, 3.0) * 1.0
         
-        reward = np.clip(pnl_efficiency + bullet_bonus, -20.0, 20.0)
+        # Tighten clip range to [-10, 10] and add small holding reward
+        # 1% of max clip (10.0) = 0.1
+        reward = np.clip(pnl_efficiency + bullet_bonus, -10.0, 10.0) + 0.1
         
         # Update Equity
         self.equity += net_pnl
@@ -430,8 +434,8 @@ class RiskManagementEnv(gym.Env):
         truncated = next_global_idx >= (self.n_samples - 1)
         
         if terminated:
-            reward -= 20.0
-            self.episode_reward -= 20.0
+            # Terminal penalty removed per user request
+            pass
             
         if terminated or truncated:
             import sys
