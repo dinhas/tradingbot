@@ -454,8 +454,10 @@ class TradingEnv(gym.Env):
         if outcome['exit_reason'] == 'TP':
             self.episode_wins += 1
             if outcome['bars_held'] <= 12:
-                # Give a noticeable bonus (1.0 is significant as typical TP is ~0.1-0.2)
-                self.fast_tp_reward += 1.0
+                # Bonus matches the PnL reward (clipped to 2.0)
+                fast_bonus = (expected_net_pnl / self.start_equity) * 5.0
+                fast_bonus = np.clip(fast_bonus, 0.0, 2.0)
+                self.fast_tp_reward += fast_bonus
         
         # Transaction costs: Reverted to V1 spread-based (0.2 pips approx)
         entry_cost = margin_allocated * 0.00002
@@ -512,7 +514,11 @@ class TradingEnv(gym.Env):
         
         # Add bonus to backtesting reward if applicable (for consistency)
         if not self.is_training and reason == 'TP' and hold_time <= 60:
-            self.fast_tp_reward += 1.0
+            # Bonus matches the PnL reward (clipped to 2.0)
+            net_pnl = pnl - total_fees
+            fast_bonus = (net_pnl / self.start_equity) * 5.0
+            fast_bonus = np.clip(fast_bonus, 0.0, 2.0)
+            self.fast_tp_reward += fast_bonus
 
         self.completed_trades.append(trade_record)
         self.all_trades.append(trade_record)
@@ -641,6 +647,7 @@ class TradingEnv(gym.Env):
             # Normalize: 1% of starting equity = 0.05 reward (scaled for stability)
             if step_pnl != 0:
                 normalized_pnl = (step_pnl / self.start_equity) * 5.0
+                normalized_pnl = np.clip(normalized_pnl, -2.0, 2.0)  # Clip PnL reward to 2
                 reward += normalized_pnl
             
             # Add fast TP bonus if earned
@@ -657,8 +664,8 @@ class TradingEnv(gym.Env):
             # 1% move = 0.05 reward (scaled for stability)
             normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 5.0
             
-            # Clip to [-1, 1] for stable gradients
-            normalized_pnl = np.clip(normalized_pnl, -1.0, 1.0)
+            # Clip to [-2, 2] for stable gradients (USER: keep pnl reward clipped to 2)
+            normalized_pnl = np.clip(normalized_pnl, -2.0, 2.0)
             reward += normalized_pnl
         
         # COMPONENT 2: Fast TP Bonus (NEW)
@@ -670,8 +677,8 @@ class TradingEnv(gym.Env):
             # 0.5% of max clip (4.0) = 0.02
             reward += 0.02
         
-        # Final safety clip for RL stability
-        reward = np.clip(reward, -4.0, 4.0)
+        # Final safety clip for RL stability (USER: increase global clipping to 10)
+        reward = np.clip(reward, -10.0, 10.0)
         
         # Track best step reward
         if reward > self.max_step_reward:
