@@ -70,7 +70,7 @@ class TradingEnv(gym.Env):
         self.FORCE_HOLD = True  # Enabled: Manual exits via action 0 are disabled (per user request)
         
         # PRD Risk Constants
-        self.MAX_POS_SIZE_PCT = 0.08   # 8% of Equity as requested
+        self.MAX_POS_SIZE_PCT = 0.50
         self.MAX_TOTAL_EXPOSURE = 0.60
         self.DRAWDOWN_LIMIT = 0.25
         
@@ -354,9 +354,9 @@ class TradingEnv(gym.Env):
                 
         return {
             'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
-            'size': 0.5,     # Fixed: Half of max exposure
-            'sl_mult': 2.0,  # Fixed: 2.0x ATR
-            'tp_mult': 4.0   # Fixed: 4.0x ATR
+            'size': 0.5,     # Default size
+            'sl_mult': 1.5,  # Default SL mult
+            'tp_mult': 3.0   # Default TP mult
         }
 
     def _execute_trades(self, actions):
@@ -414,9 +414,9 @@ class TradingEnv(gym.Env):
         if not self._check_global_exposure(position_size):
             return
             
-        # Calculate SL/TP levels
-        pip_scalar = 0.01 if 'JPY' in asset or 'XAU' in asset else 0.0001
-        sl_dist = max(act['sl_mult'] * atr, pip_scalar * 1.0, 0.5 * atr)
+        # Calculate SL/TP levels (FIX: Handle zero ATR edge case)
+        atr = max(atr, price * self.MIN_ATR_MULTIPLIER)  # Minimum 0.01% of price
+        sl_dist = act['sl_mult'] * atr
         tp_dist = act['tp_mult'] * atr
         sl = price - (direction * sl_dist)
         tp = price + (direction * tp_dist)
