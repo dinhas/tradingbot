@@ -191,84 +191,79 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None):
                 
                 if len(future_highs) == 0: continue
                 
-                # --- ORACLE LABELING LOGIC ---
+                # --- Feature Extraction (60-dim) ---
+                # Move this up so we can use features (like ATR Ratio) for dynamic labeling
+                asset_start_idx = i * 25
+                asset_slice = batch_obs[local_idx][asset_start_idx : asset_start_idx + 25]
+                global_slice = batch_obs[local_idx][125:140]
                 
-                # 1. Calculate MFE (Max Profit) & MAE (Max Adverse)
+                # Synthetic Account/History (20 dims)
+                syn_account = np.array([1.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+                syn_pnl = np.zeros(5, dtype=np.float32)
+                syn_acts = np.zeros(10, dtype=np.float32)
+                
+                full_features = np.concatenate([asset_slice, global_slice, syn_account, syn_pnl, syn_acts])
+
+                # --- SNIPER ORACLE LABELING LOGIC ---
+                
+                # 1. Find the peak profit (MFE) and the bar where it occurred
                 if direction == 1: # LONG
-                    mfe_price = np.max(future_highs)
-                    mae_price = np.min(future_lows)
+                    mfe_idx = np.argmax(future_highs)
+                    mfe_price = future_highs[mfe_idx]
                     mfe_dist = mfe_price - entry_price
-                    mae_dist = entry_price - mae_price # Positive value for distance
+                    
+                    # 2. Look for the maximum drawdown ONLY until that peak was reached
+                    sub_lows = future_lows[:mfe_idx+1]
+                    mae_price = np.min(sub_lows)
+                    mae_dist = entry_price - mae_price
                 else: # SHORT
-                    mfe_price = np.min(future_lows)
-                    mae_price = np.max(future_highs)
+                    mfe_idx = np.argmin(future_lows)
+                    mfe_price = future_lows[mfe_idx]
                     mfe_dist = entry_price - mfe_price
+                    
+                    # 2. Look for the maximum drawdown until that peak
+                    sub_highs = future_highs[:mfe_idx+1]
+                    mae_price = np.max(sub_highs)
                     mae_dist = mae_price - entry_price
                 
                 # Normalize by ATR
                 mfe_atr = mfe_dist / atr
                 mae_atr = mae_dist / atr
                 
-                # 2. Target SL & TP
-                # TP = MFE (Full potential capture)
-                # SL = MAE + Buffer (Just enough to survive the drawdown)
-                buffer = 0.2
-                target_sl_mult = mae_atr + buffer
+                # 3. Target SL & TP with DYNAMIC BUFFER
+                # ATR Ratio is feature index 4 in the asset_slice
+                atr_ratio = asset_slice[4]
+                # Dynamic Buffer: Scales from 0.1 to 0.4 depending on market regime
+                dynamic_buffer = 0.1 + (0.1 * np.clip(atr_ratio, 0.5, 3.0))
+                
+                target_sl_mult = mae_atr + dynamic_buffer
                 target_tp_mult = mfe_atr
                 
-                # Cap Targets to realistic bounds (optional, but helps model stability)
+                # 4. RR Ratio check: TP / SL must be at least 2.0
+                rr_ratio = target_tp_mult / max(target_sl_mult, 1e-9)
+                
+                # Cap Targets to realistic bounds for model stability
                 target_sl_mult = np.clip(target_sl_mult, 0.2, 5.0)
                 target_tp_mult = np.clip(target_tp_mult, 0.1, 10.0)
                 
-                # 3. Target Size / Quality
-                # Quality = MFE / (MFE + MAE)
+                # 5. Target Size / Quality
                 if (mfe_atr + mae_atr) > 0:
                     quality_ratio = mfe_atr / (mfe_atr + mae_atr)
                 else:
                     quality_ratio = 0.0
                 
-                # RR Ratio check: TP / SL must be at least 2.0
-                # Using the actual targets including the buffer
-                rr_ratio = target_tp_mult / max(target_sl_mult, 1e-9)
-                
-                # Sigmoid-like transform for Size Label
-                # We want Size > 0 only if Quality > 0.5 (more reward than risk)
+                # Map quality to size (0.0 to 1.0)
                 target_size = np.clip((quality_ratio - 0.4) * 1.66, 0.0, 1.0)
                 
-                # New Constraint: Hard Filter for 1:2 RR Ratio
+                # CRITICAL: If RR < 2.0, set size to 0.00
                 if rr_ratio < 2.0:
                     target_size = 0.0
                 
-                # Hard Filter: If MFE < 0.5 ATR, it's a scratch trade, reduce size
+                # Hard Filter: If MFE < 0.5 ATR, it's just noise
                 if mfe_atr < 0.5:
                     target_size = 0.0
                 
-                # --- Feature Extraction (60-dim) ---
-                # [25 asset] + [15 global] + [20 synthetic account/history]
-                # Note: SL model assumes "Clean Slate" so we zero out history/account for training
-                # or we could simulate them. For now, zeroing them is safer for "Pure Price Action" learning.
-                
-                asset_start_idx = i * 25
-                asset_slice = batch_obs[local_idx][asset_start_idx : asset_start_idx + 25]
-                global_slice = batch_obs[local_idx][125:140]
-                
-                # Synthetic Account/History (20 dims)
-                # 5 Account: [Equity=1.0, DD=0, Lev=0, Cap=1.0, WinStreak=0]
-                syn_account = np.array([1.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
-                # 5 History PnL: [0,0,0,0,0]
-                syn_pnl = np.zeros(5, dtype=np.float32)
-                # 10 History Actions: [0...0]
-                syn_acts = np.zeros(10, dtype=np.float32)
-                
-                full_features = np.concatenate([
-                    asset_slice, 
-                    global_slice,
-                    syn_account,
-                    syn_pnl,
-                    syn_acts
-                ])
-                
-                # Append
+                # Append results
                 batch_results['timestamp'].append(timestamps[b_start + local_idx])
                 batch_results['asset'].append(asset)
                 batch_results['direction'].append(direction)

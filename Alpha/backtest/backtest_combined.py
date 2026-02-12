@@ -45,7 +45,9 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 # Absolute imports from project root
 from Alpha.src.trading_env import TradingEnv
 from Alpha.backtest.backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
-from RiskLayer.src.risk_env import RiskManagementEnv
+import joblib
+import torch
+from RiskLayer.src.risk_model_sl import RiskModelSL
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -53,16 +55,17 @@ logger = logging.getLogger(__name__)
 initial_equity=10000.0
 
 class CombinedBacktest:
-    """Combined backtest using Alpha model for direction and Risk model for SL/TP/sizing"""
+    """Combined backtest using Alpha model for direction and SL Risk model for SL/TP/sizing"""
     
-    def __init__(self, alpha_model, risk_model, data_dir, initial_equity=initial_equity, alpha_norm_env=None, risk_norm_env=None, env=None, verify_alpha=False):
+    def __init__(self, alpha_model, risk_model, risk_scaler, data_dir, initial_equity=initial_equity, alpha_norm_env=None, env=None, verify_alpha=False):
         self.alpha_model = alpha_model
         self.risk_model = risk_model
+        self.risk_scaler = risk_scaler
         self.alpha_norm_env = alpha_norm_env
-        self.risk_norm_env = risk_norm_env
         self.data_dir = data_dir
         self.initial_equity = initial_equity
         self.verify_alpha = verify_alpha
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Create Alpha environment for data access (or reuse existing)
         if env is not None:
@@ -74,21 +77,16 @@ class CombinedBacktest:
         self.env.start_equity = initial_equity
         self.env.peak_equity = initial_equity
         
-        # Risk model constants (from RiskManagementEnv)
-        self.MAX_RISK_PER_TRADE = 0.40 
-        self.MAX_MARGIN_PER_TRADE_PCT = 0.80
-        self.MAX_LEVERAGE = 400.0
+        # Risk model constants
+        self.MAX_ALLOCATION_PCT = 0.60 # New User Request: 60% Max Allocation
+        self.MAX_LEVERAGE = 100.0      # Updated to match RiskLayer logic
         self.MIN_LOTS = 0.01
         self.CONTRACT_SIZE = 100000
         
         # Slippage Configuration (Match Training)
         self.ENABLE_SLIPPAGE = True
-        self.SLIPPAGE_MIN_PIPS = 0.0
-        self.SLIPPAGE_MAX_PIPS = 0.5
-        
-        # Spread Configuration (Match Training)
-        self.SPREAD_MIN_PIPS = 1.2
-        self.SPREAD_ATR_FACTOR = 0.05
+        self.SLIPPAGE_MIN_PIPS = 0.5
+        self.SLIPPAGE_MAX_PIPS = 1.5
         
         # Per-asset history tracking
         self.asset_histories = {
@@ -103,89 +101,74 @@ class CombinedBacktest:
         self.equity = initial_equity
         self.peak_equity = initial_equity
         
-        # Track blocked trades
-        self.blocked_trades = []
-        
     def build_risk_observation(self, asset, alpha_obs):
-        """Build 60-feature observation for risk model"""
-        # Alpha features are already the 40 features [25 asset + 15 global]
+        """Build 60-feature observation for SL risk model"""
+        # 1. Market State (40)
         market_obs = alpha_obs
-        if self.alpha_norm_env is not None:
-            market_obs = self.alpha_norm_env.normalize_obs(alpha_obs.reshape(1, -1)).flatten()
-            
-        # Account state (5 features)
+        
+        # 2. Account state (5 features)
         drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
         equity_norm = self.equity / self.initial_equity
         risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+        
+        # Win streak normalization (track last 5 trades)
+        recent_pnls = list(self.asset_histories[asset]['pnl_history'])[-5:]
+        wins = sum(1 for p in recent_pnls if p > 0)
+        win_streak_norm = wins / 5.0
         
         account_obs = np.array([
             equity_norm,
             drawdown,
             0.0,  # Leverage placeholder
             risk_cap_mult,
-            0.0   # Padding
+            win_streak_norm
         ], dtype=np.float32)
         
-        # History features (5 PnL + 10 Actions = 15)
+        # 3. History features (5 PnL + 10 Actions = 15)
         hist = self.asset_histories[asset]
         hist_pnl = np.array(list(hist['pnl_history']), dtype=np.float32)
         hist_acts = np.array(list(hist['action_history']), dtype=np.float32).flatten()
         
         # Combine: 40 + 5 + 5 + 10 = 60
         obs = np.concatenate([market_obs, account_obs, hist_pnl, hist_acts])
+        obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        # Safety check
-        if np.any(np.isnan(obs)) or np.any(np.isinf(obs)):
-            obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
-            
-        # Normalize if normalizer is available
-        if self.risk_norm_env is not None:
-            obs_reshaped = obs.reshape(1, -1)
-            obs_norm = self.risk_norm_env.normalize_obs(obs_reshaped)
-            obs = obs_norm.flatten()
-        
-        return obs
+        # 4. Scale
+        obs_scaled = self.risk_scaler.transform(obs.reshape(1, -1)).astype(np.float32)
+        return torch.from_numpy(obs_scaled).to(self.device)
     
-    def parse_risk_action(self, action):
-        """Parse risk model action (SL, TP)"""
-        # Parse action (2 values in [-1, 1])
-        # Mapping to match RiskEnv exactly
-        sl_mult = np.clip((action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)   # 0.2 - 2.0 ATR
-        tp_mult = np.clip((action[1] + 1) / 2 * 4.5 + 0.5, 0.5, 5.0)   # 0.5 - 5.0 ATR
-        
-        return sl_mult, tp_mult
+    def predict_risk(self, obs_tensor):
+        """Perform inference with SL risk model"""
+        self.risk_model.eval()
+        with torch.no_grad():
+            preds = self.risk_model(obs_tensor)
+            sl_mult = preds['sl'].item()
+            tp_mult = preds['tp'].item()
+            size_out = preds['size'].item()
+        return sl_mult, tp_mult, size_out
     
-    def calculate_position_size(self, asset, entry_price, atr, sl_mult, tp_mult, direction):
-        """Calculate position size using Alpha-style fixed sizing (25% equity)"""
-        # Alpha Logic: 0.5 size factor * 0.5 MAX_POS_SIZE_PCT = 0.25 (25% equity margin)
-        size_pct = 0.5 
-        
-        # Calculate Lots for tracking/execution
-        contract_size = 100 if asset == 'XAUUSD' else 100000
-        is_usd_quote = asset in ['EURUSD', 'GBPUSD', 'XAUUSD']
-        
-        position_size = size_pct * 0.50 * self.equity # 0.25 * equity
+    def calculate_position_size(self, asset, entry_price, size_out):
+        """Calculate position size using Direct Model Allocation (No Cap)"""
+        # Final_Size = Equity * size from model (0.0 to 1.0)
+        position_size = self.equity * size_out
         position_value_usd = position_size * self.MAX_LEVERAGE
         
+        # Calculate Lots
+        is_usd_quote = asset in ['EURUSD', 'GBPUSD', 'XAUUSD']
         if is_usd_quote:
-            lot_value_usd = contract_size * entry_price
+            lot_value_usd = self.CONTRACT_SIZE * entry_price
         else:
-            lot_value_usd = contract_size * 1.0 # Approx
+            lot_value_usd = self.CONTRACT_SIZE
             
         lots = position_value_usd / (lot_value_usd + 1e-9)
         lots = np.clip(lots, self.MIN_LOTS, 100.0)
         
-        return size_pct, {
-            'sl_mult': sl_mult,
-            'tp_mult': tp_mult,
-            'lots': lots,
-            'position_size': position_size
-        }
+        return size_out, lots, position_size
     
-    def run_backtest(self, episodes=1, max_steps=None):
+    def run_backtest(self, episodes=1, max_steps=5000):
         """Run combined backtest"""
         metrics_tracker = BacktestMetrics()
-        logger.info(f"Running {episodes} episodes...")
+        logger.info(f"Running {episodes} episodes with max {max_steps} steps...")
         
         for episode in range(episodes):
             obs_dummy, _ = self.env.reset()
@@ -234,32 +217,30 @@ class CombinedBacktest:
                         # Mode: Verify Alpha only (Fixed Risk & SL/TP used in Alpha training)
                         sl_mult = 2.0
                         tp_mult = 4.0
-                        size_pct = 0.5  # act['size'] * MAX_POS_SIZE_PCT (0.5 * 0.5 = 0.25)
+                        size_pct = 0.25 # 25% fixed
                     else:
-                        # Build and predict with Risk model
-                        risk_obs = self.build_risk_observation(asset, alpha_obs)
-                        risk_action, _ = self.risk_model.predict(risk_obs, deterministic=True)
-                        sl_mult, tp_mult = self.parse_risk_action(risk_action)
+                        # Build and predict with SL Risk model
+                        risk_obs_tensor = self.build_risk_observation(asset, alpha_obs)
+                        sl_mult, tp_mult, size_out = self.predict_risk(risk_obs_tensor)
                         
-                        # Calculate size (Alpha-Style)
+                        # Calculate size (60% Max Allocation Rule)
                         current_prices = self.env._get_current_prices()
-                        atrs = self.env._get_current_atrs()
                         entry_price = current_prices[asset]
-                        atr = atrs[asset]
                         
-                        size_pct, risk_info = self.calculate_position_size(
-                            asset, entry_price, atr, sl_mult, tp_mult, direction
+                        size_pct, lots, pos_size = self.calculate_position_size(
+                            asset, entry_price, size_out
                         )
                         
                         # Update action history
                         self.asset_histories[asset]['action_history'].append(np.array([sl_mult, tp_mult], dtype=np.float32))
                     
-                    if size_pct > 0:
+                    if size_pct > 0.01: # Filter out very small sizes
                         combined_actions[asset] = {
                             'direction': direction,
-                            'size': size_pct,
+                            'size': size_pct, # This is the fraction used for rewards calculation in TradingEnv
                             'sl_mult': sl_mult,
-                            'tp_mult': tp_mult
+                            'tp_mult': tp_mult,
+                            'lots': lots if not self.verify_alpha else 0.1 # Placeholder if verify
                         }
                 
                 # Step 2: Execute all approved trades
@@ -275,38 +256,16 @@ class CombinedBacktest:
                     
                     if act:
                         direction = act['direction']
-                        
-                        # Get pip scalar for this asset
                         pip_scalar = 0.01 if 'JPY' in asset or 'XAU' in asset else 0.0001
                         
-                        # Apply Spread (MATCH TRAINING)
-                        spread_val = (self.SPREAD_MIN_PIPS * pip_scalar) + (self.SPREAD_ATR_FACTOR * atr)
-                        price = price_raw + (direction * spread_val)
-                        
-                        # Apply Slippage
-                        if self.ENABLE_SLIPPAGE:
-                            slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-                            price += (direction * -1 * slippage_pips * pip_scalar)
+                        # Apply Slippage (Match Training 0.5 - 1.5 pips)
+                        slippage_pips = np.random.uniform(0.5, 1.5)
+                        price = price_raw + (direction * -1 * slippage_pips * pip_scalar)
                             
                         if current_pos is None:
                             self.env._open_position(asset, direction, act, price, atr)
                         elif current_pos['direction'] != direction:
-                            # Reversal: Close existing then Open new
-                            # For Close: we are doing opposite of current position
-                            # If Current is Long (1), we Sell (-1). Price should be raw - slip.
-                            # If Current is Short (-1), we Buy (1). Price should be raw + slip.
-                            
-                            if self.ENABLE_SLIPPAGE:
-                                close_slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-                                close_slippage_price = close_slippage_pips * 0.0001 * price_raw
-                                # Closing Long (Dir 1) -> Sell (-1) -> Price - Slip
-                                # Closing Short (Dir -1) -> Buy (1) -> Price + Slip
-                                close_dir = -1 * current_pos['direction']
-                                close_price = price_raw + (close_dir * close_slippage_price)
-                            else:
-                                close_price = price_raw
-                                
-                            self.env._close_position(asset, close_price)
+                            self.env._close_position(asset, price)
                             self.env._open_position(asset, direction, act, price, atr)
                     else:
                         # No action (Hold): Keep existing position if any (user requested)
@@ -411,65 +370,43 @@ def run_combined_backtest(args):
     # Load Alpha model
     logger.info("Loading Alpha model...")
     alpha_model = PPO.load(alpha_model_path, env=dummy_vec_env)
-    logger.info("Alpha model loaded successfully")
     
-    # Load Risk normalizer
-    risk_norm_path = risk_model_path.parent / "vec_normalize.pkl"
-    if not risk_norm_path.exists():
-        risk_norm_path = Path(str(risk_model_path).replace('.zip', '_vecnormalize.pkl'))
-        
-    risk_norm_env = None
-    
-    # Function to create a valid dummy Risk dataset (small, for loading only)
-    def create_dummy_risk_dataset():
-        import tempfile
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.parquet')
-        dummy_data = pd.DataFrame({
-            'direction': [1.0] * 10,
-            'entry_price': [1.0] * 10,
-            'atr': [0.01] * 10,
-            'max_profit_pct': [0.02] * 10,
-            'max_loss_pct': [-0.01] * 10,
-            'close_1000_price': [1.01] * 10,
-            'features': [np.zeros(40, dtype=np.float32) for _ in range(10)],
-            'pair': ['EURUSD'] * 10
-        })
-        dummy_data.to_parquet(tmp.name)
-        return tmp.name
-
-    if risk_norm_path.exists():
-        logger.info(f"Loading Risk Normalizer from {risk_norm_path}")
-        try:
-             dummy_path = create_dummy_risk_dataset()
-             dummy_risk_env = RiskManagementEnv(dataset_path=dummy_path)
-             risk_norm_env = VecNormalize.load(str(risk_norm_path), DummyVecEnv([lambda: dummy_risk_env]))
-             risk_norm_env.training = False 
-             risk_norm_env.norm_reward = False
-             os.unlink(dummy_path)
-             logger.info("Risk Normalizer loaded.")
-        except Exception as e:
-             logger.error(f"Failed to load Risk Normalizer: {e}")
-    
-    # Load Risk model
-    logger.info("Loading Risk model...")
+    # Load SL Risk model and Scaler
+    logger.info("Loading SL Risk model and Scaler...")
     try:
-        dummy_path = create_dummy_risk_dataset()
-        risk_env_dummy = DummyVecEnv([lambda: RiskManagementEnv(dataset_path=dummy_path)])
-        risk_model = PPO.load(risk_model_path, env=risk_env_dummy)
-        os.unlink(dummy_path)
-        logger.info("Risk model loaded successfully")
+        # 1. Load Scaler
+        scaler_path = risk_model_path.parent / "sl_risk_scaler.pkl"
+        if not scaler_path.exists():
+            scaler_path = project_root / "models" / "sl_risk_scaler.pkl"
+        risk_scaler = joblib.load(scaler_path)
+        
+        # 2. Load Model
+        risk_model = RiskModelSL(input_dim=60)
+        # Handle weights file (best.pth)
+        if str(risk_model_path).endswith('.pth'):
+            weights_path = risk_model_path
+        else:
+            weights_path = risk_model_path.parent / "risk_model_sl_best.pth"
+            
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        state_dict = torch.load(weights_path, map_location=device)
+        risk_model.load_state_dict(state_dict)
+        risk_model.to(device)
+        risk_model.eval()
+        
+        logger.info(f"SL Risk model loaded from {weights_path}")
     except Exception as e:
-        logger.error(f"Failed to load Risk model: {e}")
+        logger.error(f"Failed to load SL Risk model: {e}")
         sys.exit(1)
     
-    # Create combined backtest using the SHARED environment
+    # Create combined backtest
     backtest = CombinedBacktest(
         alpha_model, 
         risk_model, 
+        risk_scaler,
         data_dir_path, 
         initial_equity=initial_equity,
         alpha_norm_env=alpha_norm_env,
-        risk_norm_env=risk_norm_env,
         env=shared_env,
         verify_alpha=args.verify_alpha
     )
