@@ -450,10 +450,10 @@ class TradingEnv(gym.Env):
         # Store absolute P&L for V1-style sensitivity
         self.peeked_pnl_step += expected_net_pnl
         
-        # NEW: Fast TP Bonus (Under 2 hours = 24 bars of 5min)
+        # NEW: Fast TP Bonus (Under 1 hour = 12 bars of 5min)
         if outcome['exit_reason'] == 'TP':
             self.episode_wins += 1
-            if outcome['bars_held'] <= 24:
+            if outcome['bars_held'] <= 12:
                 # Fast bonus is 4x the PnL reward (scaled for high dominance)
                 fast_bonus = (expected_net_pnl / self.start_equity) * 80.0
                 fast_bonus = np.clip(fast_bonus, 0.0, 4.0)
@@ -513,7 +513,7 @@ class TradingEnv(gym.Env):
         }
         
         # Add bonus to backtesting reward if applicable (for consistency)
-        if not self.is_training and reason == 'TP' and hold_time <= 120:
+        if not self.is_training and reason == 'TP' and hold_time <= 60:
             # Bonus matches the PnL reward (clipped to 4.0)
             net_pnl = pnl - total_fees
             fast_bonus = (net_pnl / self.start_equity) * 80.0

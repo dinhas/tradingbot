@@ -36,11 +36,11 @@ def test_fast_win_reward():
     print(f"--- Fast Win Test (5 bars, $100 profit) ---")
     print(f"Total Reward (Step 0): {reward:.4f}")
     
-    # Mock a trade outcome that is a SLOW TP
-    # Suppose TP is hit in 100 bars with $100 profit
+    # Mock a trade outcome that is BORDERLINE (13 bars)
+    # Should NOT get the bonus anymore
     slow_outcome = {
         'exit_reason': 'TP',
-        'bars_held': 100,
+        'bars_held': 13,
         'pnl': 100.0,
         'closed': True
     }
@@ -51,7 +51,7 @@ def test_fast_win_reward():
     env._simulate_trade_outcome_with_timing = lambda asset: slow_outcome
     
     obs, reward, done, truncated, info = env.step(np.array([0.5]))
-    print(f"\n--- Slow Win Test (100 bars, $100 profit) ---")
+    print(f"\n--- Slow Win Test (13 bars, $100 profit) ---")
     print(f"Initial Reward (Step 0): {reward:.4f}")
     
     # Now simulate the rest of the 100 bars
