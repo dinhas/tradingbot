@@ -51,6 +51,7 @@ class RiskManagementEnv(gym.Env):
         
         # Slippage & Spread
         self.ENABLE_SLIPPAGE = True
+        self.SLIPPAGE_MIN_PIPS = getattr(config, 'SLIPPAGE_MIN_PIPS', 0.0)
         self.SLIPPAGE_MAX_PIPS = getattr(config, 'SLIPPAGE_MAX_PIPS', 0.5)
         self.SPREAD_MIN_PIPS = getattr(config, 'BASE_SPREAD_PIPS', 1.2)
         self.SPREAD_ATR_FACTOR = 0.05 

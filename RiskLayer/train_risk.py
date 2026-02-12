@@ -173,7 +173,7 @@ from stable_baselines3.common.monitor import Monitor
 def make_env(rank, seed=0):
     """Utility function for multiprocessed env."""
     def _init():
-        env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
+        env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=config.INITIAL_EQUITY, is_training=True)
         # Wrap each individual env in a Monitor for reliable logging
         env = Monitor(env)
         env.reset(seed=seed + rank)
@@ -190,7 +190,7 @@ def train():
 
     # 0. Pre-generate Cache (Sequentially) to avoid race conditions
     print("Pre-validating dataset cache...")
-    temp_env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
+    temp_env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=config.INITIAL_EQUITY, is_training=True)
     del temp_env
     print("Cache validated. Starting parallel environments...")
 
