@@ -116,7 +116,7 @@ class RiskManagementEnv(gym.Env):
                 if 'direction' not in self.df.columns:
                      raise ValueError("Missing 'direction' column")
                      
-                chk_cols = ['max_profit_pct', 'max_loss_pct', 'close_1000_price']
+                chk_cols = ['max_profit_pct', 'max_loss_pct', 'close_30_price']
                 for c in chk_cols:
                     if c not in self.df.columns:
                          raise ValueError(f"Missing {c}")
@@ -151,7 +151,7 @@ class RiskManagementEnv(gym.Env):
                 np.save(os.path.join(cache_dir, 'directions.npy'), self.df['direction'].values.astype(np.float32))
                 np.save(os.path.join(cache_dir, 'max_profit_pcts.npy'), self.df['max_profit_pct'].values.astype(np.float32))
                 np.save(os.path.join(cache_dir, 'max_loss_pcts.npy'), self.df['max_loss_pct'].values.astype(np.float32))
-                np.save(os.path.join(cache_dir, 'close_prices.npy'), self.df['close_1000_price'].values.astype(np.float32))
+                np.save(os.path.join(cache_dir, 'close_prices.npy'), self.df['close_30_price'].values.astype(np.float32))
                 np.save(os.path.join(cache_dir, 'is_usd_quote.npy'), is_usd_quote)
                 np.save(os.path.join(cache_dir, 'is_usd_base.npy'), is_usd_base)
                 

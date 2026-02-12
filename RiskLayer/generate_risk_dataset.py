@@ -63,7 +63,7 @@ class TeeStderr:
 DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "checkpoints", "ppo_final_model.zip")
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 DEFAULT_OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "risk_dataset.parquet")
-LOOKAHEAD_STEPS = 1000 # Increased to 1000 steps (83 hours) for full trade simulation
+LOOKAHEAD_STEPS = 30 # Reduced to 30 steps (2.5 hours) for short-term risk management
 BATCH_SIZE = 50000  # Increased batch size as we use less memory now
 
 def build_observation_matrix(df, assets, start_idx, end_idx):
@@ -293,7 +293,7 @@ def generate_dataset_batched(model_path, data_dir, output_file, limit=None):
             'max_loss_pct': [],
             'final_pnl_pct': [],
             'bars_to_exit': [],
-            'close_1000_price': []
+            'close_30_price': []
         }
         
         has_data = False
@@ -387,7 +387,7 @@ def generate_dataset_batched(model_path, data_dir, output_file, limit=None):
                 batch_results['max_loss_pct'].append(max_loss_pct)
                 batch_results['final_pnl_pct'].append(final_pnl_pct)
                 batch_results['bars_to_exit'].append(bars_to_exit)
-                batch_results['close_1000_price'].append(future_closes[-1])
+                batch_results['close_30_price'].append(future_closes[-1])
                 
                 has_data = True
 
