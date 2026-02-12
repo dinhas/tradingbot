@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def run_command(command, description):
+def run_command(command, description, cwd=None):
     """Utility to run shell commands and log output."""
     logger.info(f"--- Starting: {description} ---")
     logger.info(f"Running: {' '.join(command)}")
@@ -28,7 +28,8 @@ def run_command(command, description):
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True
+            universal_newlines=True,
+            cwd=cwd
         )
         
         for line in process.stdout:
@@ -66,8 +67,9 @@ def main():
     
     # 2. Data Generation Phase
     if not args.skip_gen:
+        gen_script = os.path.join(base_dir, "generate_sl_dataset.py")
         gen_cmd = [
-            sys.executable, "generate_sl_dataset.py",
+            sys.executable, gen_script,
             "--data", args.data_dir,
             "--output", dataset_path
         ]
@@ -75,18 +77,17 @@ def main():
         if args.smoke_test:
             gen_cmd.extend(["--limit", "5000"])
             
-        run_command(gen_cmd, "Data Generation (Oracle Labeling)")
+        run_command(gen_cmd, "Data Generation (Oracle Labeling)", cwd=base_dir)
     else:
         logger.info("Skipping Data Generation as requested.")
 
     # 3. Training Phase
-    # We need to tell train_risk.py which dataset to use by modifying the environment or passing args
-    # For simplicity, we'll set an environment variable that train_risk.py can check
     os.environ["SL_DATASET_PATH"] = dataset_path
     
-    train_cmd = [sys.executable, "train_risk.py"]
+    train_script = os.path.join(base_dir, "train_risk.py")
+    train_cmd = [sys.executable, train_script]
     
-    run_command(train_cmd, "Model Training (Multi-Task ResNet)")
+    run_command(train_cmd, "Model Training (Multi-Task ResNet)", cwd=base_dir)
 
     logger.info("==========================================")
     logger.info("Pipeline Execution Finished Successfully!")
