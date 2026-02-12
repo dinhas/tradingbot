@@ -121,9 +121,9 @@ class CustomStatsCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         # Heartbeat every 10000 steps to confirm callback is alive
-        if self.num_timesteps - self.last_step_count >= 10000:
-            print(f"--- [Callback Heartbeat] Steps: {self.num_timesteps} | Finished Eps: {len(self.episode_rewards)} | Total Env Steps: {self.num_timesteps} ---", flush=True)
-            self.last_step_count = self.num_timesteps
+        # if self.num_timesteps - self.last_step_count >= 10000:
+        #     print(f"--- [Callback Heartbeat] Steps: {self.num_timesteps} | Finished Eps: {len(self.episode_rewards)} | Total Env Steps: {self.num_timesteps} ---", flush=True)
+        #     self.last_step_count = self.num_timesteps
 
         if 'infos' in self.locals:
             for info in self.locals['infos']:
@@ -134,7 +134,7 @@ class CustomStatsCallback(BaseCallback):
                     ep_len = info['episode']['l']
                     self.episode_rewards.append(ep_rew)
                     self.episode_lengths.append(ep_len)
-                    print(f" >>> [Episode End] Reward: {ep_rew:.2f} | Length: {ep_len} | Total Avg: {np.mean(self.episode_rewards):.2f}", flush=True)
+                    # print(f" >>> [Episode End] Reward: {ep_rew:.2f} | Length: {ep_len} | Total Avg: {np.mean(self.episode_rewards):.2f}", flush=True)
         
         # Periodically record to ensure the rollout group appears in SB3 table
         if len(self.episode_rewards) > 0:

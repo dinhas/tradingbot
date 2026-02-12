@@ -435,8 +435,8 @@ class RiskManagementEnv(gym.Env):
         self.history_actions.append(np.array([sl_mult, tp_mult], dtype=np.float32))
         self.history_pnl.append(net_pnl / max(self.equity, 1e-6))
         
-        if self.episode_len % 1000 == 0:
-            print(f"  [Trade {self.episode_len:3}] Rew: {reward:6.2f} | PnL: {net_pnl:8.2f} | Eq: {self.equity:8.2f} | Exit: {exited_on}", flush=True)
+        # if self.episode_len % 1000 == 0:
+        #     print(f"  [Trade {self.episode_len:3}] Rew: {reward:6.2f} | PnL: {net_pnl:8.2f} | Eq: {self.equity:8.2f} | Exit: {exited_on}", flush=True)
 
         # --- Termination Logic ---
         drawdown_end = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
@@ -450,11 +450,11 @@ class RiskManagementEnv(gym.Env):
             # Terminal penalty removed per user request
             pass
             
-        if terminated or truncated:
-            import sys
-            reason = 'STOPOUT' if terminated else ('DATA_END' if truncated else 'UNKNOWN')
-            print(f"--- EPISODE FINISHED --- Reward: {self.episode_reward:.2f} | Length: {self.episode_len} | Equity: {self.equity:.2f} | Reason: {reason}", flush=True)
-            sys.stdout.flush()
+        # if terminated or truncated:
+        #     import sys
+        #     reason = 'STOPOUT' if terminated else ('DATA_END' if truncated else 'UNKNOWN')
+        #     print(f"--- EPISODE FINISHED --- Reward: {self.episode_reward:.2f} | Length: {self.episode_len} | Equity: {self.equity:.2f} | Reason: {reason}", flush=True)
+        #     sys.stdout.flush()
             
         return self._get_observation(), reward, terminated, truncated, {'pnl': net_pnl, 'equity': self.equity, 'lots': lots}
 
