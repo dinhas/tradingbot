@@ -454,8 +454,8 @@ class TradingEnv(gym.Env):
         if outcome['exit_reason'] == 'TP':
             self.episode_wins += 1
             if outcome['bars_held'] <= 12:
-                # Give a noticeable bonus (0.5 is significant as typical TP is ~0.1-0.2)
-                self.fast_tp_reward += 0.5
+                # Give a noticeable bonus (1.0 is significant as typical TP is ~0.1-0.2)
+                self.fast_tp_reward += 1.0
         
         # Transaction costs: Reverted to V1 spread-based (0.2 pips approx)
         entry_cost = margin_allocated * 0.00002
@@ -512,7 +512,7 @@ class TradingEnv(gym.Env):
         
         # Add bonus to backtesting reward if applicable (for consistency)
         if not self.is_training and reason == 'TP' and hold_time <= 60:
-            self.fast_tp_reward += 0.5
+            self.fast_tp_reward += 1.0
 
         self.completed_trades.append(trade_record)
         self.all_trades.append(trade_record)
@@ -667,11 +667,11 @@ class TradingEnv(gym.Env):
         # COMPONENT 3: Holding Reward (Small incentive to stay in trades)
         has_any_position = any(pos is not None for pos in self.positions.values())
         if has_any_position:
-            # 1% of max clip (2.0) = 0.02
+            # 0.5% of max clip (4.0) = 0.02
             reward += 0.02
         
         # Final safety clip for RL stability
-        reward = np.clip(reward, -2.0, 2.0)
+        reward = np.clip(reward, -4.0, 4.0)
         
         # Track best step reward
         if reward > self.max_step_reward:
