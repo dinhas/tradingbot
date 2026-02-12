@@ -62,7 +62,7 @@ class TeeStderr:
 # Defaults
 DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "checkpoints", "ppo_final_model.zip")
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-DEFAULT_OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "risk_dataset.parquet")
+DEFAULT_OUTPUT_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "risk_dataset.parquet")
 LOOKAHEAD_STEPS = 30 # Reduced to 30 steps (2.5 hours) for short-term risk management
 BATCH_SIZE = 50000  # Increased batch size as we use less memory now
 

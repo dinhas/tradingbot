@@ -92,6 +92,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Fallback logic for finding dataset
 POSSIBLE_PATHS = [
     os.path.join(BASE_DIR, 'risk_dataset.parquet'),
+    os.path.join(os.path.dirname(BASE_DIR), 'data', 'risk_dataset.parquet'),
+    os.path.join(os.getcwd(), 'data', 'risk_dataset.parquet'),
     os.path.join(os.getcwd(), 'risk_dataset.parquet'),
     os.path.join(os.getcwd(), 'RiskLayer', 'risk_dataset.parquet'),
     'risk_dataset.parquet'
