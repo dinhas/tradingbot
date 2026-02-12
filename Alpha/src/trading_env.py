@@ -271,6 +271,7 @@ class TradingEnv(gym.Env):
         
         # Reset reward tracker
         self.peeked_pnl_step = 0.0
+        self.fast_tp_reward = 0.0  # NEW: Bonus for quick TPs
         self.max_step_reward = -float('inf')  # TRACKING: Best single step reward in episode
         
         # Reset trade tracking
@@ -297,6 +298,7 @@ class TradingEnv(gym.Env):
         """Execute one environment step."""
         # Reset step tracker
         self.peeked_pnl_step = 0.0
+        self.fast_tp_reward = 0.0
         self.completed_trades = []
         
         # Parse and execute trades (ONLY for current asset)
@@ -386,7 +388,7 @@ class TradingEnv(gym.Env):
                 
                 # Rule: If current_pos direction is opposite: Close the old one and open a new one (reverse).
                 else:
-                    self._close_position(asset, price)
+                    self._close_position(asset, price, reason='REVERSAL')
                     self._open_position(asset, direction, act, price, atr)
 
     def _check_global_exposure(self, new_position_size):
@@ -448,15 +450,19 @@ class TradingEnv(gym.Env):
         # Store absolute P&L for V1-style sensitivity
         self.peeked_pnl_step += expected_net_pnl
         
+        # NEW: Fast TP Bonus (Under 1 hour = 12 bars of 5min)
         if outcome['exit_reason'] == 'TP':
             self.episode_wins += 1
+            if outcome['bars_held'] <= 12:
+                # Give a noticeable bonus (0.5 is significant as typical TP is ~0.1-0.2)
+                self.fast_tp_reward += 0.5
         
         # Transaction costs: Reverted to V1 spread-based (0.2 pips approx)
         entry_cost = margin_allocated * 0.00002
         self.equity -= entry_cost
         self.positions[asset]['entry_cost'] = entry_cost
 
-    def _close_position(self, asset, price):
+    def _close_position(self, asset, price, reason='MANUAL'):
         """Close position and record trade."""
         pos = self.positions[asset]
         if pos is None:
@@ -500,9 +506,14 @@ class TradingEnv(gym.Env):
             'equity_before': equity_before,
             'equity_after': self.equity,
             'hold_time': hold_time,
+            'exit_reason': reason,
             'rr_ratio': pos['tp_dist'] / pos['sl_dist'] if pos['sl_dist'] > 0 else 0
         }
         
+        # Add bonus to backtesting reward if applicable (for consistency)
+        if not self.is_training and reason == 'TP' and hold_time <= 60:
+            self.fast_tp_reward += 0.5
+
         self.completed_trades.append(trade_record)
         self.all_trades.append(trade_record)
         self.positions[asset] = None
@@ -521,14 +532,14 @@ class TradingEnv(gym.Env):
             # Check SL/TP (use SL/TP price for exit, not gap price)
             if pos['direction'] == 1:  # Long
                 if price <= pos['sl']:
-                    self._close_position(asset, pos['sl'])
+                    self._close_position(asset, pos['sl'], reason='SL')
                 elif price >= pos['tp']:
-                    self._close_position(asset, pos['tp'])
+                    self._close_position(asset, pos['tp'], reason='TP')
             else:  # Short
                 if price >= pos['sl']:
-                    self._close_position(asset, pos['sl'])
+                    self._close_position(asset, pos['sl'], reason='SL')
                 elif price <= pos['tp']:
-                    self._close_position(asset, pos['tp'])
+                    self._close_position(asset, pos['tp'], reason='TP')
 
 
     def _simulate_trade_outcome_with_timing(self, asset):
@@ -632,6 +643,9 @@ class TradingEnv(gym.Env):
                 normalized_pnl = (step_pnl / self.start_equity) * 5.0
                 reward += normalized_pnl
             
+            # Add fast TP bonus if earned
+            reward += self.fast_tp_reward
+            
             return np.clip(reward, -10.0, 10.0)
         
         # =====================================================================
@@ -647,7 +661,10 @@ class TradingEnv(gym.Env):
             normalized_pnl = np.clip(normalized_pnl, -1.0, 1.0)
             reward += normalized_pnl
         
-        # COMPONENT 2: Holding Reward (Small incentive to stay in trades)
+        # COMPONENT 2: Fast TP Bonus (NEW)
+        reward += self.fast_tp_reward
+        
+        # COMPONENT 3: Holding Reward (Small incentive to stay in trades)
         has_any_position = any(pos is not None for pos in self.positions.values())
         if has_any_position:
             # 1% of max clip (2.0) = 0.02
