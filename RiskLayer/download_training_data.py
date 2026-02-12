@@ -74,7 +74,11 @@ TIMEFRAME = ProtoOATrendbarPeriod.M5
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DataFetcherTraining:
-    def __init__(self, output_dir="Alpha/data", force=False):
+    def __init__(self, output_dir=None, force=False):
+        if output_dir is None:
+            # Set to root/data
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            output_dir = os.path.join(os.path.dirname(script_dir), "data")
         host = EndPoints.PROTOBUF_LIVE_HOST if CT_HOST_TYPE.lower() == "live" else EndPoints.PROTOBUF_DEMO_HOST
         self.client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
         self.request_delay = 0.25
@@ -236,7 +240,7 @@ class DataFetcherTraining:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default="Alpha/data", help="Output directory")
+    parser.add_argument("--output", default=None, help="Output directory (defaults to root/data)")
     parser.add_argument("--force", action="store_true", help="Force redownload even if files exist")
     parser.add_argument("--log_dir", type=str, default=None, help="Log directory (default: logs in script directory)")
     args = parser.parse_args()

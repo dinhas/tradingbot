@@ -59,10 +59,14 @@ class TeeStderr:
         self.file.flush()
         self.stderr.flush()
 
+# Paths
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+
 # Defaults
-DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "checkpoints", "ppo_final_model.zip")
-DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-DEFAULT_OUTPUT_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "risk_dataset.parquet")
+DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "checkpoints", "ppo_final_model.zip")
+DEFAULT_DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+DEFAULT_OUTPUT_FILE = os.path.join(PROJECT_ROOT, "data", "risk_dataset.parquet")
 LOOKAHEAD_STEPS = 30 # Reduced to 30 steps (2.5 hours) for short-term risk management
 BATCH_SIZE = 50000  # Increased batch size as we use less memory now
 
@@ -423,7 +427,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Setup logging
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     log_dir = args.log_dir if args.log_dir else os.path.join(BASE_DIR, "logs")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"generate_risk_dataset_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")

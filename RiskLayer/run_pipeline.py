@@ -87,8 +87,23 @@ def main():
     print(f"Working Directory: {base_dir}")
     
     # 1. Fetch Data
-    if not run_step("Fetch Training Data", "download_training_data.py", base_dir):
-        sys.exit(1)
+    project_root = os.path.dirname(base_dir)
+    data_dir = os.path.join(project_root, "data")
+    required_assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+    
+    data_missing = False
+    for asset in required_assets:
+        # Check for standard naming or 2025 version
+        if not os.path.exists(os.path.join(data_dir, f"{asset}_5m.parquet")) and \
+           not os.path.exists(os.path.join(data_dir, f"{asset}_5m_2025.parquet")):
+            data_missing = True
+            break
+    
+    if data_missing:
+        if not run_step("Fetch Training Data", "download_training_data.py", base_dir):
+            sys.exit(1)
+    else:
+        print("\n✅ All required market data found. Skipping download step.")
         
     # 2. Generate Dataset
     if not run_step("Generate Risk Dataset", "generate_risk_dataset.py", base_dir):
