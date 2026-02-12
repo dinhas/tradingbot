@@ -90,16 +90,12 @@ def get_latest_model_files(models_dir):
         
     return model_path, norm_path
 
-DEFAULT_MODEL_PATH, DEFAULT_VEC_NORM_PATH = get_latest_model_files(MODELS_DIR)
-
-# Fallback if no model found (prevents crash on import, fails on run)
-if DEFAULT_MODEL_PATH is None:
-    DEFAULT_MODEL_PATH = os.path.join(MODELS_DIR, "model_not_found.zip")
-    DEFAULT_VEC_NORM_PATH = None
+DEFAULT_MODEL_PATH = os.path.join(MODELS_DIR, "ppo_final_model.zip")
+DEFAULT_VEC_NORM_PATH = os.path.join(MODELS_DIR, "ppo_final_vecnormalize.pkl")
 
 DEFAULT_DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 DEFAULT_OUTPUT_FILE = os.path.join(PROJECT_ROOT, "risk_dataset.parquet")
-LOOKAHEAD_STEPS = 6 # 30 mins (5m candles)
+LOOKAHEAD_STEPS = 30 # 150 mins (5m candles)
 BATCH_SIZE = 50000  # Increased batch size as we use less memory now
 
 def build_master_feature_cache(df, assets, start_idx, end_idx):

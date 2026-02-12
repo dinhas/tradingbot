@@ -1,7 +1,7 @@
 # Risk Management Environment - Reward System Documentation
 
 ## Overview
-The reward system focuses on **trade quality (efficiency)** and **capital preservation**. All rewards are clipped to the range **[-20, 20]** to ensure training stability and prevent gradient explosions.
+The reward system focuses on **trade quality (efficiency)** and **capital preservation**. All rewards are clipped to the range **[-10, 10]** to ensure training stability and prevent gradient explosions.
 
 ---
 
@@ -11,27 +11,22 @@ The reward system focuses on **trade quality (efficiency)** and **capital preser
 **Formula:**
 ```python
 atr_ratio = atr / entry_price
-denom = max(max_favorable_pct, atr_ratio, 1e-5)
-realized_pct = (exit_price - entry_price) / entry_price * direction
-pnl_efficiency = (realized_pct / denom) * 10.0
+efficiency = realized_pct / atr_ratio
+pnl_reward = clip(efficiency * 2.0, -5.0, 5.0)
 ```
 
 **Calculation Steps:**
-1. **Max Available Profit (Denominator):**
-   - Uses the distance from entry to the best price reached during the trade (`max_favorable_pct`).
-   - Floored at the current **ATR ratio** to prevent reward explosions on tiny moves.
-   - Ensures the agent is rewarded for capturing a high percentage of the *available* move.
+1. **ATR Normalization:**
+   - Normalizes the realized profit/loss by the current **ATR ratio**.
+   - This ensures the reward scale is consistent across different volatility regimes.
 
-2. **Realized Performance:**
-   - Calculates the actual percentage change captured by the trade.
+2. **Scaling:**
+   - Multiplied by 2.0 to provide a strong signal.
+   - Clipped to **[-5.0, 5.0]**.
 
-3. **Normalized Reward:**
-   - Ratio of realized performance to available performance, multiplied by 10.
-   - Target range: [-10.0, 10.0] (roughly).
+**Purpose:** Rewards capturing moves relative to the asset's volatility. It prevents "lucky" volatile trades from dominating the signal while ensuring small, high-quality moves in low-volatility environments are properly incentivized.
 
-**Purpose:** Rewards capturing the bulk of a move and punishes poor realization (e.g., getting stopped out early on a move that eventually went in your favor).
-
-**Range:** [~-10.0, 10.0]
+**Range:** [-5.0, 5.0]
 
 ---
 
@@ -39,109 +34,59 @@ pnl_efficiency = (realized_pct / denom) * 10.0
 **Formula:**
 ```python
 if exited_on == 'SL':
-    if avoided_loss_dist > (sl_pct_dist * 1.5):
-        saved_ratio = avoided_loss_dist / sl_pct_dist
-        bullet_bonus = min(saved_ratio, 3.0) * 2.0
+    if avoided_loss_dist > (sl_pct_dist * 1.2):
+        saved_ratio = (avoided_loss_dist - sl_pct_dist) / sl_pct_dist
+        bullet_bonus = min(saved_ratio * 1.5, 3.0)
 ```
 
 **Details:**
-- Triggered when the agent hits a Stop Loss, but the price continues to crash significantly further.
-- **Avoided Loss:** The distance from the SL price to the eventual "worst" price.
-- **Bonus Scaling:** Scales with how much loss was avoided compared to the SL distance.
-- **Maximum Bonus:** +6.0
-- **Purpose:** Encourages placing protective stops that save capital during catastrophic moves.
+- Triggered when the agent hits a Stop Loss, and the price continues to move against the position by more than **20%** of the SL distance.
+- **Avoided Loss:** The distance from the SL price to the eventual worst price reached.
+- **Bonus Scaling:** 1.5x the "saved ratio" (how much extra loss was avoided).
+- **Maximum Bonus:** +3.0
+- **Purpose:** Specifically incentivizes the model to place stops that protect against catastrophic "tail risk" events.
 
-**Range:** [0.0, 6.0]
+**Range:** [0.0, 3.0]
 
 ---
 
-### 3. **Risk Violation Penalty**
-**Formula:**
-```python
-if actual_risk_cash > intended_risk_cash * 2.0 and intended_risk > 1e-9:
-    excess_risk_pct = (actual_risk_cash - intended_risk_cash) / equity
-    if excess_risk_pct > 0.05:  # 5% of account
-        risk_violation_penalty = -2.0 * excess_risk_pct
-        risk_violation_penalty = clip(risk_violation_penalty, -10.0, 0.0)
-```
-
-**Details:**
-- Triggered when actual risk exceeds intended risk by **2x**
-- Only applies if excess risk is **> 5% of account equity**
-- Penalty scales with excess risk percentage
-- Clipped to [-10.0, 0.0] range
-
-**Purpose:** Prevents agent from accidentally taking excessive risk due to rounding or leverage constraints.
-
-**Range:** [-10.0, 0.0]
+### 3. **Step Penalty** (Optional/Currently Disabled)
+- Can be used to encourage faster trade resolutions.
+- Typically a small constant like `-0.01` per step.
 
 ---
 
 ## Final Reward Calculation
 
 ```python
-reward = pnl_efficiency + bullet_bonus + risk_violation_penalty
-reward = clip(reward, -20.0, 20.0)  # Final safety clip
+reward = clip(pnl_reward + bullet_bonus, -10.0, 10.0)
 ```
 
-**Final Range:** [-20.0, 20.0]
+**Final Range:** [-10.0, 10.0]
 
 ---
 
-## Special Cases
-
-### 1. **Skipped Trades** (Low Risk Request)
-**Condition:** `risk_raw < 1e-3` (agent requests < 0.1% risk)
-**Reward:** `0.0`
-
-### 2. **Skipped Small Positions**
-**Condition:** Calculated lots < MIN_LOTS (0.01)
-**Reward:** `0.0`
-
-### 3. **Terminal Penalty** (Equity Drop)
-**Condition:** `equity < initial_equity * 0.3` (70% drawdown)
-**Penalty:** `-20.0`
-**Result:** Episode terminates immediately
-**Final Reward:** `clip(reward - 20.0, -20.0, 20.0)`
-
----
-
-## Configuration Constants
-
-```python
-TRADING_COST_PCT = 0.0002      # 2 pips/ticks roundtrip cost
-MIN_LOTS = 0.01                # Minimum position size
-CONTRACT_SIZE = 100000         # Standard lot size
-MAX_RISK_PER_TRADE = 0.40     # 40% max risk per trade
-MAX_MARGIN_PER_TRADE_PCT = 0.80  # 80% max margin usage
-MAX_LEVERAGE = 400.0           # 1:400 leverage
-EPISODE_LENGTH = 100           # Fixed episode length
-```
+## Data Generation Look-Ahead
+- **Window:** 150 Minutes (30 steps for 5m candles).
+- The model evaluates the quality of its trade decisions based on the price action occurring within 2.5 hours of the signal.
 
 ---
 
 ## Reward Scaling Rationale
 
-### Why Clip to [-20, 20]?
-1. **Value Function Stability:** Extreme rewards break value function learning (causes negative explained variance).
-2. **Gradient Stability:** Prevents gradient explosions in PPO.
-3. **Training Stability:** Keeps loss curves smooth and predictable.
+### Why Clip to [-10, 10]?
+1. **RL Stability:** Standard PPO and SAC architectures perform best when rewards are within a small, predictable range.
+2. **Gradient Consistency:** Prevents a single catastrophic trade or one massive win from drowning out the lessons learned from hundreds of average trades.
 
-### Why Efficiency instead of raw PnL?
-1. **Scale Independence:** Same efficiency score regardless of account size or asset price.
-2. **Quality Focus:** Forces the agent to optimize for the *best* exit, not just any profit.
-3. **ATR Normalization:** Prevents rewarding "luck" in high-volatility environments while maintaining signal strength in low-volatility ones.
+### Why Efficiency vs ATR?
+1. **Volatility Agnostic:** 1 ATR of profit is treated the same whether the market is quiet or wild.
+2. **Quality Focus:** The agent learns to seek trades that offer high reward-to-risk relative to the market's current "noise" level.
 
 ---
 
 ## Training Implications
 
 ### What the Agent Learns:
-1. **Maximize Efficiency:** Primary objective is to capture as much of the favorable move as possible.
-2. **Capital Preservation:** Bullet Dodger bonus teaches that hitting a stop loss is better than riding a crash.
-3. **Respect Risk Limits:** Risk violation penalty prevents over-leveraging.
-
-### Potential Issues Addressed:
-- ✅ **Reward Stability:** Tight clipping prevents extreme values.
-- ✅ **Risk Control:** Focus on avoiding large crashes via SL.
-- ✅ **No Drawdown Obsession:** Removal of the absolute drawdown penalty prevents the agent from becoming "too scared" to trade during normal market pullbacks.
+1. **Volatility-Adjusted Sizing:** Because rewards are normalized by ATR, the agent learns to respect the current market volatility.
+2. **Defensive Discipline:** The Bullet Dodger bonus makes "getting stopped out" a positive event if the stop was correctly placed before a crash.
+3. **Consistent Performance:** The tight clipping forces the agent to optimize for the *median* outcome rather than chasing extreme outliers.

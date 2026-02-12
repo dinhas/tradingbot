@@ -331,37 +331,32 @@ class RiskManagementEnv(gym.Env):
         spread_val = (self.SPREAD_MIN_PIPS * pip_scalar) + (self.SPREAD_ATR_FACTOR * atr)
         entry_price += direction * spread_val
 
-        # --- 4. Position Sizing ---
+        # --- 4. Position Sizing (Alpha Model Style) ---
+        # In Alpha model, size is margin-based: size_pct * equity
+        # Default size_pct is 0.5 (from act['size']) * MAX_POS_SIZE_PCT (0.5) = 25% of equity
+        size_pct = 0.5 * 0.50 # act['size'] * MAX_POS_SIZE_PCT
+        
+        # Apply Risk Capacitor (Drawdown protection)
         peak_safe = max(self.peak_equity, 1e-9)
         drawdown_val = 1.0 - (self.equity / peak_safe)
         risk_cap_mult = max(0.2, 1.0 - (drawdown_val * 2.0))
-        actual_risk_pct = risk_raw * risk_cap_mult
         
-        sl_dist_price = max(sl_mult * atr, pip_scalar * 1.0, 0.5 * atr)
-        risk_amount_cash = self.equity * actual_risk_pct
+        margin_allocated = (size_pct * self.equity) * risk_cap_mult
         
-        lots = 0.0
-        if sl_dist_price > 0:
-            if is_usd_quote:
-                 lots = risk_amount_cash / (sl_dist_price * contract_size)
-            elif is_usd_base:
-                 lots = (risk_amount_cash * entry_price) / (sl_dist_price * contract_size)
-            else:
-                 lots = risk_amount_cash / (sl_dist_price * contract_size)
+        # Minimum position check
+        if margin_allocated < 0.1: # self.MIN_POSITION_SIZE
+            margin_allocated = 0.1
+            
+        # Maximum position check (50% of equity)
+        margin_allocated = min(margin_allocated, self.equity * 0.5)
         
-        # Leverage Clamping
-        lot_value_usd = (contract_size * entry_price) if is_usd_quote else (contract_size * 1.0)
-        max_position_value = (self.equity * self.MAX_MARGIN_PER_TRADE_PCT) * self.MAX_LEVERAGE
-        max_lots_leverage = max_position_value / lot_value_usd
-        lots = min(lots, max_lots_leverage)
+        # Define Leverage (Alpha model uses 100)
+        leverage = 100.0
         
-        # --- Trade Execution (Unconditional) ---
-        # User requested to remove skipping. We force MIN_LOTS.
-        lots = np.clip(lots, self.MIN_LOTS, 100.0)
-        position_val = lots * lot_value_usd
-        
-        # Simulate Outcome
+        # --- Trade Execution ---
         tp_dist_price = tp_mult * atr
+        sl_dist_price = sl_mult * atr
+        
         sl_price = entry_price - (direction * sl_dist_price)
         tp_price = entry_price + (direction * tp_dist_price)
         
@@ -386,30 +381,34 @@ class RiskManagementEnv(gym.Env):
         elif hit_tp:
             exit_price, exited_on = tp_price, 'TP'
         
-        # PnL Calc
-        price_change = exit_price - entry_price
-        gross_pnl_quote = price_change * lots * contract_size * direction
-        gross_pnl_usd = gross_pnl_quote if is_usd_quote else (gross_pnl_quote / exit_price if is_usd_base else gross_pnl_quote)
-        costs = position_val * self.TRADING_COST_PCT
-        net_pnl = gross_pnl_usd - costs
+        # PnL Calc (Alpha Model Style)
+        # price_change_pct * (margin * leverage)
+        price_change_pct = (exit_price - entry_price) / entry_price * direction
+        gross_pnl_usd = price_change_pct * (margin_allocated * leverage)
         
-        # Reward Calculation (RL Friendly Tuning)
-        realized_pct = (price_change / entry_price) * direction
+        # Standard Account: Cost is captured via the Spread in the entry price.
+        # Removing the redundant commission fee.
+        total_fees = 0.0 
+        net_pnl = gross_pnl_usd - total_fees
+        
+        # Reward Calculation (Remains Risk Model specific for efficiency/quality)
+        realized_pct = (exit_price - entry_price) / entry_price * direction
         atr_ratio = atr / entry_price_raw
-        denom = max(max_favorable, atr_ratio, 1e-5)
-        # Scale down from 10.0 to 5.0 for stability
-        pnl_efficiency = (realized_pct / denom) * 5.0
+        efficiency = realized_pct / atr_ratio
+        pnl_reward = np.clip(efficiency * 2.0, -5.0, 5.0)
         
         bullet_bonus = 0.0
         if exited_on == 'SL':
             avoided_loss_dist = abs(max_adverse) if direction == 1 else abs(max_favorable)
-            if avoided_loss_dist > (sl_pct_dist_raw * 1.5):
-                # Scale down from 2.0 to 1.0
-                bullet_bonus = min(avoided_loss_dist / sl_pct_dist_raw, 3.0) * 1.0
+            # If we exited at SL and price went much further against us
+            if avoided_loss_dist > (sl_pct_dist_raw * 1.2):
+                saved_ratio = (avoided_loss_dist - sl_pct_dist_raw) / sl_pct_dist_raw
+                bullet_bonus = min(saved_ratio * 1.5, 3.0)
         
-        # Tighten clip range to [-10, 10] and add small holding reward
-        # 1% of max clip (10.0) = 0.1
-        reward = np.clip(pnl_efficiency + bullet_bonus, -10.0, 10.0) + 0.1
+        # Final Reward Assembly
+        # Small step penalty to encourage faster exits or higher quality trades
+        # reward = pnl_reward + bullet_bonus - 0.01 
+        reward = np.clip(pnl_reward + bullet_bonus, -10.0, 10.0)
         
         # Update Equity
         self.equity += net_pnl
