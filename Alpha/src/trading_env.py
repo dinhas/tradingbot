@@ -450,13 +450,13 @@ class TradingEnv(gym.Env):
         # Store absolute P&L for V1-style sensitivity
         self.peeked_pnl_step += expected_net_pnl
         
-        # NEW: Fast TP Bonus (Under 1 hour = 12 bars of 5min)
+        # NEW: Fast TP Bonus (Under 2 hours = 24 bars of 5min)
         if outcome['exit_reason'] == 'TP':
             self.episode_wins += 1
-            if outcome['bars_held'] <= 12:
-                # Bonus matches the PnL reward (clipped to 2.0)
-                fast_bonus = (expected_net_pnl / self.start_equity) * 5.0
-                fast_bonus = np.clip(fast_bonus, 0.0, 2.0)
+            if outcome['bars_held'] <= 24:
+                # Fast bonus is 4x the PnL reward (scaled for high dominance)
+                fast_bonus = (expected_net_pnl / self.start_equity) * 80.0
+                fast_bonus = np.clip(fast_bonus, 0.0, 4.0)
                 self.fast_tp_reward += fast_bonus
         
         # Transaction costs: Reverted to V1 spread-based (0.2 pips approx)
@@ -513,11 +513,11 @@ class TradingEnv(gym.Env):
         }
         
         # Add bonus to backtesting reward if applicable (for consistency)
-        if not self.is_training and reason == 'TP' and hold_time <= 60:
-            # Bonus matches the PnL reward (clipped to 2.0)
+        if not self.is_training and reason == 'TP' and hold_time <= 120:
+            # Bonus matches the PnL reward (clipped to 4.0)
             net_pnl = pnl - total_fees
-            fast_bonus = (net_pnl / self.start_equity) * 5.0
-            fast_bonus = np.clip(fast_bonus, 0.0, 2.0)
+            fast_bonus = (net_pnl / self.start_equity) * 80.0
+            fast_bonus = np.clip(fast_bonus, 0.0, 4.0)
             self.fast_tp_reward += fast_bonus
 
         self.completed_trades.append(trade_record)
@@ -644,10 +644,10 @@ class TradingEnv(gym.Env):
             # Sum up actual P&L from completed trades this step
             step_pnl = sum(trade['net_pnl'] for trade in self.completed_trades)
             
-            # Normalize: 1% of starting equity = 0.05 reward (scaled for stability)
+            # Normalize: 1% of starting equity = 0.20 reward (scaled for stability)
             if step_pnl != 0:
-                normalized_pnl = (step_pnl / self.start_equity) * 5.0
-                normalized_pnl = np.clip(normalized_pnl, -2.0, 2.0)  # Clip PnL reward to 2
+                normalized_pnl = (step_pnl / self.start_equity) * 20.0
+                normalized_pnl = np.clip(normalized_pnl, -4.0, 4.0)  # Clip PnL reward to 4
                 reward += normalized_pnl
             
             # Add fast TP bonus if earned
@@ -661,11 +661,11 @@ class TradingEnv(gym.Env):
         
         # COMPONENT 1: Peeked Reward (Entry Quality) - Tuned for RL
         if self.peeked_pnl_step != 0:
-            # 1% move = 0.05 reward (scaled for stability)
-            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 5.0
+            # 1% move = 0.20 reward (scaled for stability)
+            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 20.0
             
-            # Clip to [-2, 2] for stable gradients (USER: keep pnl reward clipped to 2)
-            normalized_pnl = np.clip(normalized_pnl, -2.0, 2.0)
+            # Clip to [-4, 4] for stable gradients
+            normalized_pnl = np.clip(normalized_pnl, -4.0, 4.0)
             reward += normalized_pnl
         
         # COMPONENT 2: Fast TP Bonus (NEW)
@@ -674,8 +674,8 @@ class TradingEnv(gym.Env):
         # COMPONENT 3: Holding Reward (Small incentive to stay in trades)
         has_any_position = any(pos is not None for pos in self.positions.values())
         if has_any_position:
-            # 0.5% of max clip (4.0) = 0.02
-            reward += 0.02
+            # Reduced to 0.01 to avoid "time milking" bias
+            reward += 0.01
         
         # Final safety clip for RL stability (USER: increase global clipping to 10)
         reward = np.clip(reward, -10.0, 10.0)
