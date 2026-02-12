@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import logging
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator, MACD
 from ta.volatility import AverageTrueRange, BollingerBands
@@ -11,37 +12,23 @@ class FeatureEngine:
         self._define_feature_names()
 
     def _define_feature_names(self):
-        """Defines the list of 140 features for reference."""
-        # Per-Asset Features (25 * 5 = 125)
-        for asset in self.assets:
-            # Price Action (3)
-            self.feature_names.extend([f"{asset}_close", f"{asset}_return_1", f"{asset}_return_12"])
-            # Volatility (3)
-            self.feature_names.extend([f"{asset}_atr_14", f"{asset}_atr_ratio", f"{asset}_bb_position"])
-            # Trend (4)
-            self.feature_names.extend([f"{asset}_ema_9", f"{asset}_ema_21", f"{asset}_price_vs_ema9", f"{asset}_ema9_vs_ema21"])
-            # Momentum (2)
-            self.feature_names.extend([f"{asset}_rsi_14", f"{asset}_macd_hist"])
-            # Volume (1)
-            self.feature_names.extend([f"{asset}_volume_ratio"])
-            # Position State (7)
-            self.feature_names.extend([
-                f"{asset}_has_position", f"{asset}_position_size", f"{asset}_unrealized_pnl",
-                f"{asset}_position_age", f"{asset}_entry_price", f"{asset}_current_sl", f"{asset}_current_tp"
-            ])
-            # Cross-Asset (5)
-            self.feature_names.extend([
-                f"{asset}_corr_basket", f"{asset}_rel_strength", f"{asset}_corr_xauusd",
-                f"{asset}_corr_eurusd", f"{asset}_rank"
-            ])
-
-        # Global Features (15)
-        # Portfolio State (4)
-        self.feature_names.extend(["equity", "margin_usage_pct", "drawdown", "num_open_positions"])
-        # Market Regime (3)
-        self.feature_names.extend(["risk_on_score", "asset_dispersion", "market_volatility"])
-        # Session (8)
+        """Defines the list of 40 features (25 asset-specific + 15 global)."""
+        # 1. Per-Asset Features (25)
+        self.feature_names = [
+            "close", "return_1", "return_12",
+            "atr_14", "atr_ratio", "bb_position",
+            "ema_9", "ema_21", "price_vs_ema9", "ema9_vs_ema21",
+            "rsi_14", "macd_hist",
+            "volume_ratio",
+            "has_position", "position_size", "unrealized_pnl",
+            "position_age", "entry_price", "current_sl", "current_tp",
+            "corr_basket", "rel_strength", "corr_xauusd", "corr_eurusd", "rank"
+        ]
+        
+        # 2. Global Features (15)
         self.feature_names.extend([
+            "equity", "margin_usage_pct", "drawdown", "num_open_positions",
+            "risk_on_score", "asset_dispersion", "market_volatility",
             "hour_sin", "hour_cos", "day_sin", "day_cos",
             "session_asian", "session_london", "session_ny", "session_overlap"
         ])
@@ -68,7 +55,6 @@ class FeatureEngine:
         aligned_df = self._add_session_features(aligned_df)
         
         # 5. Normalize Features (Robust Scaling)
-        # Create a copy for normalization to preserve raw values
         normalized_df = aligned_df.copy()
         normalized_df = self._normalize_features(normalized_df)
         
@@ -80,7 +66,6 @@ class FeatureEngine:
 
     def _align_data(self, data_dict):
         """Aligns all asset DataFrames to the same index."""
-        # Find common index range
         common_index = None
         for df in data_dict.values():
             if common_index is None:
@@ -90,7 +75,6 @@ class FeatureEngine:
         
         aligned_df = pd.DataFrame(index=common_index)
         for asset, df in data_dict.items():
-            # Rename columns to include asset prefix
             df_subset = df.loc[common_index].copy()
             df_subset.columns = [f"{asset}_{col}" for col in df_subset.columns]
             aligned_df = pd.concat([aligned_df, df_subset], axis=1)
@@ -177,23 +161,38 @@ class FeatureEngine:
         df['day_cos'] = np.cos(2 * np.pi * df.index.dayofweek / 7)
         
         # Sessions (UTC)
-        # Asian: 00:00 - 09:00
-        # London: 08:00 - 17:00
-        # NY: 13:00 - 22:00
-        # Overlap: 13:00 - 17:00
-        
         hours = df.index.hour
         df['session_asian'] = ((hours >= 0) & (hours < 9)).astype(int)
         df['session_london'] = ((hours >= 8) & (hours < 17)).astype(int)
         df['session_ny'] = ((hours >= 13) & (hours < 22)).astype(int)
         df['session_overlap'] = ((hours >= 13) & (hours < 17)).astype(int)
         
+        # Global Market Regime Features
+        gbp_ret = df.get("GBPUSD_return_1", 0)
+        xau_ret = df.get("XAUUSD_return_1", 0)
+        if isinstance(gbp_ret, pd.Series) and isinstance(xau_ret, pd.Series):
+            df['risk_on_score'] = (gbp_ret + xau_ret) / 2
+        else:
+            df['risk_on_score'] = 0
+        
+        # Asset dispersion
+        ret_cols = [f"{a}_return_1" for a in self.assets if f"{a}_return_1" in df.columns]
+        if ret_cols:
+            df['asset_dispersion'] = df[ret_cols].std(axis=1)
+        else:
+            df['asset_dispersion'] = 0
+            
+        # Market volatility
+        atr_ratio_cols = [f"{a}_atr_ratio" for a in self.assets if f"{a}_atr_ratio" in df.columns]
+        if atr_ratio_cols:
+            df['market_volatility'] = df[atr_ratio_cols].mean(axis=1)
+        else:
+            df['market_volatility'] = 0
+            
         return df
 
     def _normalize_features(self, df):
-        # Robust Scaling: (value - median) / IQR
-        # We use rolling statistics to avoid lookahead bias
-        
+        """Robust Scaling: (value - median) / IQR"""
         cols_to_normalize = []
         for asset in self.assets:
             cols_to_normalize.extend([
@@ -204,6 +203,9 @@ class FeatureEngine:
                 f"{asset}_volume_ratio"
             ])
             
+        # Add Global Features to normalization
+        cols_to_normalize.extend(['risk_on_score', 'asset_dispersion', 'market_volatility'])
+            
         for col in cols_to_normalize:
             if col in df.columns:
                 rolling_median = df[col].rolling(window=50).median()
@@ -211,73 +213,74 @@ class FeatureEngine:
                 rolling_q25 = df[col].rolling(window=50).quantile(0.25)
                 iqr = rolling_q75 - rolling_q25
                 
-                # Avoid division by zero
                 iqr = iqr.replace(0, 1e-6)
-                
                 df[col] = (df[col] - rolling_median) / iqr
-                
-                # Clip outliers
                 df[col] = df[col].clip(-5, 5)
-                
-        # Bounded features (0-1 or similar) don't need robust scaling, 
-        # but we can center them or scale them to [-1, 1] if needed.
-        # For now, we leave them as is or apply simple scaling.
         
         return df
 
-    def get_observation(self, current_step_data, portfolio_state):
+    def get_observation(self, current_step_data, portfolio_state, asset):
         """
-        Constructs the 140-feature observation vector for a single step.
+        Constructs the 40-feature observation vector for a single asset.
         Args:
             current_step_data: Row of preprocessed DataFrame for current timestamp.
             portfolio_state: Dictionary containing portfolio metrics.
+            asset: The specific asset to get features for.
         Returns:
-            np.array: 140-dimensional vector.
+            np.array: 40-dimensional vector [25 asset + 15 global].
         """
         obs = []
         
-        # 1. Per-Asset Features
-        for asset in self.assets:
-            # From Data
-            obs.extend([
-                current_step_data.get(f"{asset}_close", 0),
-                current_step_data.get(f"{asset}_return_1", 0),
-                current_step_data.get(f"{asset}_return_12", 0),
-                current_step_data.get(f"{asset}_atr_14", 0),
-                current_step_data.get(f"{asset}_atr_ratio", 0),
-                current_step_data.get(f"{asset}_bb_position", 0),
-                current_step_data.get(f"{asset}_ema_9", 0),
-                current_step_data.get(f"{asset}_ema_21", 0),
-                current_step_data.get(f"{asset}_price_vs_ema9", 0),
-                current_step_data.get(f"{asset}_ema9_vs_ema21", 0),
-                current_step_data.get(f"{asset}_rsi_14", 0),
-                current_step_data.get(f"{asset}_macd_hist", 0),
-                current_step_data.get(f"{asset}_volume_ratio", 0)
-            ])
-            
-            # From Portfolio State (Asset specific)
-            asset_state = portfolio_state.get(asset, {})
-            obs.extend([
-                asset_state.get('has_position', 0),
-                asset_state.get('position_size', 0),
-                asset_state.get('unrealized_pnl', 0),
-                asset_state.get('position_age', 0),
-                asset_state.get('entry_price', 0),
-                asset_state.get('current_sl', 0),
-                asset_state.get('current_tp', 0)
-            ])
-            
-            # From Data (Cross-Asset)
-            obs.extend([
-                current_step_data.get(f"{asset}_corr_basket", 0),
-                current_step_data.get(f"{asset}_rel_strength", 0),
-                current_step_data.get(f"{asset}_corr_xauusd", 0),
-                current_step_data.get(f"{asset}_corr_eurusd", 0),
-                current_step_data.get(f"{asset}_rank", 0)
-            ])
-            
-        # 2. Global Features
-        # From Portfolio State (Global)
+        # 1. Per-Asset Features (25)
+        # Price Action & Returns (3)
+        obs.extend([
+            current_step_data.get(f"{asset}_close", 0),
+            current_step_data.get(f"{asset}_return_1", 0),
+            current_step_data.get(f"{asset}_return_12", 0)
+        ])
+        # Volatility (3)
+        obs.extend([
+            current_step_data.get(f"{asset}_atr_14", 0),
+            current_step_data.get(f"{asset}_atr_ratio", 0),
+            current_step_data.get(f"{asset}_bb_position", 0)
+        ])
+        # Trend (4)
+        obs.extend([
+            current_step_data.get(f"{asset}_ema_9", 0),
+            current_step_data.get(f"{asset}_ema_21", 0),
+            current_step_data.get(f"{asset}_price_vs_ema9", 0),
+            current_step_data.get(f"{asset}_ema9_vs_ema21", 0)
+        ])
+        # Momentum (2)
+        obs.extend([
+            current_step_data.get(f"{asset}_rsi_14", 0),
+            current_step_data.get(f"{asset}_macd_hist", 0)
+        ])
+        # Volume (1)
+        obs.append(current_step_data.get(f"{asset}_volume_ratio", 0))
+        
+        # Position State (7)
+        asset_state = portfolio_state.get(asset, {})
+        obs.extend([
+            asset_state.get('has_position', 0),
+            asset_state.get('position_size', 0),
+            asset_state.get('unrealized_pnl', 0),
+            asset_state.get('position_age', 0),
+            asset_state.get('entry_price', 0),
+            asset_state.get('current_sl', 0),
+            asset_state.get('current_tp', 0)
+        ])
+        # Cross-Asset (5)
+        obs.extend([
+            current_step_data.get(f"{asset}_corr_basket", 0),
+            current_step_data.get(f"{asset}_rel_strength", 0),
+            current_step_data.get(f"{asset}_corr_xauusd", 0),
+            current_step_data.get(f"{asset}_corr_eurusd", 0),
+            current_step_data.get(f"{asset}_rank", 0)
+        ])
+
+        # 2. Global Features (15)
+        # Portfolio State (4)
         obs.extend([
             portfolio_state.get('equity', 0),
             portfolio_state.get('margin_usage_pct', 0),
@@ -285,22 +288,20 @@ class FeatureEngine:
             portfolio_state.get('num_open_positions', 0)
         ])
         
-        # From Data (Market Regime & Session)
-        # Risk on score: (GBPUSD_return + XAUUSD_return) / 2
+        # Market Regime (3)
         gbp_ret = current_step_data.get("GBPUSD_return_1", 0)
         xau_ret = current_step_data.get("XAUUSD_return_1", 0)
         risk_on = (gbp_ret + xau_ret) / 2
         
-        # Asset dispersion: std of returns
         returns = [current_step_data.get(f"{a}_return_1", 0) for a in self.assets]
         dispersion = np.std(returns)
         
-        # Market volatility: mean ATR ratio
         atrs = [current_step_data.get(f"{a}_atr_ratio", 0) for a in self.assets]
         mkt_vol = np.mean(atrs)
         
         obs.extend([risk_on, dispersion, mkt_vol])
         
+        # Session (8)
         obs.extend([
             current_step_data.get('hour_sin', 0),
             current_step_data.get('hour_cos', 0),

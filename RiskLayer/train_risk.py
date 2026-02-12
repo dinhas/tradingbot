@@ -10,11 +10,8 @@ from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.utils import set_random_seed
 from torch.nn import LeakyReLU
 
-# Add current dir and src to path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Add src to path so we can import the environment
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-
-import config
 from risk_env import RiskManagementEnv
 
 class Tee:
@@ -58,8 +55,11 @@ class TeeStderr:
         self.stderr.flush()
 
 # --- Configuration for MAX SPEED ---
-N_CPU = config.N_CPU
-N_ENVS = config.N_ENVS
+# CPU Utilization
+N_CPU = multiprocessing.cpu_count()
+# User requested MAXIMUM SPEED. Using ALL available cores.
+# Warning: System might become sluggish during training.
+N_ENVS = N_CPU
 
 print(f"Detected {N_CPU} CPUs. Using {N_ENVS} parallel environments for MAX SPEED.")
 
@@ -67,24 +67,52 @@ print(f"Detected {N_CPU} CPUs. Using {N_ENVS} parallel environments for MAX SPEE
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
-# PPO Hyperparameters (Loaded from config)
-TOTAL_TIMESTEPS = config.TOTAL_TIMESTEPS
-LEARNING_RATE = config.LEARNING_RATE
-N_STEPS = config.N_STEPS
-BATCH_SIZE = config.BATCH_SIZE
-GAMMA = config.GAMMA
-GAE_LAMBDA = config.GAE_LAMBDA
-ENT_COEF = config.ENT_COEF
-VF_COEF = config.VF_COEF
-MAX_GRAD_NORM = config.MAX_GRAD_NORM
-CLIP_RANGE = config.CLIP_RANGE
-N_EPOCHS = config.N_EPOCHS
+# PPO Hyperparameters — V3 "Intelligent Risk Allocation"
+# Tuned for 60-dim obs, 2-dim action (SL, TP multipliers)
+
+TOTAL_TIMESTEPS = 5_000_000
+LEARNING_RATE = 5e-5          # More stable for 2-action space
+N_STEPS = 2048                # Good balance for stability
+BATCH_SIZE = 256              # Standard batch size
+GAMMA = 0.99                  # standard discount for clean SL/TP rewards
+GAE_LAMBDA = 0.95             # Standard
+ENT_COEF = 0.03               # Lower entropy needed for 2 continuous actions
+VF_COEF = 0.5
+MAX_GRAD_NORM = 0.5           # Standard clipping
+CLIP_RANGE = 0.2              # Standard clipping
+N_EPOCHS = 5                  # Slightly more epochs to extract more from rollouts
+
+# V3 Rationale:
+# 1. 60-dim obs (was 70) => leaner network
+# 2. 2 actions (was 4) => faster convergence, lower entropy needed (0.03)
+# 3. 5M steps => ensures deep refinement of SL/TP strategy
 
 # Paths
-MODELS_DIR = config.MODELS_DIR
-LOG_DIR = config.LOG_DIR
-CHECKPOINT_DIR = config.CHECKPOINT_DIR
-DATASET_PATH = config.DATASET_PATH
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Fallback logic for finding dataset
+POSSIBLE_PATHS = [
+    os.path.join(BASE_DIR, 'risk_dataset.parquet'),
+    os.path.join(os.getcwd(), 'risk_dataset.parquet'),
+    os.path.join(os.getcwd(), 'RiskLayer', 'risk_dataset.parquet'),
+    'risk_dataset.parquet'
+]
+
+DATASET_PATH = None
+for p in POSSIBLE_PATHS:
+    if os.path.exists(p):
+        DATASET_PATH = p
+        break
+
+if DATASET_PATH is None:
+    # Default to standard path but warn
+    DATASET_PATH = os.path.join(BASE_DIR, 'risk_dataset.parquet')
+    print(f"WARNING: risk_dataset.parquet not found in common locations. Defaulting to {DATASET_PATH}")
+else:
+    print(f"Found Dataset at: {DATASET_PATH}")
+
+MODELS_DIR = os.path.join(BASE_DIR, 'models')
+LOG_DIR = os.path.join(BASE_DIR, 'logs')
+CHECKPOINT_DIR = os.path.join(MODELS_DIR, 'checkpoints')
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -92,10 +120,11 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 class EntropyDecayCallback(BaseCallback):
     """
-    Decays entropy coefficient linearly over time to encourage 
-    exploration early (learning to block) and exploitation later.
+    Decays entropy coefficient linearly over time.
+    V3: Higher initial entropy (0.08) for exploration,
+    decays to 0.01 over first 2M steps.
     """
-    def __init__(self, initial_ent=config.INITIAL_ENT, final_ent=config.FINAL_ENT, decay_steps=config.ENT_DECAY_STEPS):
+    def __init__(self, initial_ent=0.03, final_ent=0.005, decay_steps=2_000_000):
         super().__init__()
         self.initial_ent = initial_ent
         self.final_ent = final_ent
@@ -107,75 +136,62 @@ class EntropyDecayCallback(BaseCallback):
         self.model.ent_coef = new_ent
         return True
 
-class CustomStatsCallback(BaseCallback):
+class RollingMetricsCallback(BaseCallback):
     """
-    Forces episode statistics into the SB3 console table and 
-    provides immediate console feedback when an episode finishes.
+    V3: Tracks rolling Sharpe ratio and Profit Factor across episodes.
+    Logs equity, PnL, and rolling performance metrics to TensorBoard.
     """
-    def __init__(self, verbose=0):
-        super(CustomStatsCallback, self).__init__(verbose)
-        from collections import deque
-        self.episode_rewards = deque(maxlen=100)
-        self.episode_lengths = deque(maxlen=100)
-        self.last_step_count = 0
+    def __init__(self, window=50, verbose=0):
+        super(RollingMetricsCallback, self).__init__(verbose)
+        self.window = window
+        self.pnl_history = []
 
     def _on_step(self) -> bool:
-        # Heartbeat every 10000 steps to confirm callback is alive
-        # if self.num_timesteps - self.last_step_count >= 10000:
-        #     print(f"--- [Callback Heartbeat] Steps: {self.num_timesteps} | Finished Eps: {len(self.episode_rewards)} | Total Env Steps: {self.num_timesteps} ---", flush=True)
-        #     self.last_step_count = self.num_timesteps
-
-        if 'infos' in self.locals:
-            for info in self.locals['infos']:
-                # Individual Monitor wrapper uses 'episode'
-                # VecMonitor might use something else, but 'episode' is standard
-                if 'episode' in info:
-                    ep_rew = info['episode']['r']
-                    ep_len = info['episode']['l']
-                    self.episode_rewards.append(ep_rew)
-                    self.episode_lengths.append(ep_len)
-                    # print(f" >>> [Episode End] Reward: {ep_rew:.2f} | Length: {ep_len} | Total Avg: {np.mean(self.episode_rewards):.2f}", flush=True)
-        
-        # Periodically record to ensure the rollout group appears in SB3 table
-        if len(self.episode_rewards) > 0:
-            self.logger.record("rollout/ep_rew_mean", np.mean(self.episode_rewards))
-            self.logger.record("rollout/ep_len_mean", np.mean(self.episode_lengths))
-        elif self.num_timesteps > 50000:
-            # Force record 0s if nothing is happening so we see the rows in the table
-            self.logger.record("rollout/ep_rew_mean", 0.0)
-            self.logger.record("rollout/ep_len_mean", 0.0)
-            
-        return True
-
-class TensorboardCallback(BaseCallback):
-    """
-    Custom callback for logging additional values in tensorboard.
-    Logged less frequently to save I/O.
-    """
-    def __init__(self, verbose=0):
-        super(TensorboardCallback, self).__init__(verbose)
-
-    def _on_step(self) -> bool:
-        # Only log every 100 steps to reduce overhead
         if self.n_calls % 100 == 0:
-            if 'info' in self.locals and len(self.locals['info']) > 0:
-                info = self.locals['info'][0] 
-                if 'equity' in info:
-                    self.logger.record('custom/equity', info['equity'])
-                if 'pnl' in info:
-                    self.logger.record('custom/pnl', info['pnl'])
-                if 'lots' in info:
-                     self.logger.record('custom/lots', info['lots'])
+            if 'infos' in self.locals and len(self.locals['infos']) > 0:
+                for info in self.locals['infos']:
+                    if 'equity' in info:
+                        self.logger.record('custom/equity', info['equity'])
+                    if 'pnl' in info:
+                        pnl = info['pnl']
+                        self.logger.record('custom/pnl', pnl)
+                        if pnl != 0:
+                            self.pnl_history.append(pnl)
+                    if 'lots' in info:
+                        self.logger.record('custom/lots', info['lots'])
+        
+        # Log rolling metrics every 500 steps
+        if self.n_calls % 500 == 0 and len(self.pnl_history) >= 10:
+            recent = self.pnl_history[-self.window:]
+            recent_np = np.array(recent)
+            
+            # Rolling Sharpe
+            mean_r = np.mean(recent_np)
+            std_r = np.std(recent_np)
+            sharpe = mean_r / max(std_r, 1e-8)
+            self.logger.record('rolling/sharpe', sharpe)
+            
+            # Profit Factor
+            wins = recent_np[recent_np > 0]
+            losses = recent_np[recent_np < 0]
+            gross_profit = np.sum(wins) if len(wins) > 0 else 0
+            gross_loss = abs(np.sum(losses)) if len(losses) > 0 else 1e-8
+            pf = gross_profit / max(gross_loss, 1e-8)
+            self.logger.record('rolling/profit_factor', pf)
+            
+            # Win rate
+            win_rate = len(wins) / max(len(recent), 1)
+            self.logger.record('rolling/win_rate', win_rate)
+            
+            # Avg PnL
+            self.logger.record('rolling/avg_pnl', mean_r)
+        
         return True
-
-from stable_baselines3.common.monitor import Monitor
 
 def make_env(rank, seed=0):
     """Utility function for multiprocessed env."""
     def _init():
-        env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=config.INITIAL_EQUITY, is_training=True)
-        # Wrap each individual env in a Monitor for reliable logging
-        env = Monitor(env)
+        env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
         env.reset(seed=seed + rank)
         return env
     return _init
@@ -190,7 +206,7 @@ def train():
 
     # 0. Pre-generate Cache (Sequentially) to avoid race conditions
     print("Pre-validating dataset cache...")
-    temp_env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=config.INITIAL_EQUITY, is_training=True)
+    temp_env = RiskManagementEnv(dataset_path=DATASET_PATH, initial_equity=10.0, is_training=True)
     del temp_env
     print("Cache validated. Starting parallel environments...")
 
@@ -199,10 +215,6 @@ def train():
     env_fns = [make_env(i) for i in range(N_ENVS)]
     vec_env = SubprocVecEnv(env_fns)
     
-    # We already wrap individual envs with Monitor in make_env,
-    # so we don't strictly need VecMonitor here, which avoids the UserWarning.
-    # vec_env = VecMonitor(vec_env, LOG_DIR) 
-
     # CRITICAL: Normalize observations. 
     # Financial features are on vastly different scales (Prices vs Slopes vs PnL)
     vec_env = VecNormalize(
@@ -213,8 +225,18 @@ def train():
         clip_reward=10.0,
     )
     
-    # Network Architecture (Expert Recommended: Larger for 45 features)
-    policy_kwargs = config.POLICY_KWARGS
+    vec_env = VecMonitor(vec_env, LOG_DIR) # Monitor wrapper for logging
+
+    # Network Architecture
+    # 60 features -> 256 -> 128 -> 64 -> 2 actions
+    policy_kwargs = dict(
+        net_arch=dict(
+            pi=[256, 128, 64],   # Policy network (actor)
+            vf=[256, 128, 64]    # Value network (critic)
+        ),
+        activation_fn=LeakyReLU,
+        log_std_init=-1.5,
+    )
 
     # 2. Define Model (PPO)
     model = PPO(
@@ -237,22 +259,21 @@ def train():
     )
 
     # 3. Callbacks
+    # 3. Callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=500_000 // N_ENVS, # Roughly 500k steps (adjusted for parallel envs)
         save_path=CHECKPOINT_DIR,
         name_prefix="risk_model_ppo"
     )
     
-    entropy_callback = EntropyDecayCallback()
-    tb_callback = TensorboardCallback()
-    stats_callback = CustomStatsCallback()
+    entropy_callback = EntropyDecayCallback(initial_ent=0.03, final_ent=0.005, decay_steps=3_000_000)
+    metrics_callback = RollingMetricsCallback(window=50)
 
     # 4. Train
     try:
         model.learn(
             total_timesteps=TOTAL_TIMESTEPS, 
-            callback=[checkpoint_callback, entropy_callback, tb_callback, stats_callback],
-            log_interval=1,
+            callback=[checkpoint_callback, entropy_callback, metrics_callback],
             progress_bar=True
         )
         

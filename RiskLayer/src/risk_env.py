@@ -5,71 +5,61 @@ import numpy as np
 import pandas as pd
 from collections import deque
 
-try:
-    import config
-except ImportError:
-    # If called from outside RiskLayer (e.g. combined backtest), 
-    # we might need to find config differently. 
-    # For now, we assume it's available via sys.path as set by train_risk.py
-    config = None
-
 class RiskManagementEnv(gym.Env):
     """
-    Risk Management Environment (Sequential Episodic).
+    Risk Management Environment V3 (Sequential Episodic).
     
     The agent learns a policy to manage risk over a sequence of 100 trades.
-    It receives a trade signal (from Alpha model) and decides on SL, TP, and Position Size.
+    It receives a trade signal (from Alpha model) for a SPECIFIC PAIR and decides on SL, TP, position size.
     
-    State Space (45):
-        [0..39]:    Alpha Features (25 Asset-Specific + 15 Global)
-        [40..44]:   Account State (Equity, Drawdown, Leverage, RiskCap, Padding)
-        
     Action Space (2):
-        0: SL Multiplier (0.5x - 2.5x ATR)
+        0: SL Multiplier (0.2x - 2.0x ATR)
         1: TP Multiplier (0.5x - 5.0x ATR)
     """
     metadata = {'render_modes': ['human']}
     
-    def __init__(self, dataset_path=None, initial_equity=None, is_training=True):
+    def __init__(self, dataset_path, initial_equity=10.0, is_training=True):
         super(RiskManagementEnv, self).__init__()
         
-        # Load from config if not provided
-        self.dataset_path = dataset_path if dataset_path else getattr(config, 'DATASET_PATH', 'risk_dataset.parquet')
-        self.initial_equity_base = initial_equity if initial_equity else getattr(config, 'INITIAL_EQUITY', 10.0)
+        self.dataset_path = dataset_path
+        self.initial_equity_base = initial_equity
         self.is_training = is_training
         
         # --- Configuration ---
-        self.DRAWDOWN_TERMINATION_THRESHOLD = getattr(config, 'DRAWDOWN_TERMINATION_THRESHOLD', 0.95)
+        self.EPISODE_LENGTH = 100
         
-        self.MAX_RISK_PER_TRADE = 0.02 # 2% Fixed Risk recommendation
-        self.MAX_MARGIN_PER_TRADE_PCT = 0.50 # Max 50% margin
-        self.MAX_LEVERAGE = getattr(config, 'MAX_LEVERAGE', 100.0)
-        
-        # --- Cost Structure ---
-        self.TRADING_COST_PCT = 0.0
+        # USER REQUESTED CHANGES:
+        self.MAX_RISKING_PCT = 0.25     # Matching Alpha Model (25% equity margin)
+        self.MAX_MARGIN_PER_TRADE_PCT = 0.80 # Max 80% margin for $10 account survival
+        self.MAX_LEVERAGE = 100.0       # Matching Alpha Model Leverage
+        self.TRADING_COST_PCT = 0.0002  # ~2 pips/ticks roundtrip cost
         self.MIN_LOTS = 0.01
+        self.CONTRACT_SIZE = 100000     # Standard Lot
         
-        # Slippage & Spread
-        self.ENABLE_SLIPPAGE = True
-        self.SLIPPAGE_MIN_PIPS = getattr(config, 'SLIPPAGE_MIN_PIPS', 0.0)
-        self.SLIPPAGE_MAX_PIPS = getattr(config, 'SLIPPAGE_MAX_PIPS', 0.5)
-        self.SPREAD_MIN_PIPS = getattr(config, 'BASE_SPREAD_PIPS', 1.2)
-        self.SPREAD_ATR_FACTOR = 0.05 
+        # Slippage Configuration (Realistic Execution Model)
+        # Slippage is modeled as 0.5 - 1.5 pips adverse movement on entry
+        self.SLIPPAGE_MIN_PIPS = 0.5    # Minimum slippage in pips
+        self.SLIPPAGE_MAX_PIPS = 1.5    # Maximum slippage in pips
+        self.ENABLE_SLIPPAGE = True     # Toggle for A/B testing
         
-        import sys
-        self.MAX_STEPS = sys.maxsize
-        print(f"[{os.getpid()}] RiskEnv Initialized: Threshold={self.DRAWDOWN_TERMINATION_THRESHOLD}, Eq={self.initial_equity_base}")
+        # BLOCKING REWARD PARAMS
+        self.BLOCK_REWARD_SCALE = 100.0  # Scale for avoided loss
+        self.BLOCK_PENALTY_SCALE = 50.0 # Scale for missed profit (Psychological Asymmetry)
+        self.CONSTANT_BLOCK_PENALTY = -0.02 # Small cost per block
+        
+        # Tradeable Signal Definitions
+        self.TARGET_PROFIT_PCT = 0.001   # 0.1% Target Gain (10 pips)
+        self.MAX_DRAWDOWN_PCT = 0.0005   # 0.05% Drawdown Tolerance (5 pips)
         
         # --- Load Data ---
         self._load_data()
         
         # --- Spaces ---
         # Actions: [SL_Mult, TP_Mult] (Normalized -1 to 1)
-        # Removed Risk Factor (Sizing is now Fixed at 2% or managed by confidence externally)
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
         
-        # Observation: 45 features (25 Asset + 15 Global + 5 Account)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(45,), dtype=np.float32)
+        # Observation: 60 features (40 market + 5 account + 5 PnL history + 10 action history)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(60,), dtype=np.float32)
         
         # --- State Variables ---
         self.current_step = 0
@@ -95,8 +85,7 @@ class RiskManagementEnv(gym.Env):
         cache_valid = True
         required_files = ['features.npy', 'metadata.npy', 'entry_prices.npy', 'atrs.npy', 
                          'directions.npy', 'max_profit_pcts.npy', 'max_loss_pcts.npy', 
-                         'close_prices.npy', 'is_usd_quote.npy', 'is_usd_base.npy',
-                         'pip_scalars.npy', 'contract_sizes.npy']
+                         'close_prices.npy', 'is_usd_quote.npy', 'is_usd_base.npy']
                          
         for f in required_files:
             fp = os.path.join(cache_dir, f)
@@ -144,37 +133,17 @@ class RiskManagementEnv(gym.Env):
                     print("WARNING: Missing features column. Using zeros.")
                     features_array = np.zeros((len(self.df), 40), dtype=np.float32)
 
-                # Metadata checking for non-USDs and JPY/Gold logic
-                n = len(self.df)
-                is_usd_quote = np.ones(n, dtype=bool)
-                is_usd_base = np.zeros(n, dtype=bool)
-                pip_scalars = np.full(n, 0.0001, dtype=np.float32)
-                contract_sizes = np.full(n, 100000.0, dtype=np.float32)
-
+                # Metadata checking for non-USDs
                 if 'pair' in self.df.columns:
                      pairs = self.df['pair'].astype(str).str.upper()
                      is_usd_quote = pairs.str.endswith('USD').values
                      is_usd_base = (pairs.str.startswith('USD') & ~is_usd_quote).values
-                     
-                     # --- Fix JPY Error ---
-                     # Any pair containing JPY (USDJPY, EURJPY) has pip size 0.01
-                     is_jpy = pairs.str.contains('JPY').values
-                     pip_scalars[is_jpy] = 0.01
-                     
-                     # --- Fix Gold Contract Size & Pips ---
-                     is_gold = pairs.str.contains('XAU').values
-                     pip_scalars[is_gold] = 0.01 # Standard XAU pip is 0.01 (cents) usually
-                     contract_sizes[is_gold] = 100.0 # Gold standard contract size
-                     
                 else:
-                     # Fallback if pair missing: Try to infer from price?
-                     # Rough heuristic: if price > 50, likely JPY or Gold
-                     print("WARNING: 'pair' column missing. Inferring JPY/Gold from prices.")
-                     prices = self.df['entry_price'].values
-                     is_likely_jpy_or_gold = prices > 50.0
-                     pip_scalars[is_likely_jpy_or_gold] = 0.01
-                     # Cannot safely infer contract size from price, defaulting to 100k
-                     
+                     # Fallback
+                     n = len(self.df)
+                     is_usd_quote = np.ones(n, dtype=bool)
+                     is_usd_base = np.zeros(n, dtype=bool)
+
                 # Save arrays
                 np.save(os.path.join(cache_dir, 'features.npy'), features_array)
                 np.save(os.path.join(cache_dir, 'entry_prices.npy'), self.df['entry_price'].values.astype(np.float32))
@@ -185,8 +154,18 @@ class RiskManagementEnv(gym.Env):
                 np.save(os.path.join(cache_dir, 'close_prices.npy'), self.df['close_1000_price'].values.astype(np.float32))
                 np.save(os.path.join(cache_dir, 'is_usd_quote.npy'), is_usd_quote)
                 np.save(os.path.join(cache_dir, 'is_usd_base.npy'), is_usd_base)
-                np.save(os.path.join(cache_dir, 'pip_scalars.npy'), pip_scalars)
-                np.save(os.path.join(cache_dir, 'contract_sizes.npy'), contract_sizes)
+                
+                # V3 New Columns (Optional for backward compatibility with old datasets)
+                if 'final_pnl_pct' in self.df.columns:
+                     np.save(os.path.join(cache_dir, 'final_pnl_pcts.npy'), self.df['final_pnl_pct'].values.astype(np.float32))
+                else:
+                     # Fallback to zeros if not present
+                     np.save(os.path.join(cache_dir, 'final_pnl_pcts.npy'), np.zeros(len(self.df), dtype=np.float32))
+
+                if 'bars_to_exit' in self.df.columns:
+                     np.save(os.path.join(cache_dir, 'bars_to_exits.npy'), self.df['bars_to_exit'].values.astype(np.float32))
+                else:
+                     np.save(os.path.join(cache_dir, 'bars_to_exits.npy'), np.zeros(len(self.df), dtype=np.float32))
                 
                 # Optional time limit
                 if 'hours_to_exit' in self.df.columns:
@@ -218,8 +197,10 @@ class RiskManagementEnv(gym.Env):
             self.close_prices = np.load(os.path.join(cache_dir, 'close_prices.npy'), mmap_mode='r')
             self.is_usd_quote_arr = np.load(os.path.join(cache_dir, 'is_usd_quote.npy'), mmap_mode='r')
             self.is_usd_base_arr = np.load(os.path.join(cache_dir, 'is_usd_base.npy'), mmap_mode='r')
-            self.pip_scalars = np.load(os.path.join(cache_dir, 'pip_scalars.npy'), mmap_mode='r')
-            self.contract_sizes = np.load(os.path.join(cache_dir, 'contract_sizes.npy'), mmap_mode='r')
+            
+            # V3 New Arrays
+            self.final_pnl_pcts = np.load(os.path.join(cache_dir, 'final_pnl_pcts.npy'), mmap_mode='r')
+            self.bars_to_exits = np.load(os.path.join(cache_dir, 'bars_to_exits.npy'), mmap_mode='r')
             
             p_time = os.path.join(cache_dir, 'hours_to_exits.npy')
             if os.path.exists(p_time):
@@ -245,216 +226,238 @@ class RiskManagementEnv(gym.Env):
         self.equity = self.initial_equity_base
         self.peak_equity = self.initial_equity_base
         self.current_step = 0
-        self.episode_reward = 0.0
-        self.episode_len = 0
         
         # Reset History (Zero-filled)
         self.history_pnl = deque([0.0]*5, maxlen=5)
-        # BUG FIX 1: Critical History Actions Initialization
-        # Now 2 actions: [SL, TP]
+        # Simplified to 2-dim actions [SL, TP]
         self.history_actions = deque([np.zeros(2) for _ in range(5)], maxlen=5)
         
-        # Random start point anywhere in the dataset
-        if self.is_training and self.n_samples > 1:
-            self.episode_start_idx = int(self.np_random.integers(0, self.n_samples - 1))
+        # Sliding Window / Non-Overlapping Sampling
+        if self.is_training:
+            # Random block of 100 trades
+            max_start = self.n_samples - self.EPISODE_LENGTH - 1
+            if max_start > 0:
+                self.episode_start_idx = int(self.np_random.integers(0, max_start + 1))
+            else:
+                self.episode_start_idx = 0
         else:
+            # Sequential for testing
             self.episode_start_idx = 0
             
         return self._get_observation(), {}
 
     def _get_observation(self):
-        # 1. Market State (40)
+        # 1. Market State (40 features for CURRENT PAIR)
+        # Features are now per-pair (25 asset + 15 global), loaded from dataset
         global_idx = self.episode_start_idx + self.current_step
         if global_idx >= self.n_samples: global_idx = self.n_samples - 1
-        market_obs = self.features_array[global_idx] # Now already 40 dims
+        market_obs = self.features_array[global_idx]  # (40,) vector
         
         # 2. Account State (5)
-        drawdown = 1.0 - (self.equity / self.peak_equity)
+        drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
         equity_norm = self.equity / self.initial_equity_base
         
-        # BUG FIX: Risk Cap Formula logic preserved
-        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0)) 
+        # Risk cap multiplier based on drawdown
+        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+        
+        # Win streak normalization (track last 5 trades)
+        recent_pnls = list(self.history_pnl)[-5:]
+        wins = sum(1 for p in recent_pnls if p > 0)
+        win_streak_norm = wins / 5.0  # 0.0 to 1.0
         
         account_obs = np.array([
             equity_norm,
             drawdown,
-            0.0, # Leverage (placeholder)
+            0.0,  # Leverage placeholder (not used in current impl)
             risk_cap_mult,
-            0.0 # Padding
+            win_streak_norm
         ], dtype=np.float32)
         
-        # 3. History (20) - REMOVED
-        # hist_pnl = np.array(self.history_pnl, dtype=np.float32)
-        # hist_acts = np.array(self.history_actions, dtype=np.float32).flatten()
+        # 3. History PnL (5) - normalized
+        hist_pnl = np.array(list(self.history_pnl), dtype=np.float32)
         
-        obs = np.concatenate([market_obs, account_obs])
+        # 4. History Actions (10) - 5 steps × 2 actions
+        hist_acts = np.array([act for act in self.history_actions], dtype=np.float32).flatten()
         
-        # Safety check
-        if np.any(np.isnan(obs)) or np.any(np.isinf(obs)):
-            obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
-            
+        # Combine: [40 market + 5 account + 5 pnl + 10 actions] = 60
+        obs = np.concatenate([market_obs, account_obs, hist_pnl, hist_acts])
+        
+        # Safety: NaN/Inf handling
+        obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
+        
         return obs
-
+    def _evaluate_block_reward(self, max_favorable, max_adverse):
+        """
+        V3: Bounded blocking rewards using tanh scaling.
+        All rewards are in [-3, +3] range to match the trade reward scale.
+        
+        The risk model should learn WHEN to block (bad trades) vs WHEN to trade.
+        """
+        # 1. Blocking Loss = GOOD (reward positive)
+        if max_adverse < -0.03:
+            # Catastrophic loss avoided — max reward
+            return 3.0, "BLOCKED_CATASTROPHIC"
+        
+        if max_adverse < -0.015:
+            # Major loss avoided — good block
+            return 2.0, "BLOCKED_MAJOR_LOSS"
+        
+        if max_adverse < -0.005:
+            # Minor loss avoided — small positive
+            return 0.5, "BLOCKED_MINOR_LOSS"
+             
+        # 2. Blocking Winners = BAD (penalize opportunity cost)
+        if max_favorable > 0.02:
+            # Missed a huge winner — heavy penalty
+            return -3.0, "MISSED_HUGE_WIN"
+             
+        if max_favorable > 0.01:
+            # Missed a decent winner
+            return -1.5, "MISSED_BIG_WIN"
+             
+        if max_favorable > 0.003:
+            # Missed a small winner
+            return -0.5, "MISSED_SMALL_WIN"
+             
+        # 3. Noise trade blocked — neutral/slightly positive
+        return 0.2, "BLOCKED_NOISE"
     def step(self, action):
-        # Initialize variables to prevent NameError in return or edge cases
-        lots = 0.0
-        net_pnl = 0.0
-        reward = 0.0
-        terminated = False
-        truncated = False
-        hit_sl = False
-        hit_tp = False
-        exited_on = 'UNKNOWN'
-        exit_price = 0.0
-        
-        # --- 1. Parse Action ---
-        sl_mult = np.clip((action[0] + 1) / 2 * 2.0 + 0.5, 0.5, 2.5)   # 0.5 - 2.5 ATR
-        tp_mult = np.clip((action[1] + 1) / 2 * 4.5 + 0.5, 0.5, 5.0)   # 0.5 - 5.0 ATR
-        
-        # FIXED RISK: 2.0% per trade (Reverted to Fixed)
-        risk_raw = 0.02 
-
-        # --- 2. Get Trade Data (Circular Looping) ---
-        global_idx = (self.episode_start_idx + self.current_step) % self.n_samples
+        # Simplified: Only 2 actions [SL, TP]
+        sl_mult = np.clip((action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)   # 0.2 - 2.0 ATR
+        tp_mult = np.clip((action[1] + 1) / 2 * 4.5 + 0.5, 0.5, 5.0)   # 0.5 - 5.0 ATR  
+        # --- 2. Get Trade Data (Moved Before Logic) ---
+        global_idx = self.episode_start_idx + self.current_step
+        if global_idx >= self.n_samples:
+             return self._get_observation(), 0, True, True, {}
              
         entry_price_raw = self.entry_prices[global_idx]
         atr = self.atrs[global_idx]
         direction = self.directions[global_idx]
+        
         is_usd_quote = self.is_usd_quote_arr[global_idx]
         is_usd_base = self.is_usd_base_arr[global_idx]
-        pip_scalar = self.pip_scalars[global_idx]
-        contract_size = self.contract_sizes[global_idx]
         
-        # Outcomes for this signal
-        max_favorable = self.max_profit_pcts[global_idx] 
-        max_adverse = self.max_loss_pcts[global_idx]
-
-        # --- 3. Execute Logic ---
-        # Apply Slippage
+        # --- Apply Slippage (Adverse Entry) ---
         if self.ENABLE_SLIPPAGE:
             slippage_pips = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS)
-            entry_price = entry_price_raw + (direction * -1 * slippage_pips * pip_scalar)
+            slippage_price = slippage_pips * 0.0001 * entry_price_raw
+            entry_price = entry_price_raw + (direction * -1 * slippage_price)
         else:
             entry_price = entry_price_raw
-
-        # Apply Spread
-        spread_val = (self.SPREAD_MIN_PIPS * pip_scalar) + (self.SPREAD_ATR_FACTOR * atr)
-        entry_price += direction * spread_val
-
-        # --- 4. Position Sizing (Alpha Model Style) ---
-        # Default size_pct is 25% (0.5 * 0.50) but we use the environment's max margin setting
-        size_pct = 0.25 # Base 25% of equity per trade
+        # Use pre-loaded Arrays for Shadow Simulation
+        max_favorable = self.max_profit_pcts[global_idx] 
+        max_adverse = self.max_loss_pcts[global_idx] # Always negative (e.g. -0.001)
+        # --- 3. EXECUTE EVERY TRADE (Blocking Removed) ---
+        is_blocked = False
+        # --- 4. Alpha-Style Position Sizing (Fixed 25%) ---
+        position_size = self.equity * self.MAX_RISKING_PCT
+        position_val = position_size * self.MAX_LEVERAGE
         
-        # Apply Risk Capacitor (Drawdown protection)
-        peak_safe = max(self.peak_equity, 1e-9)
-        drawdown_val = 1.0 - (self.equity / peak_safe)
-        risk_cap_mult = max(0.2, 1.0 - (drawdown_val * 2.0))
-        
-        margin_allocated = (size_pct * self.equity) * risk_cap_mult
-        
-        # Minimum position check
-        if margin_allocated < 0.1: 
-            margin_allocated = 0.1
+        # Calculate Lots for tracking
+        lot_value_usd = self.CONTRACT_SIZE * entry_price if is_usd_quote else self.CONTRACT_SIZE
+        lots = position_val / (lot_value_usd + 1e-9)
+        lots = np.clip(lots, self.MIN_LOTS, 100.0)
             
-        # Maximum position check (from config/defaults)
-        margin_allocated = min(margin_allocated, self.equity * self.MAX_MARGIN_PER_TRADE_PCT)
-        
-        # Define Leverage
-        leverage = self.MAX_LEVERAGE
-        
-        # Calculate Lots for logging (informational)
-        # Notion = margin * leverage. 1 lot = contract_size (usually 100,000 for FX).
-        notional_value = margin_allocated * leverage
-        lots = notional_value / max(contract_size, 1e-9) 
-        
-        # --- Trade Execution ---
-        tp_dist_price = tp_mult * atr
+        # Record executed action
+        decoded_action = np.array([sl_mult, tp_mult], dtype=np.float32)
+        self.history_actions.append(decoded_action)
+        # --- 5. Simulate Outcome ---
         sl_dist_price = sl_mult * atr
+        tp_dist_price = tp_mult * atr
         
         sl_price = entry_price - (direction * sl_dist_price)
         tp_price = entry_price + (direction * tp_dist_price)
         
-        sl_pct_dist_raw = abs(sl_dist_price / entry_price_raw)
-        tp_pct_dist_raw = abs(tp_dist_price / entry_price_raw)
-
         if direction == 1: # LONG
-             hit_sl = max_adverse <= -sl_pct_dist_raw
-             hit_tp = max_favorable >= tp_pct_dist_raw
+             sl_pct_dist = -abs(sl_dist_price / entry_price)
+             tp_pct_dist = abs(tp_dist_price / entry_price)
+             hit_sl = max_adverse <= sl_pct_dist 
+             hit_tp = max_favorable >= tp_pct_dist
         else: # SHORT
-             hit_sl = max_favorable >= sl_pct_dist_raw
-             hit_tp = max_adverse <= -tp_pct_dist_raw
-
+             sl_pct_dist = abs(sl_dist_price / entry_price)
+             tp_pct_dist = -abs(tp_dist_price / entry_price)
+             hit_sl = max_favorable >= sl_pct_dist
+             hit_tp = max_adverse <= tp_pct_dist 
         if hit_sl and hit_tp:
-            if sl_pct_dist_raw < tp_pct_dist_raw: hit_tp = False
-            else: hit_sl = False 
+            if abs(sl_pct_dist) < abs(tp_pct_dist):
+                hit_tp = False
+            else:
+                hit_sl = False 
         
-        exited_on = 'TIME'
         exit_price = self.close_prices[global_idx]
+        exited_on = 'TIME'
+        
         if hit_sl:
-            exit_price, exited_on = sl_price, 'SL'
+            exit_price = sl_price
+            exited_on = 'SL'
         elif hit_tp:
-            exit_price, exited_on = tp_price, 'TP'
+            exit_price = tp_price
+            exited_on = 'TP'
+        else:
+            if self.has_time_limit and self.hours_to_exits[global_idx] > 24:
+                exited_on = 'TIME_LIMIT'
+            exit_price = self.close_prices[global_idx]
+            
+        # --- 6. Calculate Rewards ---
+        price_change = exit_price - entry_price
+        gross_pnl_quote = price_change * lots * self.CONTRACT_SIZE * direction
         
-        # PnL Calc (Alpha Model Style)
-        # price_change_pct * (margin * leverage)
-        price_change_pct = (exit_price - entry_price) / entry_price * direction
-        gross_pnl_usd = price_change_pct * (margin_allocated * leverage)
+        gross_pnl_usd = 0.0
+        if is_usd_quote:
+             gross_pnl_usd = gross_pnl_quote
+        elif is_usd_base:
+             gross_pnl_usd = gross_pnl_quote / exit_price 
+        else:
+             gross_pnl_usd = gross_pnl_quote
+        costs = position_val * self.TRADING_COST_PCT
+        net_pnl = gross_pnl_usd - costs
         
-        # Standard Account: Cost is captured via the Spread in the entry price.
-        # Removing the redundant commission fee.
-        total_fees = 0.0 
-        net_pnl = gross_pnl_usd - total_fees
-        
-        # Reward Calculation (Remains Risk Model specific for efficiency/quality)
-        realized_pct = (exit_price - entry_price) / entry_price * direction
-        atr_ratio = atr / entry_price_raw
-        efficiency = realized_pct / atr_ratio
-        pnl_reward = np.clip(efficiency * 2.0, -5.0, 5.0)
-        
-        bullet_bonus = 0.0
-        if exited_on == 'SL':
-            avoided_loss_dist = abs(max_adverse) if direction == 1 else abs(max_favorable)
-            # If we exited at SL and price went much further against us
-            if avoided_loss_dist > (sl_pct_dist_raw * 1.2):
-                saved_ratio = (avoided_loss_dist - sl_pct_dist_raw) / sl_pct_dist_raw
-                bullet_bonus = min(saved_ratio * 1.5, 3.0)
-        
-        # Final Reward Assembly
-        # Small step penalty to encourage faster exits or higher quality trades
-        # reward = pnl_reward + bullet_bonus - 0.01 
-        reward = np.clip(pnl_reward + bullet_bonus, -10.0, 10.0)
-        
-        # Update Equity
+        prev_equity = self.equity
         self.equity += net_pnl
         self.peak_equity = max(self.peak_equity, self.equity)
-
-        # Update Episode Stats
-        self.episode_reward += reward
-        self.episode_len += 1
+        prev_peak_safe = max(self.peak_equity, 1e-9)
+        prev_dd = 1.0 - (prev_equity / prev_peak_safe)
+        new_dd  = 1.0 - (self.equity / prev_peak_safe)
+        
+        dd_increase = max(0.0, new_dd - prev_dd)
+        dd_penalty = -(dd_increase ** 2) * 100.0
+        
+        prev_equity_safe = max(prev_equity, 1e-6)
+        pnl_ratio = net_pnl / prev_equity_safe
+        raw_pnl_reward = pnl_ratio * 100.0
+        pnl_reward = np.tanh(raw_pnl_reward) * 3.0
+        
+        tp_bonus = 0.0
+        if exited_on == 'TP':
+            tp_bonus = 0.2
+        
+        reward = pnl_reward + dd_penalty + tp_bonus
+        reward = np.clip(reward, -10.0, 10.0)
+        
+        self.history_pnl.append(net_pnl / prev_equity_safe)
+        
+        # --- 7. Termination ---
         self.current_step += 1
-        self.history_actions.append(np.array([sl_mult, tp_mult], dtype=np.float32))
-        self.history_pnl.append(net_pnl / max(self.equity, 1e-6))
+        terminated = False
+        truncated = (self.current_step >= self.EPISODE_LENGTH)
         
-        # if self.episode_len % 1000 == 0:
-        #     print(f"  [Trade {self.episode_len:3}] Rew: {reward:6.2f} | PnL: {net_pnl:8.2f} | Eq: {self.equity:8.2f} | Exit: {exited_on}", flush=True)
-
-        # --- Termination Logic ---
-        drawdown_end = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
-        terminated = drawdown_end >= self.DRAWDOWN_TERMINATION_THRESHOLD
-        
-        # Check for Data Exhaustion
-        next_global_idx = self.episode_start_idx + self.current_step
-        truncated = next_global_idx >= (self.n_samples - 1)
-        
-        if terminated:
-            # Terminal penalty removed per user request
-            pass
+        if self.equity < (self.initial_equity_base * 0.4):
+            terminated = True
+            reward -= 5.0
             
-        # if terminated or truncated:
-        #     import sys
-        #     reason = 'STOPOUT' if terminated else ('DATA_END' if truncated else 'UNKNOWN')
-        #     print(f"--- EPISODE FINISHED --- Reward: {self.episode_reward:.2f} | Length: {self.episode_len} | Equity: {self.equity:.2f} | Reason: {reason}", flush=True)
-        #     sys.stdout.flush()
-            
-        return self._get_observation(), reward, terminated, truncated, {'pnl': net_pnl, 'equity': self.equity, 'lots': lots}
-
+        info = {
+            'pnl': net_pnl,
+            'exit': exited_on,
+            'lots': lots,
+            'equity': self.equity,
+            'is_blocked': False,
+            'block_reward': 0.0,
+            'max_fav': max_favorable,
+            'max_adv': max_adverse,
+            'size_f': 0.5,
+            'dd_pen': dd_penalty,
+            'true_outcome': self.final_pnl_pcts[global_idx],
+            'ideal_bars': self.bars_to_exits[global_idx]
+        }
+        
+        return self._get_observation(), reward, terminated, truncated, info

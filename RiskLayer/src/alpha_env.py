@@ -16,7 +16,7 @@ class TradingEnv(gym.Env):
     
     Reward System:
         - Peeked P&L: Primary signal via PEEK & LABEL (solves credit assignment)
-        - Holding Reward: Small incentive to stay in trades
+        - Drawdown Penalty: Progressive risk control
     """
     metadata = {'render_modes': ['human']}
 
@@ -150,7 +150,7 @@ class TradingEnv(gym.Env):
             # Backtesting: Fixed equity, randomize start point
             self.equity = 10000.0
             self.leverage = 100
-            # Backtesting: Start from step 500 for indicator warmup
+            # Backtesting: Start from beginning to cover full dataset
             self.current_step = 500
             
         self.start_equity = self.equity
@@ -191,7 +191,7 @@ class TradingEnv(gym.Env):
             self.positions = {asset: None for asset in self.assets}
             return (
                 self._validate_observation(self._get_observation()),
-                0.0,  # Terminal penalty removed
+                -1.0,  # Strong terminal penalty
                 True, False,
                 {'trades': [], 'equity': 0.01, 'termination_reason': 'margin_call'}
             )
@@ -217,7 +217,7 @@ class TradingEnv(gym.Env):
         # During backtesting, we want to see full performance over entire dataset
         if drawdown > self.DRAWDOWN_LIMIT and self.is_training:
             terminated = True
-            # Terminal penalty removed
+            reward -= 0.5  # Terminal drawdown penalty
         
         info = {
             'trades': self.completed_trades,
@@ -297,8 +297,8 @@ class TradingEnv(gym.Env):
                 self._open_position(asset, direction, act, price, atr)
                 
             elif direction == 0 and current_pos is not None:
-                # Flat signal: hold position (user requested)
-                pass
+                # Flat signal: close position
+                self._close_position(asset, price)
 
     def _check_global_exposure(self, new_position_size):
         """Check if adding position would exceed 60% exposure limit."""
@@ -482,7 +482,15 @@ class TradingEnv(gym.Env):
 
     def _calculate_reward(self) -> float:
         """
-        Reward function tuned for RL stability.
+        Reward function with separate modes for training and backtesting.
+        
+        Training Mode (is_training=True):
+            - Uses PEEK & LABEL for credit assignment
+            - Progressive drawdown penalty
+            
+        Backtesting Mode (is_training=False):
+            - Uses actual realized P&L from completed trades
+            - Reflects real portfolio performance
         """
         reward = 0.0
         
@@ -493,48 +501,46 @@ class TradingEnv(gym.Env):
             # Sum up actual P&L from completed trades this step
             step_pnl = sum(trade['net_pnl'] for trade in self.completed_trades)
             
-            # Normalize: 1% of starting equity = 0.05 reward (scaled for stability)
+            # Normalize: 1% of starting equity = 0.1 reward
             if step_pnl != 0:
-                normalized_pnl = (step_pnl / self.start_equity) * 5.0
+                normalized_pnl = (step_pnl / self.start_equity) * 10.0
                 reward += normalized_pnl
             
-            return np.clip(reward, -10.0, 10.0)
+            return reward
         
         # =====================================================================
-        # TRAINING MODE: PEEK & LABEL + Holding Reward
+        # TRAINING MODE: PEEK & LABEL + Drawdown Penalty
         # =====================================================================
         
         # COMPONENT 1: Peeked P&L (Primary Signal)
         if self.peeked_pnl_step != 0:
-            # 1% move = 0.05 reward (scaled for stability)
-            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 5.0
+            # Normalize: 1% of starting equity = 0.1 reward
+            normalized_pnl = (self.peeked_pnl_step / self.start_equity) * 10.0
             
-            # Symmetrical rewards with slight penalty for losses
+            # Loss Aversion (Prospect Theory): Losses hurt 1.5x more
             if normalized_pnl < 0:
-                normalized_pnl = np.clip(normalized_pnl, -1.0, 0.0) * 1.2
+                normalized_pnl = np.clip(normalized_pnl, -1.0, 0.0) * 1.5
             else:
                 normalized_pnl = np.clip(normalized_pnl, 0.0, 1.0)
             reward += normalized_pnl
         
-        # COMPONENT 2: Holding Reward (Small incentive to stay in trades)
-        has_any_position = any(pos is not None for pos in self.positions.values())
-        if has_any_position:
-            # 1% of max clip (2.0) = 0.02
-            reward += 0.02
+        # COMPONENT 2: Progressive Drawdown Penalty
+        drawdown = 1.0 - (self.equity / self.peak_equity)
         
-        # Final safety clip
-        reward = np.clip(reward, -2.0, 2.0)
+        if drawdown > 0.05:
+            severity = min((drawdown - 0.05) / 0.20, 1.0)
+            penalty = -0.15 * (severity ** 1.5)
+            reward += penalty
         
         # Track best step reward
         if reward > self.max_step_reward:
             self.max_step_reward = reward
 
         if self.current_step % self.REWARD_LOG_INTERVAL == 0:
-            drawdown_log = 1.0 - (self.equity / self.peak_equity)
             logging.debug(
                 f"[Reward] step={self.current_step} "
                 f"peeked={self.peeked_pnl_step:.2f} "
-                f"drawdown={drawdown_log:.2%} "
+                f"drawdown={drawdown:.2%} "
                 f"current={reward:.4f} "
                 f"best_step={self.max_step_reward:.4f}"
             )
