@@ -7,6 +7,10 @@ The reward system focuses on **trade quality (efficiency)** and **capital preser
 
 ## Reward Components
 
+Action Space (2):
+*   **0: Stop Loss Multiplier**: Maps to 0.5x – 2.5x ATR.
+*   **1: Take Profit Multiplier**: Maps to 0.5x – 5.0x ATR.
+
 ### 1. **PnL Efficiency Reward** (Primary Component)
 **Formula:**
 ```python

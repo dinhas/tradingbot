@@ -10,8 +10,11 @@ from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.utils import set_random_seed
 from torch.nn import LeakyReLU
 
-# Add src to path so we can import the environment
+# Add current dir and src to path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+
+import config
 from risk_env import RiskManagementEnv
 
 class Tee:
@@ -55,11 +58,8 @@ class TeeStderr:
         self.stderr.flush()
 
 # --- Configuration for MAX SPEED ---
-# CPU Utilization
-N_CPU = multiprocessing.cpu_count()
-# User requested MAXIMUM SPEED. Using ALL available cores.
-# Warning: System might become sluggish during training.
-N_ENVS = N_CPU
+N_CPU = config.N_CPU
+N_ENVS = config.N_ENVS
 
 print(f"Detected {N_CPU} CPUs. Using {N_ENVS} parallel environments for MAX SPEED.")
 
@@ -67,35 +67,24 @@ print(f"Detected {N_CPU} CPUs. Using {N_ENVS} parallel environments for MAX SPEE
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
-# PPO Hyperparameters (Expert Tuned for Financial Data)
-# HYPERPARAMETERS - "Optimal Balanced Edition" ⚖️
-
-TOTAL_TIMESTEPS = 5_000_000 
-LEARNING_RATE = 1e-4      # 📉 Slower for more stable integration of noisy data.
-N_STEPS = 8192            # ⚖️ Balanced window for gradient updates vs frequency.
-BATCH_SIZE = 4096         # ⬆️ INCREASED. Better gradient estimation in noise.
-GAMMA = 0.98              
-GAE_LAMBDA = 0.95         
-ENT_COEF = 0.05           # 📉 Lowered starting entropy for more focused initial search.
-VF_COEF = 0.5
-MAX_GRAD_NORM = 0.5       
-CLIP_RANGE = 0.2          
-N_EPOCHS = 4              # 📉 DECREASED. Prevent over-fitting to local noise in batches.
-
-# Why this works:
-# 1. 1e-4 LR + 1M Steps = Stable convergence on core patterns.
-# 2. 4096 Batch Size = Reduces variance in gradient updates.
-# 3. 4 Epochs = Avoids the "policy drift" caused by noise-heavy samples.
+# PPO Hyperparameters (Loaded from config)
+TOTAL_TIMESTEPS = config.TOTAL_TIMESTEPS
+LEARNING_RATE = config.LEARNING_RATE
+N_STEPS = config.N_STEPS
+BATCH_SIZE = config.BATCH_SIZE
+GAMMA = config.GAMMA
+GAE_LAMBDA = config.GAE_LAMBDA
+ENT_COEF = config.ENT_COEF
+VF_COEF = config.VF_COEF
+MAX_GRAD_NORM = config.MAX_GRAD_NORM
+CLIP_RANGE = config.CLIP_RANGE
+N_EPOCHS = config.N_EPOCHS
 
 # Paths
-# Using absolute paths based on script location for robustness
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-
-MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
-LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
-CHECKPOINT_DIR = os.path.join(MODELS_DIR, "checkpoints")
-DATASET_PATH = os.path.join(PROJECT_ROOT, "risk_dataset.parquet")
+MODELS_DIR = config.MODELS_DIR
+LOG_DIR = config.LOG_DIR
+CHECKPOINT_DIR = config.CHECKPOINT_DIR
+DATASET_PATH = config.DATASET_PATH
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -106,7 +95,7 @@ class EntropyDecayCallback(BaseCallback):
     Decays entropy coefficient linearly over time to encourage 
     exploration early (learning to block) and exploitation later.
     """
-    def __init__(self, initial_ent=0.05, final_ent=0.01, decay_steps=4_000_000):
+    def __init__(self, initial_ent=config.INITIAL_ENT, final_ent=config.FINAL_ENT, decay_steps=config.ENT_DECAY_STEPS):
         super().__init__()
         self.initial_ent = initial_ent
         self.final_ent = final_ent
@@ -210,9 +199,9 @@ def train():
     env_fns = [make_env(i) for i in range(N_ENVS)]
     vec_env = SubprocVecEnv(env_fns)
     
-    # We no longer need VecMonitor if we use Monitor on individual envs, 
-    # but we'll keep it as a backup for the log file generation.
-    vec_env = VecMonitor(vec_env, LOG_DIR) 
+    # We already wrap individual envs with Monitor in make_env,
+    # so we don't strictly need VecMonitor here, which avoids the UserWarning.
+    # vec_env = VecMonitor(vec_env, LOG_DIR) 
 
     # CRITICAL: Normalize observations. 
     # Financial features are on vastly different scales (Prices vs Slopes vs PnL)
@@ -225,14 +214,7 @@ def train():
     )
     
     # Network Architecture (Expert Recommended: Larger for 45 features)
-    policy_kwargs = dict(
-        net_arch=dict(
-            pi=[256, 128],  # Policy network (actor) - Reduced to prevent noise memorization
-            vf=[256, 128]   # Value network (critic)
-        ),
-        activation_fn=LeakyReLU,  # Better for financial data
-        log_std_init=-1.0,  # Start with lower action variance
-    )
+    policy_kwargs = config.POLICY_KWARGS
 
     # 2. Define Model (PPO)
     model = PPO(
@@ -261,11 +243,7 @@ def train():
         name_prefix="risk_model_ppo"
     )
     
-    entropy_callback = EntropyDecayCallback(
-        initial_ent=ENT_COEF, 
-        final_ent=0.01, 
-        decay_steps=TOTAL_TIMESTEPS // 2 # Decays over first 2.5M steps
-    )
+    entropy_callback = EntropyDecayCallback()
     tb_callback = TensorboardCallback()
     stats_callback = CustomStatsCallback()
 

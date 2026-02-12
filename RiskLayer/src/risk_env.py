@@ -5,6 +5,14 @@ import numpy as np
 import pandas as pd
 from collections import deque
 
+try:
+    import config
+except ImportError:
+    # If called from outside RiskLayer (e.g. combined backtest), 
+    # we might need to find config differently. 
+    # For now, we assume it's available via sys.path as set by train_risk.py
+    config = None
+
 class RiskManagementEnv(gym.Env):
     """
     Risk Management Environment (Sequential Episodic).
@@ -17,49 +25,39 @@ class RiskManagementEnv(gym.Env):
         [40..44]:   Account State (Equity, Drawdown, Leverage, RiskCap, Padding)
         
     Action Space (2):
-        0: SL Multiplier (0.2x - 2.0x ATR)
-        1: TP Multiplier (0.5x - 4.0x ATR)
+        0: SL Multiplier (0.5x - 2.5x ATR)
+        1: TP Multiplier (0.5x - 5.0x ATR)
     """
     metadata = {'render_modes': ['human']}
     
-    def __init__(self, dataset_path, initial_equity=10.0, is_training=True):
+    def __init__(self, dataset_path=None, initial_equity=None, is_training=True):
         super(RiskManagementEnv, self).__init__()
         
-        self.dataset_path = dataset_path
-        self.initial_equity_base = initial_equity
+        # Load from config if not provided
+        self.dataset_path = dataset_path if dataset_path else getattr(config, 'DATASET_PATH', 'risk_dataset.parquet')
+        self.initial_equity_base = initial_equity if initial_equity else getattr(config, 'INITIAL_EQUITY', 10.0)
         self.is_training = is_training
         
         # --- Configuration ---
-        self.DRAWDOWN_TERMINATION_THRESHOLD = 0.95
+        self.DRAWDOWN_TERMINATION_THRESHOLD = getattr(config, 'DRAWDOWN_TERMINATION_THRESHOLD', 0.95)
         
-        # USER REQUESTED CHANGES:
-        self.MAX_RISK_PER_TRADE = 0.40  # 40% Max Risk per trade (Very Agressive)
-        self.MAX_MARGIN_PER_TRADE_PCT = 0.80 # Max 80% margin for $10 account survival
-        self.MAX_LEVERAGE = 400.0       # 1:400 Leverage
+        self.MAX_RISK_PER_TRADE = 0.02 # 2% Fixed Risk recommendation
+        self.MAX_MARGIN_PER_TRADE_PCT = 0.50 # Max 50% margin
+        self.MAX_LEVERAGE = getattr(config, 'MAX_LEVERAGE', 100.0)
         
-        # --- Realistic Fee Structure (Standard Account - No Commission) ---
-        # Standard accounts have 0 commission but slightly wider spreads
+        # --- Cost Structure ---
         self.TRADING_COST_PCT = 0.0
-        
         self.MIN_LOTS = 0.01
         
-        # Slippage Configuration (Realistic Execution Model)
-        # 0.0 - 0.5 pips (Standard retail execution)
-        self.SLIPPAGE_MIN_PIPS = 0.0
-        self.SLIPPAGE_MAX_PIPS = 0.5
+        # Slippage & Spread
         self.ENABLE_SLIPPAGE = True
-        
-        # Spread Configuration (Standard Account: 1.2 pip base)
-        self.SPREAD_MIN_PIPS = 1.2
-        self.SPREAD_ATR_FACTOR = 0.05   # Spread expands by 5% of ATR
-        
-        # Tradeable Signal Definitions
-        self.TARGET_PROFIT_PCT = 0.001   # 0.1% Target Gain (10 pips)
-        self.MAX_DRAWDOWN_PCT = 0.0005   # 0.05% Drawdown Tolerance (5 pips)
+        self.SLIPPAGE_MAX_PIPS = getattr(config, 'SLIPPAGE_MAX_PIPS', 0.5)
+        self.SPREAD_MIN_PIPS = getattr(config, 'BASE_SPREAD_PIPS', 1.2)
+        self.SPREAD_ATR_FACTOR = 0.05 
         
         import sys
-        self.MAX_STEPS = sys.maxsize # Infinite steps (ends on data exhaustion or drawdown)
-        print(f"[{os.getpid()}] RiskEnv Initialized: MAX_STEPS=Infinite, Threshold={self.DRAWDOWN_TERMINATION_THRESHOLD}")
+        self.MAX_STEPS = sys.maxsize
+        print(f"[{os.getpid()}] RiskEnv Initialized: Threshold={self.DRAWDOWN_TERMINATION_THRESHOLD}, Eq={self.initial_equity_base}")
         
         # --- Load Data ---
         self._load_data()
@@ -297,6 +295,17 @@ class RiskManagementEnv(gym.Env):
         return obs
 
     def step(self, action):
+        # Initialize variables to prevent NameError in return or edge cases
+        lots = 0.0
+        net_pnl = 0.0
+        reward = 0.0
+        terminated = False
+        truncated = False
+        hit_sl = False
+        hit_tp = False
+        exited_on = 'UNKNOWN'
+        exit_price = 0.0
+        
         # --- 1. Parse Action ---
         sl_mult = np.clip((action[0] + 1) / 2 * 2.0 + 0.5, 0.5, 2.5)   # 0.5 - 2.5 ATR
         tp_mult = np.clip((action[1] + 1) / 2 * 4.5 + 0.5, 0.5, 5.0)   # 0.5 - 5.0 ATR
@@ -332,9 +341,8 @@ class RiskManagementEnv(gym.Env):
         entry_price += direction * spread_val
 
         # --- 4. Position Sizing (Alpha Model Style) ---
-        # In Alpha model, size is margin-based: size_pct * equity
-        # Default size_pct is 0.5 (from act['size']) * MAX_POS_SIZE_PCT (0.5) = 25% of equity
-        size_pct = 0.5 * 0.50 # act['size'] * MAX_POS_SIZE_PCT
+        # Default size_pct is 25% (0.5 * 0.50) but we use the environment's max margin setting
+        size_pct = 0.25 # Base 25% of equity per trade
         
         # Apply Risk Capacitor (Drawdown protection)
         peak_safe = max(self.peak_equity, 1e-9)
@@ -344,14 +352,19 @@ class RiskManagementEnv(gym.Env):
         margin_allocated = (size_pct * self.equity) * risk_cap_mult
         
         # Minimum position check
-        if margin_allocated < 0.1: # self.MIN_POSITION_SIZE
+        if margin_allocated < 0.1: 
             margin_allocated = 0.1
             
-        # Maximum position check (50% of equity)
-        margin_allocated = min(margin_allocated, self.equity * 0.5)
+        # Maximum position check (from config/defaults)
+        margin_allocated = min(margin_allocated, self.equity * self.MAX_MARGIN_PER_TRADE_PCT)
         
-        # Define Leverage (Alpha model uses 100)
-        leverage = 100.0
+        # Define Leverage
+        leverage = self.MAX_LEVERAGE
+        
+        # Calculate Lots for logging (informational)
+        # Notion = margin * leverage. 1 lot = contract_size (usually 100,000 for FX).
+        notional_value = margin_allocated * leverage
+        lots = notional_value / max(contract_size, 1e-9) 
         
         # --- Trade Execution ---
         tp_dist_price = tp_mult * atr
