@@ -248,16 +248,26 @@ def run_backtest(args):
     logger.info("Loading model...")
     
     # Load VecNormalize stats if available
-    vecnorm_path = str(model_path).replace('.zip', '_vecnormalize.pkl')
-    # FALLBACK: Handle ppo_final_model.zip -> ppo_final_vecnormalize.pkl
-    if not os.path.exists(vecnorm_path):
-        vecnorm_path = str(model_path).replace('_model.zip', '_vecnormalize.pkl')
+    # Possible candidates for vecnormalize file
+    candidates = [
+        str(model_path).replace('.zip', '_vecnormalize.pkl'),
+        str(model_path).replace('_model.zip', '_vecnormalize.pkl'),
+        str(model_path).replace('.zip', '.pkl')
+    ]
+    
+    vecnorm_path = None
+    for cand in candidates:
+        if os.path.exists(cand) and cand != str(model_path):
+            vecnorm_path = cand
+            break
 
-    if os.path.exists(vecnorm_path):
+    if vecnorm_path:
         logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
         env = VecNormalize.load(vecnorm_path, env)
         env.training = False
         env.norm_reward = False
+    else:
+        logger.info("No VecNormalize stats found, using unnormalized environment")
     
     model = PPO.load(model_path, env=env)
     logger.info("Model loaded successfully")
