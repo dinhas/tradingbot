@@ -175,9 +175,26 @@ class CTraderClient:
         self._stop_heartbeat()
         self.client.stopService()
 
-    def send_request(self, request):
-        """Sends a request and returns a Deferred."""
-        return self.client.send(request)
+    @inlineCallbacks
+    def send_request(self, request, retries=3, timeout=10):
+        """Sends a request and returns a Deferred with retry logic."""
+        from twisted.internet.task import deferLater
+        last_error = None
+        for i in range(retries):
+            try:
+                # Some versions of the library might support client.send(request, timeout=timeout)
+                # If not, we rely on the internal timeout of the client or wrap it.
+                # Here we assume the client.send returns a deferred.
+                res = yield self.client.send(request)
+                return res
+            except Exception as e:
+                last_error = e
+                self.logger.warning(f"Request failed (attempt {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    # Exponential backoff: 1s, 2s, 4s...
+                    yield deferLater(reactor, 1.0 * (2**i), lambda: None)
+        
+        raise last_error
 
     @inlineCallbacks
     def fetch_ohlcv(self, symbol_id, count=150, period=ProtoOATrendbarPeriod.M5):

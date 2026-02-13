@@ -1,7 +1,10 @@
 import logging
+import time
 import numpy as np
+from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, gatherResults
-from twisted.internet.task import LoopingCall
+from twisted.python.failure import Failure
+from twisted.internet.task import LoopingCall, deferLater
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATradeSide
 from LiveExecution.src.database import DatabaseManager
 
@@ -322,7 +325,10 @@ class Orchestrator:
         """
         Main Event Handler: Triggered when an M5 candle closes.
         """
-        import time
+        # Stagger requests slightly to avoid bursts
+        jitter = (symbol_id % 5) * 0.5 # Up to 2s stagger
+        yield deferLater(reactor, jitter, lambda: None)
+        
         start_time = time.time()
         asset_name = self._get_symbol_name(symbol_id)
         self.logger.info(f"--- M5 Close Detected: {asset_name} ({symbol_id}) ---")
@@ -333,7 +339,11 @@ class Orchestrator:
              return
 
         # 1. Sync Positions and Check System/Asset Limits
-        yield self.sync_active_positions()
+        # Only sync once every 30 seconds across all symbol triggers to avoid redundancy
+        now_ts = time.time()
+        if not hasattr(self, '_last_sync_ts') or now_ts - self._last_sync_ts > 30:
+            self._last_sync_ts = now_ts
+            yield self.sync_active_positions()
         
         # System-level limit: Max 2 open positions
         if len(self.active_positions) >= 2:
@@ -348,13 +358,20 @@ class Orchestrator:
             # 2. Fetch Data (Parallel)
             # Fetch OHLCV and Account Summary
             d_ohlcv = self.client.fetch_ohlcv(symbol_id)
-            d_account = self.client.fetch_account_summary()
             
-            results = yield gatherResults([d_ohlcv, d_account], consumeErrors=True)
+            # Only fetch account summary if not recently updated
+            if not hasattr(self, '_last_account_refresh') or now_ts - self._last_account_refresh > 30:
+                self._last_account_refresh = now_ts
+                d_account = self.client.fetch_account_summary()
+                results = yield gatherResults([d_ohlcv, d_account], consumeErrors=True)
+            else:
+                results = yield gatherResults([d_ohlcv], consumeErrors=True)
+                # Use current portfolio state as account res if we didn't fetch it
+                results.append(None) 
             
             # Check for errors in results
             for res in results:
-                if isinstance(res, Exception): # Or Failure
+                if res is not None and isinstance(res, (Exception, Failure)):
                      self.logger.error(f"Data fetch failed: {res}")
                      self.notifier.send_error(f"Data fetch failed for {asset_name}: {res}")
                      return
@@ -364,7 +381,9 @@ class Orchestrator:
             
             # 3. Update State
             self.fm.update_data(symbol_id, ohlcv_res)
-            self.update_account_state(account_res)
+            if account_res:
+                self.update_account_state(account_res)
+                self._last_account_refresh = time.time()
             
             # 4. Run Inference
             inference_start = time.time()
