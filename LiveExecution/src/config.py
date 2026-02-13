@@ -19,7 +19,7 @@ def load_config(override_env=None):
         "CT_APP_SECRET",
         "CT_ACCOUNT_ID",
         "CT_ACCESS_TOKEN",
-        "DISCORD_WEBHOOK_URL"
+        "TELEGRAM_BOT_TOKEN"
     ]
     
     config = {}
@@ -33,7 +33,8 @@ def load_config(override_env=None):
     config["CT_APP_ID"] = env.get("CT_APP_ID")
     config["CT_APP_SECRET"] = env.get("CT_APP_SECRET")
     config["CT_ACCESS_TOKEN"] = env.get("CT_ACCESS_TOKEN")
-    config["DISCORD_WEBHOOK_URL"] = env.get("DISCORD_WEBHOOK_URL")
+    config["TELEGRAM_BOT_TOKEN"] = env.get("TELEGRAM_BOT_TOKEN")
+    config["TELEGRAM_CHAT_ID"] = env.get("TELEGRAM_CHAT_ID")
     
     # CT_ACCOUNT_ID must be an integer
     try:
@@ -45,5 +46,8 @@ def load_config(override_env=None):
     config["CT_HOST_TYPE"] = env.get("CT_HOST_TYPE", "demo").lower()
     if config["CT_HOST_TYPE"] not in ["demo", "live"]:
         raise ConfigError("CT_HOST_TYPE must be either 'demo' or 'live'.")
+
+    # DB Path defaults
+    config["DB_PATH"] = env.get("DB_PATH", "LiveExecution/data/live_trading.db")
         
     return config

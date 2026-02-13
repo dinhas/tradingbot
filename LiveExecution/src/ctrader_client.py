@@ -230,6 +230,17 @@ class CTraderClient:
         return Protobuf.extract(res_msg)
 
     @inlineCallbacks
+    def close_position(self, pos_id, volume):
+        """Closes an existing position."""
+        req = ProtoOAClosePositionReq()
+        req.ctidTraderAccountId = self.account_id
+        req.positionId = pos_id
+        req.volume = int(volume)
+
+        res_msg = yield self.send_request(req)
+        return Protobuf.extract(res_msg)
+
+    @inlineCallbacks
     def subscribe_trendbars(self, symbol_ids, period=ProtoOATrendbarPeriod.M5):
         """Subscribes to live trendbar updates for each symbol.
         

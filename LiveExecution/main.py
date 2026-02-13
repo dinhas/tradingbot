@@ -15,8 +15,9 @@ from LiveExecution.src.logger import setup_logger
 from LiveExecution.src.ctrader_client import CTraderClient
 from LiveExecution.src.features import FeatureManager
 from LiveExecution.src.models import ModelLoader
-from LiveExecution.src.notifications import DiscordNotifier
+from LiveExecution.src.notifications import TelegramNotifier
 from LiveExecution.src.orchestrator import Orchestrator
+from LiveExecution.dashboard.main import DashboardServer
 
 def main():
     # 1. Setup Environment & Logging
@@ -34,7 +35,7 @@ def main():
     # 3. Initialize Components
     try:
         # Notifier
-        notifier = DiscordNotifier(config)
+        notifier = TelegramNotifier(config)
         notifier.send_message("🟢 **System Starting Up...**")
 
         # Core Components
@@ -46,7 +47,14 @@ def main():
         model_loader.load_all_models()
 
         # Orchestrator
-        orchestrator = Orchestrator(client, feature_manager, model_loader, notifier)
+        orchestrator = Orchestrator(client, feature_manager, model_loader, notifier, config=config)
+
+        # Link notifier to orchestrator for commands
+        notifier.set_orchestrator(orchestrator)
+
+        # 3.5 Start Dashboard
+        dashboard = DashboardServer(orchestrator)
+        dashboard.start()
 
         # 4. Wiring
         # Connect Client Events to Orchestrator

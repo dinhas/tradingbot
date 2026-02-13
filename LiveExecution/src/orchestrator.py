@@ -1,22 +1,31 @@
 import logging
 import numpy as np
 from twisted.internet.defer import inlineCallbacks, gatherResults
+from twisted.internet.task import LoopingCall
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATradeSide
+from LiveExecution.src.database import DatabaseManager
 
 class Orchestrator:
     """
     Coordinates data fetching, feature engineering, and sequential inference.
     """
-    def __init__(self, client, feature_manager, model_loader, notifier):
+    def __init__(self, client, feature_manager, model_loader, notifier, config=None):
         self.logger = logging.getLogger("LiveExecution")
         self.client = client
         self.fm = feature_manager
         self.ml = model_loader
         self.notifier = notifier
+        self.config = config
+
+        # Database
+        db_path = config.get("DB_PATH", "LiveExecution/data/live_trading.db") if config else "LiveExecution/data/live_trading.db"
+        self.db = DatabaseManager(db_path)
         
         # Internal state
         self.portfolio_state = {asset: {} for asset in self.fm.assets} 
         self.active_positions = {} 
+        self.entry_prices = {} # Maps positionId to entry_price
+        self.pnl_milestones = {} # Maps positionId to last notified % milestone
         self.pending_risk_actions = {} # Maps positionId to risk_actions
         
         # Price precision (digits) for each asset
@@ -61,44 +70,47 @@ class Orchestrator:
                 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAExecutionType
                 
                 if event.executionType == ProtoOAExecutionType.ORDER_FILLED:
-                    # If positionStatus is CLOSED/DELETED, it's a closure
                     from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAPositionStatus
-                    if pos.positionStatus in [ProtoOAPositionStatus.POSITION_STATUS_CLOSED, 6]: # 6 is often used for DELETED/GONE
-                         self.logger.info(f"Position {pos_id} CLOSED for {asset_name}")
-                         
-                         # Calculate PnL % for Risk Model
-                         # Note: In a real bot, we'd pull the actual realized PnL from the broker
-                         # For now, we'll derive it if possible or use balance change
-                         # But since we have the price, we can calculate it:
-                         if pos_id in self.pending_risk_actions:
-                             entry_price = pos.price
-                             # Realized PnL is usually in pos.swap + pos.commission + pnl
-                             # However, Risk Model features expect PnL % relative to entry
-                             # This is how it was trained in the backtest.
-                             
-                             # We'll use a simplified PnL % for now or wait for account balance sync
-                             # But better to record something close to what the model expects.
-                             # Let's assume we can calculate it relative to entry price.
-                             # (ClosePrice - EntryPrice) / EntryPrice * side
-                             # But we might not have the closure price directly in this event if it just says 'closed'
-                             
-                             # Actually, let's keep it simple: fetch account summary after closure 
-                             # and use balance delta? No, the risk model wants PnL per trade.
-                             pass
-                         
-                         if symbol_id in self.active_positions:
-                             del self.active_positions[symbol_id]
 
+                    # 1. Handle Closures
+                    if pos.positionStatus in [ProtoOAPositionStatus.POSITION_STATUS_CLOSED, 6]: # 6=DELETED
+                        self.logger.info(f"Position {pos_id} CLOSED for {asset_name}")
+
+                        # Log to DB (Simplified PnL from event if available, otherwise just mark closed)
+                        # cTrader event has moneyBalance (realized PnL) for closing orders
+                        realized_pnl = 0
+                        if hasattr(event, 'order') and event.order and hasattr(event.order, 'moneyBalance'):
+                             realized_pnl = event.order.moneyBalance / 100.0
+
+                        self.db.log_trade_closure(pos_id, pos.price, realized_pnl, realized_pnl, "CLOSED")
+
+                        if symbol_id in self.active_positions:
+                            del self.active_positions[symbol_id]
+
+                    # 2. Handle Openings
                     elif pos.positionStatus == ProtoOAPositionStatus.POSITION_STATUS_OPEN:
                         # Position just opened or updated
                         self.active_positions[symbol_id] = pos_id
+                        self.entry_prices[pos_id] = pos.price
                         self.logger.info(f"Position {pos_id} is now OPEN for {asset_name}")
+
+                        # Log to DB
+                        contract_size = 100 if asset_name == 'XAUUSD' else 100000
+                        lots = pos.tradeData.volume / (contract_size * 100)
+
+                        self.db.log_trade_opening(
+                            pos_id,
+                            asset_name,
+                            'BUY' if pos.tradeData.tradeSide == 1 else 'SELL',
+                            lots,
+                            pos.price
+                        )
 
             # If it's a trade closure, let's log the detail
             if hasattr(event, 'order') and event.order:
                  order = event.order
                  if order.closingOrder:
-                      self.logger.info(f"Order {order.orderId} is a CLOSING order.")
+                      self.logger.info(f"Order {order.orderId} is a CLOSING order. PnL: {getattr(order, 'moneyBalance', 0)/100.0}")
                 
         except Exception as e:
             self.logger.error(f"Error handling execution event: {e}")
@@ -133,11 +145,14 @@ class Orchestrator:
             res = yield self.client.fetch_open_positions()
             # Reset active positions
             new_active = {}
+            new_entries = {}
             for pos in res.position:
                 if hasattr(pos, 'tradeData') and hasattr(pos.tradeData, 'symbolId'):
                     new_active[pos.tradeData.symbolId] = pos.positionId
+                    new_entries[pos.positionId] = pos.price
             
             self.active_positions = new_active
+            self.entry_prices = new_entries
             self.logger.info(f"Synced {len(self.active_positions)} active positions from API.")
             
             # Update portfolio state for features
@@ -146,6 +161,99 @@ class Orchestrator:
             
         except Exception as e:
             self.logger.error(f"Failed to sync active positions: {e}")
+
+    @inlineCallbacks
+    def _poll_account_state(self):
+        """Polls account summary and logs it to database."""
+        try:
+            acc_res = yield self.client.fetch_account_summary()
+            self.update_account_state(acc_res)
+
+            balance = self.portfolio_state.get('balance', 0)
+            equity = self.portfolio_state.get('equity', balance)
+            peak = self.portfolio_state.get('peak_equity', equity)
+            drawdown = 1.0 - (equity / peak) if peak > 0 else 0
+
+            self.db.log_account_state(balance, equity, drawdown, 0.0)
+            self.logger.debug(f"Polled account state: Balance=${balance}, Equity=${equity}")
+
+            # Check PnL Milestones
+            self._check_pnl_milestones()
+
+        except Exception as e:
+            self.logger.error(f"Account polling failed: {e}")
+
+    def _check_pnl_milestones(self):
+        """Checks if any open position has crossed a 1% PnL milestone."""
+        for symbol_id, pos_id in self.active_positions.items():
+            if pos_id not in self.entry_prices or pos_id == "PENDING": continue
+
+            asset = self._get_symbol_name(symbol_id)
+            if asset not in self.fm.history or self.fm.history[asset].empty: continue
+
+            entry_price = self.entry_prices[pos_id]
+            current_price = self.fm.history[asset].iloc[-1]['close']
+
+            # Determine direction from DB
+            active_trades = self.db.get_active_trades()
+            trade = next((t for t in active_trades if t['pos_id'] == pos_id), None)
+            if not trade: continue
+
+            direction = 1 if trade['action'] == 'BUY' else -1
+            pnl_pct = (current_price - entry_price) / entry_price * direction * 100.0
+
+            last_m = self.pnl_milestones.get(pos_id, 0)
+            current_m = int(pnl_pct)
+
+            if abs(current_m - last_m) >= 1:
+                self.pnl_milestones[pos_id] = current_m
+                emoji = "📈" if current_m > last_m else "📉"
+                self.notifier.send_message(f"{emoji} **PnL Milestone:** `{asset}` is now `{current_m:+.0f}%` ({pnl_pct:+.2f}%)")
+
+    def _send_pulse_check(self):
+        """Sends a recurring health check message."""
+        balance = self.portfolio_state.get('balance', 0)
+        num_pos = len(self.active_positions)
+        msg = (
+            "💚 **System Pulse Check**\n"
+            "Status: `All systems nominal`\n"
+            f"Balance: `${balance:,.2f}`\n"
+            f"Active Positions: `{num_pos}`"
+        )
+        self.notifier.send_message(msg)
+
+    def _check_daily_summary(self):
+        """Checks if it's time to send the daily performance summary."""
+        from datetime import datetime
+        now = datetime.utcnow()
+        if now.hour == 0 and not getattr(self, '_daily_summary_sent', False):
+            self._send_daily_summary()
+            self._daily_summary_sent = True
+        elif now.hour != 0:
+            self._daily_summary_sent = False
+
+    def _send_daily_summary(self):
+        """Sends a summary of the last 24 hours of trading."""
+        recent = self.db.get_recent_trades(limit=100)
+        # Filter for trades closed in the last 24 hours
+        from datetime import datetime, timedelta
+        yesterday = (datetime.utcnow() - timedelta(days=1)).isoformat()
+
+        daily_trades = [t for t in recent if t['exit_time'] and t['exit_time'] > yesterday]
+
+        total_pnl = sum(t['net_pnl'] for t in daily_trades)
+        wins = sum(1 for t in daily_trades if t['net_pnl'] > 0)
+        total = len(daily_trades)
+        win_rate = (wins / total) if total > 0 else 0
+
+        msg = (
+            "📅 **Daily Performance Summary**\n"
+            f"Total Trades: `{total}`\n"
+            f"Win Rate: `{win_rate:.1%}`\n"
+            f"Daily PnL: `${total_pnl:+.2f}`\n"
+            f"Current Balance: `${self.portfolio_state.get('balance', 0):,.2f}`"
+        )
+        self.notifier.send_message(msg)
 
     @inlineCallbacks
     def bootstrap(self):
@@ -157,6 +265,18 @@ class Orchestrator:
             acc_res = yield self.client.fetch_account_summary()
             self.update_account_state(acc_res)
             
+            # Start 60s Account Poller
+            self.poller = LoopingCall(self._poll_account_state)
+            self.poller.start(60.0, now=False)
+
+            # Start 2h Pulse Check
+            self.pulse_timer = LoopingCall(self._send_pulse_check)
+            self.pulse_timer.start(7200.0, now=False)
+
+            # Start 1h Daily Summary Checker
+            self.daily_timer = LoopingCall(self._check_daily_summary)
+            self.daily_timer.start(3600.0, now=False)
+
             # 2. Fetch History
             tasks = []
             for asset_name in self.fm.assets:
@@ -272,18 +392,24 @@ class Orchestrator:
         """Places the order and notifies."""
         try:
             side = ProtoOATradeSide.BUY if decision['action'] == 1 else ProtoOATradeSide.SELL
+            asset_name = decision['asset']
             
             # Convert Lots to cTrader volume (Units * 100)
-            # Lots are already calculated in run_inference_chain to match backtest
-            # Round volume to nearest 100,000 (0.01 lots) - cTrader step requirement
-            # 1 Lot = 100,000 units = 10,000,000 protocol volume
-            # 0.01 Lot = 1,000 units = 100,000 protocol volume
-            raw_volume = decision['lots'] * 100000 * 100
-            volume = int(round(raw_volume / 100000) * 100000)
+            # Forex: 1 Lot = 100,000 units
+            # Gold: 1 Lot = 100 units
+            contract_size = 100 if asset_name == 'XAUUSD' else 100000
+
+            raw_volume = decision['lots'] * contract_size * 100
+
+            # Round volume to nearest step (cTrader step requirement)
+            # For Forex: 0.01 lots = 1,000 units = 100,000 protocol volume
+            # For Gold: 0.01 lots = 1 unit = 100 protocol volume
+            step = 100 if asset_name == 'XAUUSD' else 100000
+            volume = int(round(raw_volume / step) * step)
             
-            # Ensure minimum volume (100,000 = 0.01 lots)
-            if volume < 100000: 
-                volume = 100000
+            # Ensure minimum volume
+            if volume < step:
+                volume = step
             
             self.logger.info(f"Executing {decision['asset']}: {side} Lots: {decision['lots']:.2f} Vol: {volume}")
             
@@ -325,13 +451,12 @@ class Orchestrator:
         """
         try:
             asset_name = self._get_symbol_name(symbol_id)
-            # 1. Get Alpha Observation (140)
-            alpha_obs = self.fm.get_alpha_observation(self.portfolio_state)
+            # 1. Get Alpha Observation (40)
+            alpha_obs = self.fm.get_alpha_observation(asset_name, self.portfolio_state)
             
             # 2. Alpha Prediction
-            all_alpha_actions = self.ml.get_alpha_action(alpha_obs)
-            asset_index = self.fm.assets.index(asset_name)
-            alpha_val = all_alpha_actions[asset_index]
+            alpha_actions = self.ml.get_alpha_action(alpha_obs)
+            alpha_val = alpha_actions[0]
             
             # Parse Alpha Direction (Match Backtest: > 0.33 Buy, < -0.33 Sell)
             direction = 1 if alpha_val > 0.33 else (-1 if alpha_val < -0.33 else 0)
@@ -341,26 +466,21 @@ class Orchestrator:
             if direction == 0:
                 return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold'}
             
-            # 3. Get Risk Observation (165)
-            risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs, self.portfolio_state)
+            # 3. Get Risk Observation (60)
+            risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs)
             
-            # 4. Risk Prediction
+            # 4. Risk Prediction (SL Model)
             risk_action = self.ml.get_risk_action(risk_obs)
             
-            # Parse Risk Action (Match Backtest)
-            # sl_mult: 0.2-2.0, tp_mult: 0.5-4.0, risk_raw: 0.0-1.0
-            sl_mult = np.clip((risk_action[0] + 1) / 2 * 1.8 + 0.2, 0.2, 2.0)
-            tp_mult = np.clip((risk_action[1] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
-            risk_raw = np.clip((risk_action[2] + 1) / 2, 0.0, 1.0)
+            sl_mult = risk_action['sl_mult']
+            tp_mult = risk_action['tp_mult']
+            size_out = risk_action['size']
             
-            # Blocking Logic (Threshold: 0.20)
-            if risk_raw < 0.20:
-                self.logger.info(f"Risk Block for {asset_name}: raw risk {risk_raw:.4f} < 0.20")
-                return {'action': 0, 'allowed': False, 'reason': f'Risk Block ({risk_raw:.2f})'}
+            # Blocking Logic (Threshold: 0.10 confidence)
+            if size_out < 0.10:
+                self.logger.info(f"Risk Block for {asset_name}: confidence {size_out:.4f} < 0.10")
+                return {'action': 0, 'allowed': False, 'reason': f'Risk Block ({size_out:.2f})'}
 
-            # Rescale Risk (Match Backtest)
-            risk_raw_scaled = (risk_raw - 0.20) / 0.80
-            
             # 5. Calculate Sizing & SL/TP Prices
             digits = self.symbol_digits.get(asset_name, 5)
             current_price = round(self.fm.history[asset_name].iloc[-1]['close'], digits)
@@ -374,41 +494,38 @@ class Orchestrator:
             tp_price = round(current_price + (direction * tp_dist), digits)
             
             # Round distances to symbol's precision to avoid 'invalid precision' errors
-            # This ensures the SL/TP price levels are mathematically valid for the broker
             pip_unit = 10 ** -digits
             sl_dist = round(sl_dist / pip_unit) * pip_unit
             tp_dist = round(tp_dist / pip_unit) * pip_unit
             
-            # Calculate Relative values for API (Price Distance * 100,000)
-            relative_sl = int(round(sl_dist * 100000))
-            relative_tp = int(round(tp_dist * 100000))
+            # Calculate Relative values for API (Price Distance in Points)
+            multiplier = 10 ** digits
+            relative_sl = int(round(sl_dist * multiplier))
+            relative_tp = int(round(tp_dist * multiplier))
             
             # Lot Calculation (Match Backtest calculate_position_size)
             equity = self.portfolio_state.get('equity', 10.0)
-            balance = self.portfolio_state.get('balance', 0)
+            MAX_LEVERAGE = 100.0
             
-            # USER OVERRIDE: 0.01 lots if balance < $30
-            if balance < 30:
-                lots = 0.01
-                self.logger.info(f"Balance ${balance:.2f} < $30. Using hardcoded lot size: 0.01")
+            # Final_Size = Equity * size from model (0.0 to 1.0)
+            position_size = equity * size_out
+            position_value_usd = position_size * MAX_LEVERAGE
+
+            # Calculate lot_value_usd
+            contract_size = 100 if asset_name == 'XAUUSD' else 100000
+            is_usd_quote = asset_name in ['EURUSD', 'GBPUSD', 'XAUUSD']
+            if is_usd_quote:
+                lot_value_usd = contract_size * current_price
             else:
-                MAX_RISK_PER_TRADE = 0.80
-                drawdown = 1.0 - (equity / max(self.portfolio_state.get('peak_equity', equity), 1e-9))
-                risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+                lot_value_usd = contract_size
                 
-                actual_risk_pct = risk_raw_scaled * MAX_RISK_PER_TRADE * risk_cap_mult
-                risk_amount_cash = equity * actual_risk_pct
-                
-                contract_size = 100 if asset_name == 'XAUUSD' else 100000
-                # Simplified for USD quote pairs (EURUSD, GBPUSD, XAUUSD)
-                lots = risk_amount_cash / (sl_dist * contract_size)
-            
+            lots = position_value_usd / (lot_value_usd + 1e-9)
             lots = np.clip(lots, 0.01, 100.0)
             
             return {
                 'symbol_id': symbol_id,
                 'asset': asset_name,
-                'action': 1 if direction == 1 else 2, # 1=Buy, 2=Sell in protocol? Actually logic uses side.
+                'action': 1 if direction == 1 else 2,
                 'lots': float(lots),
                 'sl': float(sl_price),
                 'tp': float(tp_price),
@@ -427,10 +544,50 @@ class Orchestrator:
             self.logger.error(traceback.format_exc())
             return None
 
+    @inlineCallbacks
+    def close_position_by_id(self, pos_id, symbol_id):
+        """Manually closes a position."""
+        self.logger.warning(f"Manual close requested for position {pos_id}")
+        try:
+            # We need the volume to close.
+            res = yield self.client.fetch_open_positions()
+            target_pos = None
+            for pos in res.position:
+                if pos.positionId == pos_id:
+                    target_pos = pos
+                    break
+
+            if target_pos:
+                yield self.client.close_position(pos_id, target_pos.tradeData.volume)
+                self.notifier.send_message(f"🗑️ **Manual Close:** Position `{pos_id}` closed.")
+            else:
+                self.logger.error(f"Could not find position {pos_id} to close.")
+        except Exception as e:
+            self.logger.error(f"Failed to close position {pos_id}: {e}")
+
+    @inlineCallbacks
+    def kill_switch(self):
+        """Closes ALL positions and stops the system."""
+        self.logger.critical("!!! KILL SWITCH ACTIVATED !!!")
+        self.notifier.send_message("🚨 **KILL SWITCH ACTIVATED!** Closing all positions and stopping...")
+
+        try:
+            res = yield self.client.fetch_open_positions()
+            for pos in res.position:
+                yield self.client.close_position(pos.positionId, pos.tradeData.volume)
+
+            self.logger.info("All positions closed. Stopping system in 2s.")
+            reactor.callLater(2, reactor.stop)
+        except Exception as e:
+            self.logger.error(f"Kill switch failed to close some positions: {e}")
+            reactor.callLater(2, reactor.stop)
+
     def stop(self):
         """Stops the orchestrator and client."""
         self.logger.info("Stopping Orchestrator...")
         self.notifier.send_message("🛑 **System Stopping...**")
+        if hasattr(self, 'poller') and self.poller.running:
+            self.poller.stop()
         self.client.stop()
 
     def _get_symbol_name(self, symbol_id):
