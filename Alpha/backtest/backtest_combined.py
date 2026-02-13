@@ -52,7 +52,7 @@ from RiskLayer.src.risk_model_sl import RiskModelSL
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-initial_equity=10000.0
+initial_equity=10.0
 
 class CombinedBacktest:
     """Combined backtest using Alpha model for direction and SL Risk model for SL/TP/sizing"""
@@ -405,7 +405,7 @@ def run_combined_backtest(args):
         risk_model, 
         risk_scaler,
         data_dir_path, 
-        initial_equity=initial_equity,
+        initial_equity=args.initial_equity,
         alpha_norm_env=alpha_norm_env,
         env=shared_env,
         verify_alpha=args.verify_alpha
@@ -529,6 +529,8 @@ if __name__ == "__main__":
                         help="Number of episodes to run")
     parser.add_argument("--max-steps", type=int, default=None,
                         help="Maximum steps per episode")
+    parser.add_argument("--initial-equity", type=float, default=10.0,
+                        help="Starting equity for the backtest")
     parser.add_argument("--verify-alpha", action="store_true",
                         help="Bypass Risk model and use Alpha training defaults (Fixed SL/TP/Size)")
     

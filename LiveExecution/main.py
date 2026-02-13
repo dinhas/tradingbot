@@ -44,7 +44,10 @@ def main():
         model_loader = ModelLoader()
         
         # Load Models
-        model_loader.load_all_models()
+        if not model_loader.load_all_models():
+            logger.critical("Failed to load models. System cannot proceed.")
+            notifier.send_error("Failed to load models. System stopped.")
+            return
 
         # Orchestrator
         orchestrator = Orchestrator(client, feature_manager, model_loader, notifier, config=config)

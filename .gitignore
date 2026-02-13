@@ -69,6 +69,8 @@ Thumbs.db
 *.tmp
 *.bak
 *.cache
+*.db
+LiveExecution/data/
 
 # API Keys and Secrets
 .env

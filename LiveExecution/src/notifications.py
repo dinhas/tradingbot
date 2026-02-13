@@ -81,7 +81,7 @@ class TelegramNotifier:
             f"💰 **Balance:** ${balance:,.2f}\n"
             f"📈 **Equity:** ${equity:,.2f}\n"
             f"📉 **Drawdown:** {drawdown:.2%}\n"
-            f"🔒 **Positions:** {len(self.orchestrator.active_positions)}/2"
+            f"🔒 **Positions:** {len(self.orchestrator.active_positions)}/5"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 

@@ -5,6 +5,7 @@ from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, gatherResults
 from twisted.python.failure import Failure
 from twisted.internet.task import LoopingCall, deferLater
+from twisted.internet import threads
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATradeSide
 from LiveExecution.src.database import DatabaseManager
 
@@ -37,7 +38,7 @@ class Orchestrator:
             'GBPUSD': 5,
             'USDCHF': 5,
             'USDJPY': 3,
-            'XAUUSD': 2 # Gold usually has 2 or 3, most commonly 2 for demo/live
+            'XAUUSD': 3 # Gold is typically 3 digits on cTrader (1 point = 0.001)
         }
     def update_account_state(self, account_res):
         """Updates internal portfolio state from cTrader response."""
@@ -321,13 +322,11 @@ class Orchestrator:
             self.notifier.send_error(f"Bootstrap failed: {e}")
 
     @inlineCallbacks
-    def on_m5_candle_close(self, symbol_id):
+    def on_m5_candle_close(self, symbol_id, trendbar):
         """
         Main Event Handler: Triggered when an M5 candle closes.
         """
-        # Stagger requests slightly to avoid bursts
-        jitter = (symbol_id % 5) * 0.5 # Up to 2s stagger
-        yield deferLater(reactor, jitter, lambda: None)
+        # NO JITTER - Execute immediately
         
         start_time = time.time()
         asset_name = self._get_symbol_name(symbol_id)
@@ -338,56 +337,33 @@ class Orchestrator:
              self.logger.info("FeatureManager not ready (insufficient history). Skipping.")
              return
 
-        # 1. Sync Positions and Check System/Asset Limits
-        # Only sync once every 30 seconds across all symbol triggers to avoid redundancy
-        now_ts = time.time()
-        if not hasattr(self, '_last_sync_ts') or now_ts - self._last_sync_ts > 30:
-            self._last_sync_ts = now_ts
-            yield self.sync_active_positions()
-        
-        # System-level limit: Max 2 open positions
-        if len(self.active_positions) >= 2:
-            self.logger.info(f"System reached max open positions limit (2). Currently open: {list(self.active_positions.keys())}")
-            return
+        # 1. Update Data Immediately (CPU only, no network)
+        self.fm.update_from_trendbar(asset_name, trendbar)
+
+        # 2. Check System/Asset Limits (Memory check only)
+        # System-level limit: Max 5 open positions
+        if len(self.active_positions) >= 5:
+            # Check if this asset is one of the open positions (might be a close signal)
+            # But the current logic seems to be "Max 5 positions TOTAL".
+            # If we are NOT in the active positions, and we are at limit, then ignore.
+            if symbol_id not in self.active_positions:
+                self.logger.info(f"System reached max open positions limit (5). Currently open: {list(self.active_positions.keys())}")
+                return
 
         if self.is_asset_locked(symbol_id):
+             # Logic for "locked" usually means "already has position", but we might need to close it?
+             # For now, matching original logic: if locked, skip.
             self.logger.info(f"Skipping {asset_name} due to active lock (symbol already has position).")
             return
 
         try:
-            # 2. Fetch Data (Parallel)
-            # Fetch OHLCV and Account Summary
-            d_ohlcv = self.client.fetch_ohlcv(symbol_id)
+            # 3. Use Cached Account State
+            # We assume self.portfolio_state is kept up to date by self.poller
+            # No network calls here.
             
-            # Only fetch account summary if not recently updated
-            if not hasattr(self, '_last_account_refresh') or now_ts - self._last_account_refresh > 30:
-                self._last_account_refresh = now_ts
-                d_account = self.client.fetch_account_summary()
-                results = yield gatherResults([d_ohlcv, d_account], consumeErrors=True)
-            else:
-                results = yield gatherResults([d_ohlcv], consumeErrors=True)
-                # Use current portfolio state as account res if we didn't fetch it
-                results.append(None) 
-            
-            # Check for errors in results
-            for res in results:
-                if res is not None and isinstance(res, (Exception, Failure)):
-                     self.logger.error(f"Data fetch failed: {res}")
-                     self.notifier.send_error(f"Data fetch failed for {asset_name}: {res}")
-                     return
-
-            ohlcv_res = results[0]
-            account_res = results[1]
-            
-            # 3. Update State
-            self.fm.update_data(symbol_id, ohlcv_res)
-            if account_res:
-                self.update_account_state(account_res)
-                self._last_account_refresh = time.time()
-            
-            # 4. Run Inference
+            # 4. Run Inference (Offload to thread to avoid blocking reactor)
             inference_start = time.time()
-            decision = self.run_inference_chain(symbol_id)
+            decision = yield threads.deferToThread(self.run_inference_chain, symbol_id)
             inference_time = time.time() - inference_start
             
             if not decision or decision.get('action') == 0:

@@ -52,7 +52,6 @@ class FeatureManager:
         """
         Updates internal history from cTrader trendbars response.
         """
-        from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATrendbar
         from datetime import datetime
         
         asset = self._get_asset_name_from_id(symbol_id)
@@ -63,12 +62,6 @@ class FeatureManager:
         # trendbars are often in chronological order but let's be sure
         new_rows = []
         for bar in ohlcv_res.trendbar:
-             # cTrader uses low, deltaOpen, deltaHigh, deltaClose relative to low?
-             # Actually ProtoOATrendbar: low, deltaOpen, deltaHigh, deltaClose
-             # open = low + deltaOpen
-             # high = low + deltaHigh
-             # close = low + deltaClose
-             # divisor is usually 100,000 for prices (pips) or 100 for Gold
              divisor = 100.0 if asset == 'XAUUSD' else 100000.0
              
              low = bar.low / divisor
@@ -87,6 +80,26 @@ class FeatureManager:
              # For each row, push
              for row in new_rows:
                   self.push_candle(asset, row)
+
+    def update_from_trendbar(self, asset, bar):
+        """
+        Updates history from a single Protobuf Trendbar object.
+        """
+        from datetime import datetime
+        
+        # Determine divisor based on asset
+        divisor = 100.0 if asset == 'XAUUSD' else 100000.0
+        
+        low = bar.low / divisor
+        row = {
+             'timestamp': datetime.fromtimestamp(bar.utcTimestampInMinutes * 60),
+             'open': low + (bar.deltaOpen / divisor),
+             'high': low + (bar.deltaHigh / divisor),
+             'low': low,
+             'close': low + (bar.deltaClose / divisor),
+             'volume': bar.volume
+        }
+        self.push_candle(asset, row)
 
     def _get_asset_name_from_id(self, symbol_id):
          # Standard mapping from Orchestrator/Client

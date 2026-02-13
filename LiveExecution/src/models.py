@@ -111,7 +111,10 @@ class ModelLoader:
             self.alpha_model = PPO.load(alpha_path, device='cpu')
             
             # 2. Risk Model (SL Best) - PyTorch
-            risk_path = self.project_root / "models" / "risk_model_sl_best.pth"
+            risk_path = self.project_root / "models" / "oldrisk" / "risk_model_sl_best.pth"
+            if not risk_path.exists():
+                risk_path = self.project_root / "RiskLayer" / "models" / "risk_model_sl_best.pth"
+                
             self.logger.info(f"Loading SL Risk model from {risk_path}...")
             self.risk_model = RiskModelSL(input_dim=60)
             self.risk_model.load_state_dict(torch.load(risk_path, map_location=self.device))
@@ -119,7 +122,10 @@ class ModelLoader:
             self.risk_model.eval()
 
             # 3. Risk Scaler
-            scaler_path = self.project_root / "models" / "sl_risk_scaler.pkl"
+            scaler_path = self.project_root / "models" / "oldrisk" / "sl_risk_scaler.pkl"
+            if not scaler_path.exists():
+                scaler_path = self.project_root / "RiskLayer" / "models" / "sl_risk_scaler.pkl"
+                
             self.logger.info(f"Loading Risk scaler from {scaler_path}...")
             self.risk_scaler = joblib.load(scaler_path)
             

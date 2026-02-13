@@ -128,3 +128,52 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Database error getting equity history: {e}")
             return []
+
+    def get_daily_stats(self):
+        """Calculates statistics for trades closed today (UTC)."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                # Get trades closed today
+                cursor.execute('''
+                    SELECT count(*) as count, sum(net_pnl) as total_pnl, 
+                    sum(case when net_pnl > 0 then 1 else 0 end) as wins 
+                    FROM trades 
+                    WHERE exit_time >= date('now')
+                ''')
+                row = cursor.fetchone()
+                if row:
+                    count = row['count']
+                    total_pnl = row['total_pnl'] or 0.0
+                    wins = row['wins']
+                    win_rate = (wins / count * 100) if count > 0 else 0
+                    return {'count': count, 'pnl': total_pnl, 'win_rate': win_rate}
+                return {'count': 0, 'pnl': 0.0, 'win_rate': 0.0}
+        except Exception as e:
+            self.logger.error(f"Database error getting daily stats: {e}")
+            return {'count': 0, 'pnl': 0.0, 'win_rate': 0.0}
+
+    def get_performance_metrics(self):
+        """Calculates all-time performance metrics."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT count(*) as count, sum(net_pnl) as total_pnl,
+                    sum(case when net_pnl > 0 then 1 else 0 end) as wins
+                    FROM trades
+                    WHERE exit_time IS NOT NULL
+                ''')
+                row = cursor.fetchone()
+                if row:
+                    count = row['count']
+                    total_pnl = row['total_pnl'] or 0.0
+                    wins = row['wins']
+                    win_rate = (wins / count * 100) if count > 0 else 0
+                    return {'total_trades': count, 'total_pnl': total_pnl, 'win_rate': win_rate}
+                return {'total_trades': 0, 'total_pnl': 0.0, 'win_rate': 0.0}
+        except Exception as e:
+            self.logger.error(f"Database error getting performance metrics: {e}")
+            return {'total_trades': 0, 'total_pnl': 0.0, 'win_rate': 0.0}

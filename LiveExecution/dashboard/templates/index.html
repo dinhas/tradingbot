@@ -1,178 +1,393 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TradeGuard Live Dashboard</title>
+    <title>TradeGuard Pro | Live Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            900: '#0f172a',
+                            800: '#1e293b',
+                            700: '#334155',
+                            600: '#475569',
+                        },
+                        brand: {
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+    </style>
 </head>
-<body class="bg-gray-900 text-gray-100 font-sans">
-    <nav class="bg-gray-800 border-b border-gray-700 p-4">
-        <div class="container mx-auto flex justify-between items-center">
-            <h1 class="text-xl font-bold text-blue-400">TradeGuard Live</h1>
-            <div class="flex items-center space-x-4">
-                <span id="connection-status" class="px-3 py-1 rounded-full text-xs font-semibold bg-green-900 text-green-300">Connected</span>
-                <button onclick="killSwitch()" class="bg-red-600 hover:bg-red-700 text-white px-4 py-1 rounded text-sm font-bold transition">KILL SWITCH</button>
-            </div>
-        </div>
-    </nav>
+<body class="bg-dark-900 text-gray-200 font-sans antialiased h-screen flex overflow-hidden">
 
-    <main class="container mx-auto p-6 space-y-6">
-        <!-- Account Summary -->
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
-                <p class="text-gray-400 text-sm">Balance</p>
-                <p class="text-2xl font-bold">${{ "{:,.2f}".format(state.get('balance', 0)) }}</p>
+    <!-- Sidebar -->
+    <aside class="w-64 bg-dark-800 border-r border-dark-700 flex flex-col justify-between hidden md:flex z-10">
+        <div>
+            <div class="h-16 flex items-center px-6 border-b border-dark-700">
+                <i class="fa-solid fa-layer-group text-brand-500 text-xl mr-3"></i>
+                <span class="text-lg font-bold tracking-wide">TradeGuard <span class="text-xs align-top text-gray-500">PRO</span></span>
             </div>
-            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
-                <p class="text-gray-400 text-sm">Equity</p>
-                <p class="text-2xl font-bold text-blue-400">${{ "{:,.2f}".format(state.get('equity', 0)) }}</p>
-            </div>
-            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
-                <p class="text-gray-400 text-sm">Drawdown</p>
-                <p class="text-2xl font-bold text-red-400">{{ "{:.2%}".format(1.0 - (state.get('equity', 0) / state.get('peak_equity', 1)) if state.get('peak_equity', 0) > 0 else 0) }}</p>
-            </div>
-            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
-                <p class="text-gray-400 text-sm">Active Positions</p>
-                <p class="text-2xl font-bold text-green-400">{{ active_trades|length }} / 2</p>
-            </div>
+            <nav class="p-4 space-y-1">
+                <a href="#" class="flex items-center px-4 py-3 bg-brand-600/10 text-brand-500 rounded-lg">
+                    <i class="fa-solid fa-chart-line w-6"></i>
+                    <span class="font-medium">Dashboard</span>
+                </a>
+                <a href="#" class="flex items-center px-4 py-3 text-gray-400 hover:text-gray-100 hover:bg-dark-700 rounded-lg transition">
+                    <i class="fa-solid fa-list w-6"></i>
+                    <span class="font-medium">Trades Log</span>
+                </a>
+                <a href="#" class="flex items-center px-4 py-3 text-gray-400 hover:text-gray-100 hover:bg-dark-700 rounded-lg transition">
+                    <i class="fa-solid fa-sliders w-6"></i>
+                    <span class="font-medium">Settings</span>
+                </a>
+            </nav>
         </div>
-
-        <!-- Chart -->
-        <div class="bg-gray-800 p-6 rounded-lg border border-gray-700">
-            <h2 class="text-lg font-semibold mb-4">Equity Curve</h2>
-            <canvas id="equityChart" class="w-full h-64"></canvas>
-        </div>
-
-        <!-- Active Trades -->
-        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
-            <div class="p-4 border-b border-gray-700">
-                <h2 class="text-lg font-semibold">Active Positions</h2>
+        
+        <div class="p-4 border-t border-dark-700">
+            <div class="bg-dark-900 rounded-lg p-3">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs uppercase text-gray-500 font-bold">System Status</span>
+                    <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                </div>
+                <div class="text-xs text-gray-400">
+                    <p>Uptime: <span class="text-gray-200">Running</span></p>
+                    <p>Latency: <span class="text-green-400">24ms</span></p>
+                </div>
             </div>
-            <table class="w-full text-left">
-                <thead class="bg-gray-900 text-gray-400 text-xs uppercase">
-                    <tr>
-                        <th class="p-4">Symbol</th>
-                        <th class="p-4">Action</th>
-                        <th class="p-4">Size</th>
-                        <th class="p-4">Entry Price</th>
-                        <th class="p-4">Entry Time</th>
-                        <th class="p-4">Action</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-700">
-                    {% for trade in active_trades %}
-                    <tr>
-                        <td class="p-4 font-medium">{{ trade.symbol }}</td>
-                        <td class="p-4">
-                            <span class="px-2 py-1 rounded text-xs font-bold {{ 'bg-green-900 text-green-300' if trade.action == 'BUY' else 'bg-red-900 text-red-300' }}">
-                                {{ trade.action }}
-                            </span>
-                        </td>
-                        <td class="p-4 text-sm">{{ "{:.2f}".format(trade.size) }} lots</td>
-                        <td class="p-4 text-sm">{{ trade.entry_price }}</td>
-                        <td class="p-4 text-sm text-gray-400">{{ trade.entry_time }}</td>
-                        <td class="p-4">
-                            <button onclick="closePosition({{ trade.pos_id }})" class="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded">Close</button>
-                        </td>
-                    </tr>
-                    {% else %}
-                    <tr>
-                        <td colspan="6" class="p-8 text-center text-gray-500">No active positions</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <button onclick="killSwitch()" class="mt-4 w-full bg-red-600/20 hover:bg-red-600/90 text-red-500 hover:text-white border border-red-600/50 py-2 rounded-lg font-bold text-sm transition flex items-center justify-center gap-2 group">
+                <i class="fa-solid fa-skull group-hover:animate-bounce"></i> KILL SWITCH
+            </button>
         </div>
+    </aside>
 
-        <!-- Recent Trades -->
-        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
-            <div class="p-4 border-b border-gray-700">
-                <h2 class="text-lg font-semibold">Recent Trades</h2>
+    <!-- Main Content -->
+    <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
+        
+        <!-- Mobile Header -->
+        <header class="md:hidden h-16 bg-dark-800 border-b border-dark-700 flex items-center justify-between px-4">
+            <span class="font-bold">TradeGuard</span>
+            <button onclick="document.querySelector('aside').classList.toggle('hidden'); document.querySelector('aside').classList.toggle('absolute'); document.querySelector('aside').classList.toggle('h-full');" class="text-gray-400"><i class="fa-solid fa-bars"></i></button>
+        </header>
+
+        <!-- Scrollable Content -->
+        <div class="flex-1 overflow-y-auto p-4 md:p-8 space-y-8">
+            
+            <!-- Top Stats Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <!-- Balance -->
+                <div class="glass-panel rounded-xl p-5 shadow-lg">
+                    <div class="flex justify-between items-start mb-4">
+                        <div>
+                            <p class="text-gray-400 text-sm font-medium">Balance</p>
+                            <h3 class="text-2xl font-bold text-white mt-1">${{ "{:,.2f}".format(state.get('balance', 0)) }}</h3>
+                        </div>
+                        <div class="p-2 bg-blue-500/10 rounded-lg text-blue-400">
+                            <i class="fa-solid fa-wallet"></i>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-500">
+                        <span class="text-green-400"><i class="fa-solid fa-arrow-trend-up"></i> +{{ "{:.1f}".format((state.get('balance', 0) - state.get('initial_equity', 0)) / state.get('initial_equity', 1) * 100) }}%</span> vs initial
+                    </div>
+                </div>
+
+                <!-- Equity -->
+                <div class="glass-panel rounded-xl p-5 shadow-lg relative overflow-hidden">
+                    <div class="absolute top-0 right-0 w-24 h-24 bg-brand-500/5 rounded-full -mr-10 -mt-10 blur-xl"></div>
+                    <div class="flex justify-between items-start mb-4">
+                        <div>
+                            <p class="text-gray-400 text-sm font-medium">Equity</p>
+                            <h3 class="text-2xl font-bold text-brand-500 mt-1">${{ "{:,.2f}".format(state.get('equity', 0)) }}</h3>
+                        </div>
+                        <div class="p-2 bg-brand-500/10 rounded-lg text-brand-400">
+                            <i class="fa-solid fa-chart-pie"></i>
+                        </div>
+                    </div>
+                    <div class="w-full bg-dark-700 h-1.5 rounded-full overflow-hidden">
+                        <div class="bg-brand-500 h-full" style="width: {{ (state.get('equity', 0) / state.get('peak_equity', 1) * 100) if state.get('peak_equity', 1) > 0 else 0 }}%"></div>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2">Drawdown: <span class="text-red-400">{{ "{:.2%}".format(1.0 - (state.get('equity', 0) / state.get('peak_equity', 1)) if state.get('peak_equity', 0) > 0 else 0) }}</span></p>
+                </div>
+
+                <!-- Daily Performance -->
+                <div class="glass-panel rounded-xl p-5 shadow-lg">
+                    <div class="flex justify-between items-start mb-4">
+                        <div>
+                            <p class="text-gray-400 text-sm font-medium">Daily PnL</p>
+                            <h3 class="text-2xl font-bold {{ 'text-green-400' if daily_stats.get('pnl', 0) >= 0 else 'text-red-400' }} mt-1">
+                                {{ "{:+.2f}".format(daily_stats.get('pnl', 0)) }}
+                            </h3>
+                        </div>
+                        <div class="p-2 bg-purple-500/10 rounded-lg text-purple-400">
+                            <i class="fa-solid fa-calendar-day"></i>
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-between text-xs">
+                        <span class="text-gray-400">{{ daily_stats.get('count', 0) }} Trades Today</span>
+                        <span class="px-2 py-0.5 rounded bg-dark-700 text-gray-300">{{ "{:.0f}".format(daily_stats.get('win_rate', 0)) }}% WR</span>
+                    </div>
+                </div>
+
+                <!-- Total Performance -->
+                <div class="glass-panel rounded-xl p-5 shadow-lg">
+                    <div class="flex justify-between items-start mb-4">
+                        <div>
+                            <p class="text-gray-400 text-sm font-medium">Total PnL</p>
+                            <h3 class="text-2xl font-bold {{ 'text-green-400' if performance.get('total_pnl', 0) >= 0 else 'text-red-400' }} mt-1">
+                                {{ "{:+.2f}".format(performance.get('total_pnl', 0)) }}
+                            </h3>
+                        </div>
+                        <div class="p-2 bg-orange-500/10 rounded-lg text-orange-400">
+                            <i class="fa-solid fa-trophy"></i>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-500">
+                        Total Trades: <span class="text-gray-200 font-mono">{{ performance.get('total_trades', 0) }}</span>
+                    </div>
+                </div>
             </div>
-            <table class="w-full text-left">
-                <thead class="bg-gray-900 text-gray-400 text-xs uppercase">
-                    <tr>
-                        <th class="p-4">Symbol</th>
-                        <th class="p-4">Result</th>
-                        <th class="p-4">Net PnL</th>
-                        <th class="p-4">Exit Reason</th>
-                        <th class="p-4">Exit Time</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-700">
-                    {% for trade in recent_trades %}
-                    <tr>
-                        <td class="p-4 font-medium">{{ trade.symbol }}</td>
-                        <td class="p-4">
-                            <span class="px-2 py-1 rounded text-xs font-bold {{ 'bg-green-900 text-green-300' if trade.net_pnl > 0 else 'bg-red-900 text-red-300' }}">
-                                {{ 'WIN' if trade.net_pnl > 0 else 'LOSS' }}
-                            </span>
-                        </td>
-                        <td class="p-4 font-mono {{ 'text-green-400' if trade.net_pnl > 0 else 'text-red-400' }}">
-                            {{ "{:+.2f}".format(trade.net_pnl) }}
-                        </td>
-                        <td class="p-4 text-sm">{{ trade.reason }}</td>
-                        <td class="p-4 text-sm text-gray-400">{{ trade.exit_time }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+
+            <!-- Charts & Active Positions -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 h-96">
+                <!-- Main Chart -->
+                <div class="lg:col-span-2 glass-panel rounded-xl p-5 border border-dark-700 flex flex-col">
+                    <h2 class="text-lg font-semibold mb-4 text-gray-100 flex items-center gap-2">
+                        <i class="fa-solid fa-arrow-trend-up text-brand-500"></i> Equity Curve
+                    </h2>
+                    <div class="flex-1 relative w-full h-full min-h-0">
+                        <canvas id="equityChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Active Positions List -->
+                <div class="glass-panel rounded-xl p-0 border border-dark-700 flex flex-col overflow-hidden">
+                    <div class="p-5 border-b border-dark-700 flex justify-between items-center bg-dark-800/50">
+                        <h2 class="text-lg font-semibold text-gray-100">Active Positions</h2>
+                        <span class="px-2 py-1 bg-brand-900/50 text-brand-300 text-xs rounded-full border border-brand-500/20">{{ active_trades|length }} / 5</span>
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-0">
+                        {% if active_trades %}
+                        <div class="divide-y divide-dark-700">
+                            {% for trade in active_trades %}
+                            <div class="p-4 hover:bg-dark-700/50 transition group">
+                                <div class="flex justify-between items-center mb-2">
+                                    <div class="flex items-center gap-2">
+                                        <span class="font-bold text-white">{{ trade.symbol }}</span>
+                                        <span class="text-xs px-1.5 py-0.5 rounded font-bold uppercase {{ 'bg-green-500/20 text-green-400' if trade.action == 'BUY' else 'bg-red-500/20 text-red-400' }}">
+                                            {{ trade.action }}
+                                        </span>
+                                    </div>
+                                    <span class="font-mono text-sm {{ 'text-green-400' if trade.unrealized_pnl >= 0 else 'text-red-400' }}">
+                                        {{ "{:+.2f}".format(trade.unrealized_pnl) }}
+                                    </span>
+                                </div>
+                                <div class="flex justify-between items-center text-xs text-gray-500 mb-2">
+                                    <span>Entry: {{ trade.entry_price }}</span>
+                                    <span>Cur: {{ trade.current_price }}</span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-xs text-gray-600">{{ "{:.2f}".format(trade.size) }} lots</span>
+                                    <button onclick="closePosition({{ trade.pos_id }})" class="opacity-0 group-hover:opacity-100 transition px-2 py-1 bg-dark-600 hover:bg-red-600/80 text-white text-xs rounded">
+                                        Close
+                                    </button>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <div class="h-full flex flex-col items-center justify-center text-gray-600 space-y-2">
+                            <i class="fa-solid fa-box-open text-3xl opacity-50"></i>
+                            <span class="text-sm">No active positions</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Trades Table -->
+            <div class="glass-panel rounded-xl border border-dark-700 overflow-hidden">
+                <div class="p-5 border-b border-dark-700 bg-dark-800/50">
+                    <h2 class="text-lg font-semibold text-gray-100">Recent History</h2>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="bg-dark-800 text-gray-400 text-xs uppercase font-semibold">
+                            <tr>
+                                <th class="p-4">Symbol</th>
+                                <th class="p-4">Type</th>
+                                <th class="p-4 text-right">Net PnL</th>
+                                <th class="p-4">Duration</th>
+                                <th class="p-4">Reason</th>
+                                <th class="p-4 text-right">Time</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-700 text-gray-300">
+                            {% for trade in recent_trades %}
+                            <tr class="hover:bg-dark-700/30 transition">
+                                <td class="p-4 font-medium">{{ trade.symbol }}</td>
+                                <td class="p-4">
+                                    <span class="px-2 py-1 rounded text-xs font-bold {{ 'text-green-400' if trade.net_pnl > 0 else 'text-red-400' }}">
+                                        {{ 'WIN' if trade.net_pnl > 0 else 'LOSS' }}
+                                    </span>
+                                </td>
+                                <td class="p-4 text-right font-mono font-medium {{ 'text-green-400' if trade.net_pnl > 0 else 'text-red-400' }}">
+                                    {{ "{:+.2f}".format(trade.net_pnl) }}
+                                </td>
+                                <td class="p-4 text-gray-500 text-xs">
+                                    <!-- Simple duration calc placeholder -->
+                                    --
+                                </td>
+                                <td class="p-4 text-xs">
+                                    <span class="px-2 py-1 bg-dark-700 rounded text-gray-400">{{ trade.reason }}</span>
+                                </td>
+                                <td class="p-4 text-right text-xs text-gray-500 font-mono">{{ trade.exit_time.split('T')[1][:8] if trade.exit_time else '' }}</td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="6" class="p-8 text-center text-gray-500">No trade history available</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
         </div>
     </main>
 
     <script>
-        // Fetch equity data for chart
-        async function loadChart() {
-            const res = await fetch('/api/equity_history');
-            const data = await res.json();
+        // Chart Configuration
+        Chart.defaults.color = '#94a3b8';
+        Chart.defaults.font.family = 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 
-            const ctx = document.getElementById('equityChart').getContext('2d');
-            new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: data.map(d => new Date(d.timestamp).toLocaleTimeString()),
-                    datasets: [{
-                        label: 'Equity',
-                        data: data.map(d => d.equity),
-                        borderColor: '#60a5fa',
-                        backgroundColor: 'rgba(96, 165, 250, 0.1)',
-                        fill: true,
-                        tension: 0.1,
-                        pointRadius: 0
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: {
-                        x: { grid: { display: false }, ticks: { color: '#9ca3af' } },
-                        y: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } }
-                    }
+        let equityChartInstance = null;
+
+        async function loadChart() {
+            try {
+                const res = await fetch('/api/equity_history');
+                const data = await res.json();
+
+                const ctx = document.getElementById('equityChart').getContext('2d');
+                
+                // Create gradient
+                const gradient = ctx.createLinearGradient(0, 0, 0, 400);
+                gradient.addColorStop(0, 'rgba(59, 130, 246, 0.2)');
+                gradient.addColorStop(1, 'rgba(59, 130, 246, 0)');
+
+                if (equityChartInstance) {
+                    equityChartInstance.destroy();
                 }
-            });
+
+                equityChartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: data.map(d => {
+                            const date = new Date(d.timestamp);
+                            return date.getHours() + ':' + date.getMinutes().toString().padStart(2, '0');
+                        }),
+                        datasets: [{
+                            label: 'Equity',
+                            data: data.map(d => d.equity),
+                            borderColor: '#3b82f6',
+                            backgroundColor: gradient,
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4,
+                            pointRadius: 0,
+                            pointHoverRadius: 4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                mode: 'index',
+                                intersect: false,
+                                backgroundColor: '#1e293b',
+                                titleColor: '#cbd5e1',
+                                bodyColor: '#fff',
+                                borderColor: '#334155',
+                                borderWidth: 1
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: { display: false },
+                                ticks: { maxTicksLimit: 8 }
+                            },
+                            y: {
+                                grid: { color: '#334155', borderDash: [5, 5] },
+                                position: 'right'
+                            }
+                        },
+                        interaction: {
+                            mode: 'nearest',
+                            axis: 'x',
+                            intersect: false
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error("Failed to load chart", e);
+            }
         }
 
         async function closePosition(posId) {
-            if (confirm(`Close position ${posId}?`)) {
-                const res = await fetch(`/api/close/${posId}`, { method: 'POST' });
-                if (res.ok) window.location.reload();
-                else alert('Failed to close position');
+            if (confirm(`Are you sure you want to close position ${posId}?`)) {
+                try {
+                    const res = await fetch(`/api/close/${posId}`, { method: 'POST' });
+                    if (res.ok) {
+                        // Optimistic UI update or reload
+                        window.location.reload();
+                    } else {
+                        alert('Failed to close position. Check console.');
+                    }
+                } catch (e) {
+                    alert('Network error closing position');
+                }
             }
         }
 
         async function killSwitch() {
-            if (confirm('CRITICAL: Close ALL positions and STOP the bot?')) {
-                const res = await fetch('/api/kill', { method: 'POST' });
-                if (res.ok) alert('Kill switch activated. System stopping.');
-                else alert('Failed to activate kill switch');
+            const code = prompt("Type 'KILL' to confirm emergency stop:");
+            if (code === 'KILL') {
+                try {
+                    const res = await fetch('/api/kill', { method: 'POST' });
+                    if (res.ok) {
+                        document.body.innerHTML = '<div class="h-screen flex items-center justify-center bg-red-900 text-white text-3xl font-bold">SYSTEM STOPPED</div>';
+                    } else {
+                        alert('Kill switch failed!');
+                    }
+                } catch (e) {
+                    alert('Network error executing kill switch');
+                }
             }
         }
 
+        // Initialize
         loadChart();
-        // Refresh every 30s
+
+        // Auto-refresh logic (every 30s)
         setTimeout(() => window.location.reload(), 30000);
     </script>
 </body>

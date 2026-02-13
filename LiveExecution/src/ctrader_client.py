@@ -135,7 +135,7 @@ class CTraderClient:
                         self.last_bar_timestamps[symbol_id] = current_ts
                         try:
                             if self.on_candle_closed:
-                                self.on_candle_closed(symbol_id)
+                                self.on_candle_closed(symbol_id, bar)
                         except Exception as e:
                             self.logger.error(f"Error in on_candle_closed callback: {e}")
                     else:
