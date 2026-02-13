@@ -4,11 +4,11 @@ Combined Alpha-Risk Model Backtesting Script
 Uses Alpha model for direction decisions and Risk model for SL/TP/position sizing.
 
 Usage:
-    python Alpha/backtest/backtest_combined.py \
+    python backtest/backtest_combined.py \
         --alpha-model checkpoints/8.03.zip \
         --risk-model risk_model_final.zip \
-        --data-dir Alpha/backtest/data \
-        --output-dir Alpha/backtest/results \
+        --data-dir backtest/data \
+        --output-dir backtest/results \
         --episodes 1
 """
 
@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 # Add project root to sys.path to allow absolute imports
-project_root = str(Path(__file__).resolve().parent.parent.parent)
+project_root = str(Path(__file__).resolve().parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
@@ -44,7 +44,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 # Absolute imports from project root
 from Alpha.src.trading_env import TradingEnv
-from Alpha.backtest.backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
+from backtest.backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
 import joblib
 import torch
 from RiskLayer.src.risk_model_sl import RiskModelSL
@@ -521,9 +521,9 @@ if __name__ == "__main__":
                         help="Path to Alpha model (.zip file) relative to project root")
     parser.add_argument("--risk-model", type=str, default="models/risk/risk_model_final.zip",
                         help="Path to Risk model (.zip file) relative to project root")
-    parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data",
+    parser.add_argument("--data-dir", type=str, default="backtest/data",
                         help="Path to backtest data directory relative to project root")
-    parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results",
+    parser.add_argument("--output-dir", type=str, default="backtest/results",
                         help="Path to save results relative to project root")
     parser.add_argument("--episodes", type=int, default=1,
                         help="Number of episodes to run")
@@ -536,7 +536,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    project_root = Path(__file__).resolve().parent.parent.parent
+    project_root = Path(__file__).resolve().parent.parent
     data_dir_path = project_root / args.data_dir
 
     # Validate data directory

@@ -11,8 +11,8 @@ app = FastAPI()
 
 # Configuration
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR.parent / "backtest" / "data"
-RESULTS_DIR = BASE_DIR.parent / "backtest" / "results"
+DATA_DIR = BASE_DIR.parent.parent / "backtest" / "data"
+RESULTS_DIR = BASE_DIR.parent.parent / "backtest" / "results"
 
 # Setup Static and Templates
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")

@@ -93,7 +93,7 @@ class DataFetcherBacktest:
             yield d_wait
             
             # 3. Fetch Backtesting Data (2025)
-            # Ensure we write to Alpha/backtest/data
+            # Ensure we write to backtest/data
             self.data_dir.mkdir(parents=True, exist_ok=True)
             
             fetch_tasks = []

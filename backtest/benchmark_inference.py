@@ -10,7 +10,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.trading_env import TradingEnv
+from Alpha.src.trading_env import TradingEnv
 
 def benchmark_inference(model_path, data_dir, n_iterations=100):
     print(f"Loading model from {model_path}...")

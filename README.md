@@ -104,9 +104,13 @@ Running on full 2025 data with a starting equity of **$10**.
 tradingbot/
 ├── Alpha/                      # Signal Generation Model (PPO)
 │   ├── src/                    # Training environment & logic
-│   ├── backtest/               # Backtesting scripts (2025 Data)
 │   ├── models/                 # Trained Alpha models
 │   └── config/                 # PPO Hyperparameters
+│
+├── backtest/                   # Backtesting scripts (2025 Data)
+│   ├── data/                   # Backtest data
+│   ├── results/                # Backtest results
+│   └── ...
 │
 ├── RiskLayer/                  # Risk Management Model (Supervised)
 │   ├── src/                    # Deep SL model & feature engine
@@ -160,7 +164,7 @@ pip install -r requirements.txt
 
 ```bash
 # Run the combined 2025 backtest with $10 starting equity
-python Alpha/backtest/backtest_combined.py --initial-equity 10
+python backtest/backtest_combined.py --initial-equity 10
 ```
 
 ### 2. Live Execution

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 # Add project root to sys.path to allow absolute imports
-project_root = str(Path(__file__).resolve().parent.parent.parent)
+project_root = str(Path(__file__).resolve().parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
@@ -683,9 +683,9 @@ def create_detailed_trade_chart(df_trades, stage, output_dir, timestamp):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Backtest RL Trading Bot")
     parser.add_argument("--model", type=str, required=True, help="Path to trained model (.zip file) relative to project root")
-    parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data",
+    parser.add_argument("--data-dir", type=str, default="backtest/data",
                         help="Path to backtest data directory relative to project root")
-    parser.add_argument("--output-dir", type=str, default="Alpha/backtest/results",
+    parser.add_argument("--output-dir", type=str, default="backtest/results",
                         help="Path to save results relative to project root")
     parser.add_argument("--episodes", type=int, default=1,
                         help="Number of episodes to run per asset")
@@ -700,7 +700,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    project_root = Path(__file__).resolve().parent.parent.parent
+    project_root = Path(__file__).resolve().parent.parent
     model_path = project_root / args.model
     data_dir_path = project_root / args.data_dir
 
@@ -712,7 +712,7 @@ if __name__ == "__main__":
     # Validate data directory exists and is not empty
     if not data_dir_path.exists():
         logger.error(f"Data directory not found: {data_dir_path}")
-        logger.info("Please run: python -m Alpha.backtest.data_fetcher_backtest")
+        logger.info("Please run: python -m backtest.data_fetcher_backtest")
         sys.exit(1)
         
     # Check for parquet files
@@ -720,7 +720,7 @@ if __name__ == "__main__":
     if not parquet_files:
         logger.error(f"No .parquet files found in {data_dir_path}")
         logger.info(f"Target directory '{data_dir_path}' is empty or contains no data.")
-        logger.info("Please run: python -m Alpha.backtest.data_fetcher_backtest")
+        logger.info("Please run: python -m backtest.data_fetcher_backtest")
         sys.exit(1)
     
     run_backtest(args)

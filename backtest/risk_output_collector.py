@@ -9,7 +9,7 @@ from datetime import datetime
 from collections import deque
 
 # Add project root to sys.path to allow absolute imports
-project_root = str(Path(__file__).resolve().parent.parent.parent)
+project_root = str(Path(__file__).resolve().parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
@@ -145,7 +145,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--alpha-model", type=str, default="Alpha/models/checkpoints/8.03.zip")
     parser.add_argument("--risk-model", type=str, default="RiskLayer/models/2.15.zip")
-    parser.add_argument("--data-dir", type=str, default="Alpha/backtest/data")
+    parser.add_argument("--data-dir", type=str, default="backtest/data")
     parser.add_argument("--output", type=str, default="risk_outputs_sample.json")
     args = parser.parse_args()
     
