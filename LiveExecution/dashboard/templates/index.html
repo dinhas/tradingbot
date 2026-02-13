@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TradeGuard Live Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans">
+    <nav class="bg-gray-800 border-b border-gray-700 p-4">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold text-blue-400">TradeGuard Live</h1>
+            <div class="flex items-center space-x-4">
+                <span id="connection-status" class="px-3 py-1 rounded-full text-xs font-semibold bg-green-900 text-green-300">Connected</span>
+                <button onclick="killSwitch()" class="bg-red-600 hover:bg-red-700 text-white px-4 py-1 rounded text-sm font-bold transition">KILL SWITCH</button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container mx-auto p-6 space-y-6">
+        <!-- Account Summary -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                <p class="text-gray-400 text-sm">Balance</p>
+                <p class="text-2xl font-bold">${{ "{:,.2f}".format(state.get('balance', 0)) }}</p>
+            </div>
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                <p class="text-gray-400 text-sm">Equity</p>
+                <p class="text-2xl font-bold text-blue-400">${{ "{:,.2f}".format(state.get('equity', 0)) }}</p>
+            </div>
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                <p class="text-gray-400 text-sm">Drawdown</p>
+                <p class="text-2xl font-bold text-red-400">{{ "{:.2%}".format(1.0 - (state.get('equity', 0) / state.get('peak_equity', 1)) if state.get('peak_equity', 0) > 0 else 0) }}</p>
+            </div>
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                <p class="text-gray-400 text-sm">Active Positions</p>
+                <p class="text-2xl font-bold text-green-400">{{ active_trades|length }} / 2</p>
+            </div>
+        </div>
+
+        <!-- Chart -->
+        <div class="bg-gray-800 p-6 rounded-lg border border-gray-700">
+            <h2 class="text-lg font-semibold mb-4">Equity Curve</h2>
+            <canvas id="equityChart" class="w-full h-64"></canvas>
+        </div>
+
+        <!-- Active Trades -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+            <div class="p-4 border-b border-gray-700">
+                <h2 class="text-lg font-semibold">Active Positions</h2>
+            </div>
+            <table class="w-full text-left">
+                <thead class="bg-gray-900 text-gray-400 text-xs uppercase">
+                    <tr>
+                        <th class="p-4">Symbol</th>
+                        <th class="p-4">Action</th>
+                        <th class="p-4">Size</th>
+                        <th class="p-4">Entry Price</th>
+                        <th class="p-4">Entry Time</th>
+                        <th class="p-4">Action</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-700">
+                    {% for trade in active_trades %}
+                    <tr>
+                        <td class="p-4 font-medium">{{ trade.symbol }}</td>
+                        <td class="p-4">
+                            <span class="px-2 py-1 rounded text-xs font-bold {{ 'bg-green-900 text-green-300' if trade.action == 'BUY' else 'bg-red-900 text-red-300' }}">
+                                {{ trade.action }}
+                            </span>
+                        </td>
+                        <td class="p-4 text-sm">{{ "{:.2f}".format(trade.size) }} lots</td>
+                        <td class="p-4 text-sm">{{ trade.entry_price }}</td>
+                        <td class="p-4 text-sm text-gray-400">{{ trade.entry_time }}</td>
+                        <td class="p-4">
+                            <button onclick="closePosition({{ trade.pos_id }})" class="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded">Close</button>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="p-8 text-center text-gray-500">No active positions</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Recent Trades -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+            <div class="p-4 border-b border-gray-700">
+                <h2 class="text-lg font-semibold">Recent Trades</h2>
+            </div>
+            <table class="w-full text-left">
+                <thead class="bg-gray-900 text-gray-400 text-xs uppercase">
+                    <tr>
+                        <th class="p-4">Symbol</th>
+                        <th class="p-4">Result</th>
+                        <th class="p-4">Net PnL</th>
+                        <th class="p-4">Exit Reason</th>
+                        <th class="p-4">Exit Time</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-700">
+                    {% for trade in recent_trades %}
+                    <tr>
+                        <td class="p-4 font-medium">{{ trade.symbol }}</td>
+                        <td class="p-4">
+                            <span class="px-2 py-1 rounded text-xs font-bold {{ 'bg-green-900 text-green-300' if trade.net_pnl > 0 else 'bg-red-900 text-red-300' }}">
+                                {{ 'WIN' if trade.net_pnl > 0 else 'LOSS' }}
+                            </span>
+                        </td>
+                        <td class="p-4 font-mono {{ 'text-green-400' if trade.net_pnl > 0 else 'text-red-400' }}">
+                            {{ "{:+.2f}".format(trade.net_pnl) }}
+                        </td>
+                        <td class="p-4 text-sm">{{ trade.reason }}</td>
+                        <td class="p-4 text-sm text-gray-400">{{ trade.exit_time }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </main>
+
+    <script>
+        // Fetch equity data for chart
+        async function loadChart() {
+            const res = await fetch('/api/equity_history');
+            const data = await res.json();
+
+            const ctx = document.getElementById('equityChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.map(d => new Date(d.timestamp).toLocaleTimeString()),
+                    datasets: [{
+                        label: 'Equity',
+                        data: data.map(d => d.equity),
+                        borderColor: '#60a5fa',
+                        backgroundColor: 'rgba(96, 165, 250, 0.1)',
+                        fill: true,
+                        tension: 0.1,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { color: '#9ca3af' } },
+                        y: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } }
+                    }
+                }
+            });
+        }
+
+        async function closePosition(posId) {
+            if (confirm(`Close position ${posId}?`)) {
+                const res = await fetch(`/api/close/${posId}`, { method: 'POST' });
+                if (res.ok) window.location.reload();
+                else alert('Failed to close position');
+            }
+        }
+
+        async function killSwitch() {
+            if (confirm('CRITICAL: Close ALL positions and STOP the bot?')) {
+                const res = await fetch('/api/kill', { method: 'POST' });
+                if (res.ok) alert('Kill switch activated. System stopping.');
+                else alert('Failed to activate kill switch');
+            }
+        }
+
+        loadChart();
+        // Refresh every 30s
+        setTimeout(() => window.location.reload(), 30000);
+    </script>
+</body>
+</html>

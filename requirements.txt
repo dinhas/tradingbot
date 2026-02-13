@@ -11,3 +11,9 @@ tqdm
 lightgbm
 scikit-learn
 python-dotenv
+torch
+python-telegram-bot
+fastapi
+uvicorn
+jinja2
+aiohttp

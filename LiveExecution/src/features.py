@@ -111,41 +111,29 @@ class FeatureManager:
         self.risk_pnl_history[asset].append(pnl_pct)
         self.risk_action_history[asset].append(actions)
 
-    def get_alpha_observation(self, portfolio_state):
-        """Calculates the 140-feature vector for Alpha model."""
-        data_dict = {asset: df for asset, df in self.history.items() if not df.empty}
+    def get_alpha_observation(self, asset, portfolio_state):
+        """Calculates the 40-feature vector for Alpha model for a specific asset."""
+        data_dict = {a: df for a, df in self.history.items() if not df.empty}
         _, normalized_df = self.alpha_fe.preprocess_data(data_dict)
         latest_features = normalized_df.iloc[-1].to_dict()
-        return self.alpha_fe.get_observation(latest_features, portfolio_state)
 
-    def get_risk_observation(self, asset, alpha_obs, portfolio_state):
+        # Alpha model needs 40 features: 25 asset-specific + 15 global
+        return self.alpha_fe.get_observation(latest_features, portfolio_state, asset)
+
+    def get_risk_observation(self, asset, alpha_obs):
         """
-        Constructs the 165-feature vector for Risk model.
+        Constructs the 60-feature vector for Risk model.
+        Uses synthetic account and history values as per requirement.
         """
-        # 1. Market State (140) - alpha_obs passed in
+        # 1. Alpha observation (40) is already passed in
         
-        # 2. Account State (5)
-        equity = portfolio_state.get('equity', 10.0)
-        initial_equity = portfolio_state.get('initial_equity', 10.0)
-        peak_equity = portfolio_state.get('peak_equity', initial_equity)
+        # 2. Synthetic Account/History (20 dims)
+        # Matches generate_sl_dataset.py Snipers logic
+        syn_account = np.array([1.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32) # [equity_norm, drawdown, leverage, risk_cap, win_streak]
+        syn_pnl = np.zeros(5, dtype=np.float32)
+        syn_acts = np.zeros(10, dtype=np.float32)
         
-        drawdown = 1.0 - (equity / peak_equity) if peak_equity > 0 else 0
-        equity_norm = equity / initial_equity if initial_equity > 0 else 1.0
-        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
-        
-        account_obs = np.array([
-            equity_norm,
-            drawdown,
-            0.0, # Leverage placeholder
-            risk_cap_mult,
-            0.0  # Padding
-        ], dtype=np.float32)
-        
-        # 3. History (25)
-        hist_pnl = np.array(self.risk_pnl_history[asset], dtype=np.float32)
-        hist_acts = np.array(self.risk_action_history[asset], dtype=np.float32).flatten()
-        
-        return np.concatenate([alpha_obs, account_obs, hist_pnl, hist_acts])
+        return np.concatenate([alpha_obs, syn_account, syn_pnl, syn_acts])
 
 
     def is_ready(self):
