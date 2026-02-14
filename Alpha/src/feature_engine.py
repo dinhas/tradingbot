@@ -12,26 +12,56 @@ class FeatureEngine:
         self._define_feature_names()
 
     def _define_feature_names(self):
-        """Defines the list of 40 features (25 asset-specific + 15 global)."""
-        # 1. Per-Asset Features (25)
+        """Defines the list of 40 features (25 asset-specific + 15 global/market)."""
+        # 1. Per-Asset Features (29 -> 25 kept + 11 new = 36? No, wait.)
+        # Let's count properly based on the plan.
+        # EXISTING KEPT (25? No, let's look at previous list)
+        # Previous list had 25 per asset + 15 global = 40 total? No, that's not right.
+        # standard obs was 40 dims.
+        # Let's align with the user request: "TOTAL FEATURES REMAINS AT 40"
+        
+        # New Feature Set:
+        # A. Multi-Timeframe (3)
+        # B. Volume & Order Flow (3)
+        # C. Price Action Structure (3)
+        # D. Momentum Edge (2)
+        # Total New = 11
+        
+        # Existing to Keep (29)
+        # Price: close, return_1, return_12 (3)
+        # Volatility: atr_14, atr_ratio, bb_position (3)
+        # Trend: ema_9, ema_21, price_vs_ema9, ema9_vs_ema21 (4)
+        # Momentum: rsi_14, macd_hist (2)
+        # Volume: volume_ratio (1)
+        # Cross-Asset: corr_basket, rel_strength, corr_xauusd, corr_eurusd, rank (5)
+        # Global/Time: risk_on_score, asset_dispersion, market_volatility (3)
+        # Time: hour_sin, hour_cos, day_sin, day_cos (4)
+        # Session: session_asian, session_london, session_ny, session_overlap (4)
+        
+        # Total = 11 (new) + 29 (kept) = 40. Perfect.
+        
         self.feature_names = [
+            # --- EXISTING (13) ---
             "close", "return_1", "return_12",
             "atr_14", "atr_ratio", "bb_position",
             "ema_9", "ema_21", "price_vs_ema9", "ema9_vs_ema21",
             "rsi_14", "macd_hist",
             "volume_ratio",
-            "has_position", "position_size", "unrealized_pnl",
-            "position_age", "entry_price", "current_sl", "current_tp",
-            "corr_basket", "rel_strength", "corr_xauusd", "corr_eurusd", "rank"
-        ]
-        
-        # 2. Global Features (15)
-        self.feature_names.extend([
-            "equity", "margin_usage_pct", "drawdown", "num_open_positions",
+            
+            # --- NEW PRO FEATURES (11) ---
+            "htf_ema_alignment", "htf_rsi_divergence", "swing_structure_proximity", # HTF (3)
+            "vwap_deviation", "delta_pressure", "volume_shock",                     # Volume (3)
+            "volatility_squeeze", "wick_rejection_strength", "breakout_velocity",   # PA (3)
+            "rsi_slope_divergence", "macd_momentum_quality",                        # Momentum (2)
+            
+            # --- CROSS-ASSET (5) ---
+            "corr_basket", "rel_strength", "corr_xauusd", "corr_eurusd", "rank",
+            
+            # --- GLOBAL / TIME (11) ---
             "risk_on_score", "asset_dispersion", "market_volatility",
             "hour_sin", "hour_cos", "day_sin", "day_cos",
             "session_asian", "session_london", "session_ny", "session_overlap"
-        ])
+        ]
 
     def preprocess_data(self, data_dict):
         """
@@ -143,6 +173,104 @@ class FeatureEngine:
         vol_ma = volume.rolling(window=20).mean()
         df[f"{asset}_volume_ratio"] = volume / vol_ma
         
+        # --- NEW PRO FEATURES ---
+        df = self._add_pro_features(df, asset)
+        
+        return df
+
+    def _add_pro_features(self, df, asset):
+        """Calculates 11 new substitution features."""
+        # Pre-fetch series for speed
+        close = df[f"{asset}_close"]
+        open_ = df[f"{asset}_open"]
+        high = df[f"{asset}_high"]
+        low = df[f"{asset}_low"]
+        volume = df[f"{asset}_volume"]
+        atr = df[f"{asset}_atr_14"]
+        rsi = df[f"{asset}_rsi_14"]
+        macd_hist = df[f"{asset}_macd_hist"]
+        
+        # A. MULTI-TIMEFRAME CONFLUENCE
+        # 1. HTF EMA Alignment (Proxy 1H EMA21 on 5M data - resampled)
+        # Using simple resampling to avoid lookahead bias (closed bars only)
+        close_1h = close.resample('60min', label='right', closed='right').last().reindex(close.index, method='ffill')
+        ema21_1h = close_1h.ewm(span=21, adjust=False).mean()
+        df[f"{asset}_htf_ema_alignment"] = (close - ema21_1h) / atr
+        
+        # 2. HTF RSI Divergence
+        rsi_1h = RSIIndicator(close_1h, window=14).rsi().reindex(close.index, method='ffill')
+        df[f"{asset}_htf_rsi_divergence"] = rsi - rsi_1h
+        
+        # 3. Swing Structure Proximity (40 bars ~ 3.3 hours)
+        swing_high = high.rolling(40).max()
+        swing_low = low.rolling(40).min()
+        # Distance to nearest swing point
+        dist_high = (swing_high - close) / atr
+        dist_low = (close - swing_low) / atr
+        df[f"{asset}_swing_structure_proximity"] = np.minimum(dist_high, dist_low)
+
+        # B. VOLUME & ORDER FLOW
+        # 4. VWAP Deviation
+        # VWAP reset daily? Or rolling? Snippet implies cumulative. Let's strictly follow snippet but safe for rolling.
+        # Snippet: (close * volume).cumsum() / volume.cumsum() -> This is lifetime VWAP. 
+        # Better: Session VWAP (reset at 00:00 UTC) or Rolling VWAP.
+        # Given snippet `cumsum()`, likely implies session or infinite. Infinite is bad for long datasets.
+        # Let's use Rolling VWAP (1 day = 288 bars) to match "session" feel without complexity of resets, or just session reset.
+        # Integrating Session VWAP properly:
+        vwap_series = (close * volume).groupby(df.index.date).cumsum() / volume.groupby(df.index.date).cumsum()
+        df[f"{asset}_vwap_deviation"] = (close - vwap_series) / atr
+        
+        # 5. Delta Pressure (Buying vs Selling Volume Proxy)
+        # Money Flow approx: (Close - Open) * Volume?? Snippet: sign(close-open)
+        direction = np.sign(close - open_)
+        money_flow = volume * direction
+        pressure = money_flow.rolling(20).sum() / volume.rolling(20).sum()
+        df[f"{asset}_delta_pressure"] = pressure.fillna(0)
+        
+        # 6. Volume Shock
+        vol_mean_20 = volume.rolling(20).mean()
+        df[f"{asset}_volume_shock"] = np.log(volume / (vol_mean_20 + 1e-6))
+        
+        # C. PRICE ACTION STRUCTURE
+        # 7. Volatility Squeeze (BB Width / ATR)
+        bb = BollingerBands(close, window=20, window_dev=2)
+        # bb_w = bb.bollinger_hwidth() - bb.bollinger_lwidth() # REMOVED: Incorrect attribute
+        bb_width = (bb.bollinger_hband() - bb.bollinger_lband())
+        df[f"{asset}_volatility_squeeze"] = bb_width / atr
+        
+        # 8. Wick Rejection Strength (Wicks / Body)
+        body = (close - open_).abs()
+        upper_wick = high - pd.concat([open_, close], axis=1).max(axis=1)
+        lower_wick = pd.concat([open_, close], axis=1).min(axis=1) - low
+        total_wick = upper_wick + lower_wick
+        rejection = (total_wick / (body + 1e-6)).rolling(3).mean()
+        df[f"{asset}_wick_rejection_strength"] = rejection
+        
+        # 9. Breakout Velocity
+        # Speed of penetration beyond 20-bar range
+        range_h = high.rolling(20).max()
+        range_l = low.rolling(20).min()
+        # Logic: If close > range_h, how far?
+        # Note: shift(1) needed for range to be "prior" range? 
+        # Snippet doesn't shift, implies current breakout. 
+        velocity = np.where(close > range_h.shift(1), (close - range_h.shift(1))/atr,
+                           np.where(close < range_l.shift(1), (close - range_l.shift(1))/atr, 0))
+        df[f"{asset}_breakout_velocity"] = velocity
+        
+        # D. MOMENTUM EDGE
+        # 10. RSI Slope Divergence
+        # Sign(Price Slope) - Sign(RSI Slope)
+        price_slope = close.diff(10)
+        rsi_slope = rsi.diff(10)
+        df[f"{asset}_rsi_slope_divergence"] = np.sign(price_slope) - np.sign(rsi_slope)
+        
+        # 11. MACD Momentum Quality
+        # (Hist - Hist_prev) * Sign(Signal)
+        # Acceleration of histogram aligning with trend
+        macd_signal = MACD(close).macd_signal()
+        hist_slope = macd_hist.diff()
+        df[f"{asset}_macd_momentum_quality"] = hist_slope * np.sign(macd_signal)
+        
         return df
 
     def _add_cross_asset_features(self, df):
@@ -232,7 +360,12 @@ class FeatureEngine:
                 f"{asset}_return_1", f"{asset}_return_12",
                 f"{asset}_atr_14", f"{asset}_atr_ratio",
                 f"{asset}_rsi_14", f"{asset}_macd_hist",
-                f"{asset}_volume_ratio"
+                f"{asset}_volume_ratio",
+                # New Features
+                f"{asset}_htf_ema_alignment", f"{asset}_htf_rsi_divergence", f"{asset}_swing_structure_proximity",
+                f"{asset}_vwap_deviation", f"{asset}_delta_pressure", f"{asset}_volume_shock",
+                f"{asset}_volatility_squeeze", f"{asset}_wick_rejection_strength", f"{asset}_breakout_velocity",
+                f"{asset}_rsi_slope_divergence", f"{asset}_macd_momentum_quality"
             ])
             
         # Add Global Features to normalization
@@ -264,15 +397,15 @@ class FeatureEngine:
         Constructs the 40-feature observation vector for a single asset.
         Args:
             current_step_data: Row of preprocessed DataFrame for current timestamp.
-            portfolio_state: Dictionary containing portfolio metrics.
+            portfolio_state: Dictionary containing portfolio metrics (UNUSED NOW - kept for API compat).
             asset: The specific asset to get features for.
         Returns:
             np.array: 40-dimensional vector.
         """
         obs = []
         
-        # 1. Per-Asset Features (25)
-        # Price Action & Returns (3)
+        # --- 1. EXISTING FEATURES (13) ---
+        # Price (3)
         obs.extend([
             current_step_data.get(f"{asset}_close", 0),
             current_step_data.get(f"{asset}_return_1", 0),
@@ -299,18 +432,22 @@ class FeatureEngine:
         # Volume (1)
         obs.append(current_step_data.get(f"{asset}_volume_ratio", 0))
         
-        # Position State (7)
-        asset_state = portfolio_state.get(asset, {})
+        # --- 2. NEW PRO FEATURES (11) ---
         obs.extend([
-            asset_state.get('has_position', 0),
-            asset_state.get('position_size', 0),
-            asset_state.get('unrealized_pnl', 0),
-            asset_state.get('position_age', 0),
-            asset_state.get('entry_price', 0),
-            asset_state.get('current_sl', 0),
-            asset_state.get('current_tp', 0)
+            current_step_data.get(f"{asset}_htf_ema_alignment", 0),
+            current_step_data.get(f"{asset}_htf_rsi_divergence", 0),
+            current_step_data.get(f"{asset}_swing_structure_proximity", 0),
+            current_step_data.get(f"{asset}_vwap_deviation", 0),
+            current_step_data.get(f"{asset}_delta_pressure", 0),
+            current_step_data.get(f"{asset}_volume_shock", 0),
+            current_step_data.get(f"{asset}_volatility_squeeze", 0),
+            current_step_data.get(f"{asset}_wick_rejection_strength", 0),
+            current_step_data.get(f"{asset}_breakout_velocity", 0),
+            current_step_data.get(f"{asset}_rsi_slope_divergence", 0),
+            current_step_data.get(f"{asset}_macd_momentum_quality", 0)
         ])
-        # Cross-Asset (5)
+
+        # --- 3. CROSS-ASSET (5) ---
         obs.extend([
             current_step_data.get(f"{asset}_corr_basket", 0),
             current_step_data.get(f"{asset}_rel_strength", 0),
@@ -319,25 +456,17 @@ class FeatureEngine:
             current_step_data.get(f"{asset}_rank", 0)
         ])
 
-        # 2. Global Features (15)
-        # Portfolio State (4)
-        obs.extend([
-            portfolio_state.get('equity', 0),
-            portfolio_state.get('margin_usage_pct', 0),
-            portfolio_state.get('drawdown', 0),
-            portfolio_state.get('num_open_positions', 0)
-        ])
-        
+        # --- 4. GLOBAL / TIME (11) ---
         # Market Regime (3)
         gbp_ret = current_step_data.get("GBPUSD_return_1", 0)
         xau_ret = current_step_data.get("XAUUSD_return_1", 0)
         risk_on = (gbp_ret + xau_ret) / 2
         
         returns = [current_step_data.get(f"{a}_return_1", 0) for a in self.assets]
-        dispersion = np.std(returns)
+        dispersion = np.std(returns) if returns else 0
         
         atrs = [current_step_data.get(f"{a}_atr_ratio", 0) for a in self.assets]
-        mkt_vol = np.mean(atrs)
+        mkt_vol = np.mean(atrs) if atrs else 0
         
         obs.extend([risk_on, dispersion, mkt_vol])
         

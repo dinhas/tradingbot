@@ -76,110 +76,96 @@ class TradingEnv(gym.Env):
         
     def _build_optimization_matrix(self):
         """
-        Constructs a master numpy matrix (Steps x 140) containing all STATIC market data.
-        Dynamic features (portfolio state) are left as 0 and filled at runtime.
+        Constructs a master numpy matrix (Steps x 200) containing all STATIC market data.
+        Maps the 40 features (25 asset + 5 cross + 11 global) * 5 assets to a flat structure.
         """
         n_steps = len(self.processed_data)
-        # We keep 140 internally to store all assets, but will extract 40 for observation
-        self.master_obs_matrix = np.zeros((n_steps, 140), dtype=np.float32)
+        # We need enough space for all assets' features.
+        # Per asset: 29 specific features + 11 global features (duplicated for ease) = 40 features PER ASSET.
+        # Actually, let's look at `feature_engine.py`'s `get_observation`.
+        # It constructs 40 features specific to the requested asset.
+        # 29 Asset Specific (13 existing + 11 new + 5 cross) + 11 Global/Time.
+        # Total = 40.
         
-        # Internal map for ALL possible features
-        self.internal_feature_map = {}
-        idx = 0
-        for asset in self.assets:
-            for feat in ["close", "return_1", "return_12", "atr_14", "atr_ratio", "bb_position", 
-                        "ema_9", "ema_21", "price_vs_ema9", "ema9_vs_ema21", "rsi_14", "macd_hist", "volume_ratio"]:
-                self.internal_feature_map[f"{asset}_{feat}"] = idx
-                idx += 1
-            # Skip position state (7) - dynamic
-            idx += 7
-            for feat in ["corr_basket", "rel_strength", "corr_xauusd", "corr_eurusd", "rank"]:
-                self.internal_feature_map[f"{asset}_{feat}"] = idx
-                idx += 1
+        # We will create a map for "Asset_FeatureName" -> Index in processed_data columns.
+        # Then we can just pull the data.
         
-        # Global features (indices 125-139)
-        global_feats = [
-            "equity", "margin_usage_pct", "drawdown", "num_open_positions",
+        # However, for speed, we want `master_obs_matrix` to allow quick lookup.
+        # Strategy: 
+        # Create a dict of numpy arrays: self.feature_arrays = {asset: np.array(steps, 40)}
+        # This is faster than one giant matrix if we just need one asset at a time.
+        # Or one giant matrix (steps, 5, 40) -> (steps, 200).
+        # Let's stick to the matrix approach for similarity with previous code.
+        
+        # Total generic features = 40.
+        # Total assets = 5.
+        # Matrix shape = (steps, 5 * 40).
+        
+        self.master_obs_matrix = np.zeros((n_steps, len(self.assets) * 40), dtype=np.float32)
+        
+        # Define the 40 feature suffixes in order of `get_observation`
+        self.feature_suffixes = [
+            # 1. Existing (13)
+            "close", "return_1", "return_12",
+            "atr_14", "atr_ratio", "bb_position",
+            "ema_9", "ema_21", "price_vs_ema9", "ema9_vs_ema21",
+            "rsi_14", "macd_hist", "volume_ratio",
+            
+            # 2. New Pro (11)
+            "htf_ema_alignment", "htf_rsi_divergence", "swing_structure_proximity",
+            "vwap_deviation", "delta_pressure", "volume_shock",
+            "volatility_squeeze", "wick_rejection_strength", "breakout_velocity",
+            "rsi_slope_divergence", "macd_momentum_quality",
+            
+            # 3. Cross Asset (5)
+            "corr_basket", "rel_strength", "corr_xauusd", "corr_eurusd", "rank",
+            
+            # 4. Global (11)
             "risk_on_score", "asset_dispersion", "market_volatility",
             "hour_sin", "hour_cos", "day_sin", "day_cos",
             "session_asian", "session_london", "session_ny", "session_overlap"
         ]
-        for feat in global_feats:
-            self.internal_feature_map[feat] = idx
-            idx += 1
+        
+        for i, asset in enumerate(self.assets):
+            base_idx = i * 40
+            for j, suffix in enumerate(self.feature_suffixes):
+                col_name = f"{asset}_{suffix}"
+                
+                # Handle global features which might just be "risk_on_score" without prefix
+                # (feature_engine.py adds them as global cols, but alignment might have prefixed them? 
+                # preprocessing says: `df[col] = ...`. 
+                # `_add_session_features` adds 'risk_on_score' directly.
+                # `_align_data` handled the per-asset ones.
+                # So globals are NOT prefixed.)
+                
+                if suffix in ["risk_on_score", "asset_dispersion", "market_volatility",
+                              "hour_sin", "hour_cos", "day_sin", "day_cos",
+                              "session_asian", "session_london", "session_ny", "session_overlap"]:
+                    display_col = suffix
+                else:
+                    display_col = col_name
 
-        # Cache dynamic indices for fast updates
-        self.dynamic_indices = {feat: self.internal_feature_map[feat] for feat in global_feats[:4]}
-        
-        self.asset_dynamic_indices = {}
-        for asset in self.assets:
-            # Re-calculating indices for dynamic position state
-            base_idx = self.assets.index(asset) * 25
-            self.asset_dynamic_indices[asset] = {
-                'has_position': base_idx + 13,
-                'position_size': base_idx + 14,
-                'unrealized_pnl': base_idx + 15,
-                'position_age': base_idx + 16,
-                'entry_price': base_idx + 17,
-                'current_sl': base_idx + 18,
-                'current_tp': base_idx + 19
-            }
-        
-        # Fill static features from DataFrame columns
-        for col in self.processed_data.columns:
-            if col in self.internal_feature_map:
-                idx = self.internal_feature_map[col]
-                self.master_obs_matrix[:, idx] = self.processed_data[col].values
-            elif any(col.endswith(f"_{feat}") for feat in ["risk_on_score", "asset_dispersion", "market_volatility", "hour_sin", "hour_cos", "day_sin", "day_cos", "session_asian", "session_london", "session_ny", "session_overlap"]):
-                # Handle global columns that might not have asset prefix but are in internal_feature_map
-                feat_name = col.split('_', 1)[-1] if '_' in col else col
-                if feat_name in self.internal_feature_map:
-                    self.master_obs_matrix[:, self.internal_feature_map[feat_name]] = self.processed_data[col].values
-        
-        # Ensure session features are filled (they are named exactly in the dataframe usually)
-        for feat in ["hour_sin", "hour_cos", "day_sin", "day_cos", "session_asian", "session_london", "session_ny", "session_overlap", "risk_on_score", "asset_dispersion", "market_volatility"]:
-            if feat in self.processed_data.columns:
-                self.master_obs_matrix[:, self.internal_feature_map[feat]] = self.processed_data[feat].values
+                if display_col in self.processed_data:
+                    self.master_obs_matrix[:, base_idx + j] = self.processed_data[display_col].values
+                else:
+                    # Fallback or error?
+                    # Some correlations might be missing if XAUUSD is target?
+                    # Feature engine handles this by adding 0s.
+                    # Let's try to find it.
+                    if suffix in self.processed_data:
+                         self.master_obs_matrix[:, base_idx + j] = self.processed_data[suffix].values
 
     def _get_observation(self):
         """
         Optimized observation retrieval. Extracts 40 features for current asset.
+        Since we removed all state leakage features, the observation is 100% static data
+        derived from OHLCV. We can just slice the master matrix.
         """
-        # 1. Update master matrix with dynamic features (Internal 140-dim representation)
-        full_obs = self.master_obs_matrix[self.current_step].copy()
+        asset_idx = self.assets.index(self.current_asset)
+        start_col = asset_idx * 40
+        end_col = start_col + 40
         
-        # Update Global Dynamic
-        total_margin_used = sum((pos['notional_value'] / self.leverage) for pos in self.positions.values() if pos is not None)
-        full_obs[self.dynamic_indices['equity']] = self.equity / self.start_equity
-        full_obs[self.dynamic_indices['margin_usage_pct']] = total_margin_used / self.equity if self.equity > 0 else 0
-        full_obs[self.dynamic_indices['drawdown']] = 1.0 - (self.equity / self.peak_equity)
-        full_obs[self.dynamic_indices['num_open_positions']] = sum(1 for p in self.positions.values() if p is not None)
-        
-        # Update Per-Asset Dynamic
-        current_prices = self._get_current_prices()
-        for asset in self.assets:
-            pos = self.positions[asset]
-            indices = self.asset_dynamic_indices[asset]
-            if pos:
-                # Calculate Unrealized P&L (V1 Style)
-                price_change_pct = (current_prices[asset] - pos['entry_price']) / pos['entry_price'] * pos['direction']
-                unrealized_pnl = price_change_pct * (pos['size'] * self.leverage)
-                
-                full_obs[indices['has_position']] = 1.0
-                full_obs[indices['position_size']] = pos['size'] / self.equity
-                full_obs[indices['unrealized_pnl']] = unrealized_pnl / self.equity
-                full_obs[indices['position_age']] = (self.current_step - pos['entry_step']) / 288.0  # Normalized (days approx)
-                full_obs[indices['entry_price']] = (pos['entry_price'] / current_prices[asset]) - 1.0
-                full_obs[indices['current_sl']] = (pos['sl'] / current_prices[asset]) - 1.0
-                full_obs[indices['current_tp']] = (pos['tp'] / current_prices[asset]) - 1.0
-
-        # 2. Extract the 40 features for current_asset
-        # [25 asset features] + [15 global features]
-        asset_start_idx = self.assets.index(self.current_asset) * 25
-        asset_features = full_obs[asset_start_idx : asset_start_idx + 25]
-        global_features = full_obs[125:140]
-        
-        return np.concatenate([asset_features, global_features])
+        return self.master_obs_matrix[self.current_step, start_col:end_col]
 
     def _cache_data_arrays(self):
         """Cache DataFrame columns as numpy arrays for performance."""
