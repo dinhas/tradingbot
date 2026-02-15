@@ -101,17 +101,14 @@ class ModelLoader:
     def load_all_models(self):
         """Loads all models from their respective paths."""
         try:
-            # 1. Alpha Model (v8.03) - PPO
-            alpha_path = self.project_root / "models" / "alpha" / "8.03.zip"
-            if not alpha_path.exists():
-                 # Fallback to general checkpoints
-                 alpha_path = self.project_root / "models" / "checkpoints" / "ppo_final_model.zip"
+            # 1. Alpha Model - PPO
+            alpha_path = self.project_root / "models" / "checkpoints" / "ppo_final_model.zip"
 
             self.logger.info(f"Loading Alpha model from {alpha_path}...")
             self.alpha_model = PPO.load(alpha_path, device='cpu')
             
             # 2. Risk Model (SL Best) - PyTorch
-            risk_path = self.project_root / "models" / "oldrisk" / "risk_model_sl_best.pth"
+            risk_path = self.project_root / "models" / "risk" / "risk_model_sl_best.pth"
             if not risk_path.exists():
                 risk_path = self.project_root / "RiskLayer" / "models" / "risk_model_sl_best.pth"
                 
@@ -122,7 +119,7 @@ class ModelLoader:
             self.risk_model.eval()
 
             # 3. Risk Scaler
-            scaler_path = self.project_root / "models" / "oldrisk" / "sl_risk_scaler.pkl"
+            scaler_path = self.project_root / "models" / "risk" / "sl_risk_scaler.pkl"
             if not scaler_path.exists():
                 scaler_path = self.project_root / "RiskLayer" / "models" / "sl_risk_scaler.pkl"
                 
