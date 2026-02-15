@@ -102,36 +102,26 @@ class CombinedBacktest:
         self.peak_equity = initial_equity
         
     def build_risk_observation(self, asset, alpha_obs):
-        """Build 60-feature observation for SL risk model"""
+        """Build 40-feature observation for SL risk model (Market Only to match weights)"""
         # 1. Market State (40)
         market_obs = alpha_obs
         
-        # 2. Account state (5 features)
-        drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
-        equity_norm = self.equity / self.initial_equity
-        risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+        # 2. Account state (5 features) - DISABLED to match 40-dim weights
+        # drawdown = 1.0 - (self.equity / max(self.peak_equity, 1e-9))
+        # equity_norm = self.equity / self.initial_equity
+        # risk_cap_mult = max(0.2, 1.0 - (drawdown * 2.0))
+        # recent_pnls = list(self.asset_histories[asset]['pnl_history'])[-5:]
+        # wins = sum(1 for p in recent_pnls if p > 0)
+        # win_streak_norm = wins / 5.0
+        # account_obs = np.array([equity_norm, drawdown, 0.0, risk_cap_mult, win_streak_norm], dtype=np.float32)
         
-        # Win streak normalization (track last 5 trades)
-        recent_pnls = list(self.asset_histories[asset]['pnl_history'])[-5:]
-        wins = sum(1 for p in recent_pnls if p > 0)
-        win_streak_norm = wins / 5.0
+        # 3. History features (5 PnL + 10 Actions = 15) - DISABLED
+        # hist = self.asset_histories[asset]
+        # hist_pnl = np.array(list(hist['pnl_history']), dtype=np.float32)
+        # hist_acts = np.array(list(hist['action_history']), dtype=np.float32).flatten()
         
-        account_obs = np.array([
-            equity_norm,
-            drawdown,
-            0.0,  # Leverage placeholder
-            risk_cap_mult,
-            win_streak_norm
-        ], dtype=np.float32)
-        
-        # 3. History features (5 PnL + 10 Actions = 15)
-        hist = self.asset_histories[asset]
-        hist_pnl = np.array(list(hist['pnl_history']), dtype=np.float32)
-        hist_acts = np.array(list(hist['action_history']), dtype=np.float32).flatten()
-        
-        # Combine: 40 + 5 + 5 + 10 = 60
-        obs = np.concatenate([market_obs, account_obs, hist_pnl, hist_acts])
-        obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
+        # Use only market features (40)
+        obs = np.nan_to_num(market_obs, nan=0.0, posinf=1.0, neginf=-1.0)
         
         # 4. Scale
         obs_scaled = self.risk_scaler.transform(obs.reshape(1, -1)).astype(np.float32)
@@ -317,7 +307,7 @@ class CombinedBacktest:
 
 def run_combined_backtest(args):
     """Main backtesting function"""
-    project_root = Path(__file__).resolve().parent.parent.parent
+    project_root = Path(__file__).resolve().parent.parent
     alpha_model_path = project_root / args.alpha_model
     risk_model_path = project_root / args.risk_model
     data_dir_path = project_root / args.data_dir
@@ -381,7 +371,7 @@ def run_combined_backtest(args):
         risk_scaler = joblib.load(scaler_path)
         
         # 2. Load Model
-        risk_model = RiskModelSL(input_dim=60)
+        risk_model = RiskModelSL(input_dim=40)
         # Handle weights file (best.pth)
         if str(risk_model_path).endswith('.pth'):
             weights_path = risk_model_path
