@@ -35,7 +35,7 @@ def build_observation_matrix(df, assets, start_idx, end_idx):
     """Returns the processed data slice."""
     return df.iloc[start_idx:end_idx]
 
-def generate_sl_dataset(model_path, data_dir, output_file, limit=None):
+def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_samples=None):
     # 1. Load Model
     if not os.path.exists(model_path):
         logger.error(f"Model not found at {model_path}")
@@ -74,6 +74,9 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None):
     timestamps = df.index[start_idx:end_idx]
     
     for b_start in tqdm(batch_starts, desc="Processing Batches"):
+        if max_samples and total_signals >= max_samples:
+            break
+
         b_end = min(b_start + BATCH_SIZE, num_rows)
         batch_df_slice = all_observations_df.iloc[b_start:b_end]
         
@@ -97,6 +100,9 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None):
         
         has_data = False
         for asset in assets:
+            if max_samples and total_signals >= max_samples:
+                break
+
             asset_actions = asset_actions_all[asset]
             mask = (asset_actions > 0.33) | (asset_actions < -0.33)
             if not np.any(mask): continue
@@ -105,6 +111,9 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None):
             global_indices = start_idx + b_start + active_local_indices
             
             for local_idx, global_idx in zip(active_local_indices, global_indices):
+                if max_samples and total_signals >= max_samples:
+                    break
+
                 direction = 1 if asset_actions[local_idx] > 0.33 else -1
                 entry_price = close_arrays[asset][global_idx]
                 atr = atr_arrays[asset][global_idx]
@@ -151,11 +160,11 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None):
                 batch_results['target_size'].append(target_size)
                 batch_results['mfe'].append(mfe_atr)
                 batch_results['mae'].append(mae_atr)
+                total_signals += 1
                 has_data = True
 
         if has_data:
             batch_df = pd.DataFrame(batch_results)
-            total_signals += len(batch_df)
             if os.path.exists(output_file):
                 existing_df = pd.read_parquet(output_file)
                 pd.concat([existing_df, batch_df], ignore_index=True).to_parquet(output_file, index=False)
@@ -171,4 +180,6 @@ if __name__ == "__main__":
     parser.add_argument("--data", type=str, default=DEFAULT_DATA_DIR)
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_FILE)
     parser.add_argument("--limit", type=int, default=None)
-    generate_sl_dataset(parser.parse_args().model, parser.parse_args().data, parser.parse_args().output, parser.parse_args().limit)
+    parser.add_argument("--max-samples", type=int, default=None)
+    args = parser.parse_args()
+    generate_sl_dataset(args.model, args.data, args.output, args.limit, args.max_samples)
