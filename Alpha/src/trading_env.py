@@ -344,7 +344,7 @@ class TradingEnv(gym.Env):
             'direction': 1 if direction_raw > 0.33 else (-1 if direction_raw < -0.33 else 0),
             'size': 0.5,     # Default size
             'sl_mult': 1.5,  # Fixed SL mult
-            'tp_mult': 4.0   # Fixed TP mult
+            'tp_mult': 5.0   # Fixed TP mult
         }
 
     def _execute_trades(self, actions):

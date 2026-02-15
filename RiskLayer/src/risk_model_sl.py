@@ -21,7 +21,7 @@ class ResidualBlock(nn.Module):
         return residual + out
 
 class RiskModelSL(nn.Module):
-    def __init__(self, input_dim=60, hidden_dim=256, num_res_blocks=3):
+    def __init__(self, input_dim=40, hidden_dim=256, num_res_blocks=3):
         super(RiskModelSL, self).__init__()
         
         # Initial Projection
