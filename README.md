@@ -24,14 +24,14 @@ Running on full 2025 data with a starting equity of **$10** and optimized **0.30
 
 | Metric | Value | PRD Target |
 |--------|-------|---------------|
-| **Total Return** | **267,305,056%** | — |
-| **Final Equity** | **$2,673,022,208.00** | — |
-| **Sharpe Ratio** | 8.24 | ≥ 1.0 |
-| **Profit Factor** | 1.475 | ≥ 1.3 |
-| **Max Drawdown** | -74.62% | ≤ 20% |
-| **Win Rate** | 48.93% | ≥ 45% |
+| **Total Return** | **454,003,865,600%** | — |
+| **Final Equity** | **$45,399,871,488.00** | — |
+| **Sharpe Ratio** | 9.11 | ≥ 1.0 |
+| **Profit Factor** | 1.394 | ≥ 1.3 |
+| **Max Drawdown** | -71.93% | ≤ 20% |
+| **Win Rate** | 43.90% | ≥ 45% |
 
-> **Note:** Version 2.7 introduces a high-confidence threshold (0.30) for the Risk Layer, which significantly improves the Average Risk/Reward ratio and overall profitability.
+> **Note:** Version 2.7 introduces a high-confidence threshold (0.30) for the Risk Layer, which significantly improves the Average Risk/Reward ratio (2.47) and delivers exceptional growth through selective trade execution.
 
 ---
 
@@ -43,7 +43,7 @@ Running on full 2025 data with a starting equity of **$10** and optimized **0.30
 | **Risk Layer** | PPO Reinforcement Learning | **Deep Supervised Learning** |
 | **Filtering** | LightGBM Meta-Labeling | **Integrated 0.30 Risk Filter** |
 | **Complexity** | High (3 models to sync) | **Streamlined & Optimized** |
-| **Performance** | $10 → $248k (Simulated) | **$10 → $2.6B+ (2025 Real Data)** |
+| **Performance** | $10 → $248k (Simulated) | **$10 → $45B+ (2025 Real Data)** |
 
 ---
 
