@@ -54,8 +54,8 @@ class TradingEnv(gym.Env):
             
         self.action_space = spaces.Box(low=-1, high=1, shape=(self.action_dim,), dtype=np.float32)
         
-        # Define Observation Space (140 features)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(140,), dtype=np.float32)
+        # Define Observation Space (40 features)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(40,), dtype=np.float32)
         
         # State Variables
         self.current_step = 0

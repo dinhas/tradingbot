@@ -217,12 +217,12 @@ class NumpyEncoder(json.JSONEncoder):
 
 def run_backtest(args):
     """Main backtesting function"""
-    project_root = Path(__file__).resolve().parent.parent.parent
+    project_root = Path(__file__).resolve().parent.parent
     model_path = project_root / args.model
     data_dir_path = project_root / args.data_dir
     output_dir_path = project_root / args.output_dir
 
-    logger.info("Starting Alpha Model Backtest")
+    logger.info(f"Starting Alpha Model Backtest - Mode: {'Shared Equity' if args.asset == 'all' else 'Individual Asset'}")
     logger.info(f"Model: {model_path}")
     logger.info(f"Data directory: {data_dir_path}")
     
@@ -232,147 +232,180 @@ def run_backtest(args):
     # Initialize metrics tracker
     metrics_tracker = BacktestMetrics()
     
-    # ---------------------------------------------------------
-    # PARALLEL BACKTESTING SETUP
-    # ---------------------------------------------------------
-    num_envs = args.workers if args.workers > 1 else 1
-    logger.info(f"Initializing {num_envs} environment worker(s)...")
-
-    # Create environments
-    if num_envs > 1:
-        env = SubprocVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage) for _ in range(num_envs)])
-    else:
-        env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)])
-
-    # Load model
-    logger.info("Loading model...")
-    
-    # Load VecNormalize stats if available
-    # Possible candidates for vecnormalize file
-    candidates = [
-        str(model_path).replace('.zip', '_vecnormalize.pkl'),
-        str(model_path).replace('_model.zip', '_vecnormalize.pkl'),
-        str(model_path).replace('.zip', '.pkl')
-    ]
-    
-    vecnorm_path = None
-    for cand in candidates:
-        if os.path.exists(cand) and cand != str(model_path):
-            vecnorm_path = cand
-            break
-
-    if vecnorm_path:
-        logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
-        env = VecNormalize.load(vecnorm_path, env)
-        env.training = False
-        env.norm_reward = False
-    else:
-        logger.info("No VecNormalize stats found, using unnormalized environment")
-    
-    model = PPO.load(model_path, env=env)
-    logger.info("Model loaded successfully")
-
-    # Get asset list
-    # Use a temp env to get assets list (avoiding overhead)
-    # Actually we can just hardcode or assume the list if avoiding instantiation
-    # But better to stay safe.
-    temp_env = TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)
-    available_assets = temp_env.assets
-    assets_to_test = available_assets if args.asset == "all" else [args.asset]
-
-    # Create Task Queue: list of (asset, episode_index)
-    tasks = []
-    for asset in assets_to_test:
-        for episode in range(args.episodes):
-            tasks.append({'asset': asset, 'episode': episode})
-            
-    total_tasks = len(tasks)
-    logger.info(f"Total tasks: {total_tasks} (Assets: {len(assets_to_test)}, Episodes per asset: {args.episodes})")
-    
-    # Per-environment buffers
-    env_buffers = [BacktestMetrics() for _ in range(num_envs)]
-    
-    # Track which task is currently assigned to which env
-    # active_tasks[env_idx] = {'asset': ..., 'episode': ...}
-    active_tasks = [None] * num_envs
-    env_step_counts = np.zeros(num_envs, dtype=int)
-    
-    # Initial Task Assignment
-    for i in range(num_envs):
-        if tasks:
-            task = tasks.pop(0)
-            active_tasks[i] = task
-            logger.info(f"Worker {i} starting: {task['asset']} (Ep {task['episode']+1})")
-            if num_envs > 1:
-                env.env_method('set_asset', task['asset'], indices=i)
-            else:
-                env.envs[0].set_asset(task['asset'])
-                
-    # Reset all environments to start
-    obs = env.reset()
-    dones = np.array([False] * num_envs)
-    
-    completed_tasks = 0
-    
-    # Main Loop
-    while completed_tasks < total_tasks or any(t is not None for t in active_tasks):
-        action, _ = model.predict(obs, deterministic=True)
-        obs, rewards, dones, infos = env.step(action)
-        env_step_counts += 1
+    # Shared Equity Mode Logic
+    if args.asset == "all":
+        # Multi-pair shared equity backtest logic
+        env = TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)
+        available_assets = env.assets
         
+        # Load model and normalizer
+        dummy_vec_env = DummyVecEnv([lambda: env])
+        vecnorm_path = None
+        candidates = [
+            str(model_path).replace('.zip', '_vecnormalize.pkl'),
+            str(model_path).replace('_model.zip', '_vecnormalize.pkl'),
+            str(model_path).replace('.zip', '.pkl')
+        ]
+        for cand in candidates:
+            if os.path.exists(cand) and cand != str(model_path):
+                vecnorm_path = cand
+                break
+
+        if vecnorm_path:
+            logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
+            norm_env = VecNormalize.load(vecnorm_path, dummy_vec_env)
+            norm_env.training = False
+            norm_env.norm_reward = False
+        else:
+            logger.info("No VecNormalize stats found, using unnormalized observations")
+            norm_env = None
+        
+        model = PPO.load(model_path, env=dummy_vec_env)
+        logger.info("Model loaded successfully")
+
+        # Run episodes
+        for ep in range(args.episodes):
+            obs, _ = env.reset()
+            # Set initial equity for backtest
+            env.equity = 10000.0
+            env.start_equity = 10000.0
+            env.peak_equity = 10000.0
+            
+            start_step = env.current_step
+            max_steps = len(env.processed_data) - 1
+            if args.max_steps:
+                max_steps = min(max_steps, start_step + args.max_steps)
+                
+            logger.info(f"Episode {ep+1}/{args.episodes} starting at step {start_step}")
+
+            while env.current_step < max_steps:
+                # 1. Collect actions for all assets
+                actions = {}
+                for asset in available_assets:
+                    env.set_asset(asset)
+                    obs = env._get_observation()
+                    if norm_env:
+                        obs = norm_env.normalize_obs(obs.reshape(1, -1)).flatten()
+                    
+                    action, _ = model.predict(obs, deterministic=True)
+                    actions[asset] = env._parse_action(action)
+                
+                # 2. Execute trades and advance step
+                env.completed_trades = []
+                env._execute_trades(actions)
+                env.current_step += 1
+                env._update_positions()
+                
+                # 3. Track metrics
+                for trade in env.completed_trades:
+                    metrics_tracker.add_trade(trade)
+                metrics_tracker.add_equity_point(env._get_current_timestamp(), env.equity)
+                
+                if (env.current_step - start_step) % 5000 == 0:
+                    logger.info(f"Step {env.current_step}/{max_steps} | Equity: ${env.equity:.2f}")
+                
+                if env.equity <= 2.0:
+                    logger.warning("Margin Call!")
+                    break
+                    
+            logger.info(f"Episode {ep+1} finished. Final Equity: ${env.equity:.2f}")
+
+    else:
+        # Original Parallel Task Logic for single asset testing
+        num_envs = args.workers if args.workers > 1 else 1
+        logger.info(f"Initializing {num_envs} environment worker(s)...")
+
+        # Create environments
+        if num_envs > 1:
+            env = SubprocVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage) for _ in range(num_envs)])
+        else:
+            env = DummyVecEnv([lambda: TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)])
+
+        # Load VecNormalize stats if available
+        candidates = [
+            str(model_path).replace('.zip', '_vecnormalize.pkl'),
+            str(model_path).replace('_model.zip', '_vecnormalize.pkl'),
+            str(model_path).replace('.zip', '.pkl')
+        ]
+        vecnorm_path = None
+        for cand in candidates:
+            if os.path.exists(cand) and cand != str(model_path):
+                vecnorm_path = cand
+                break
+
+        if vecnorm_path:
+            logger.info(f"Loading VecNormalize stats from {vecnorm_path}")
+            env = VecNormalize.load(vecnorm_path, env)
+            env.training = False
+            env.norm_reward = False
+        
+        model = PPO.load(model_path, env=env)
+        
+        # Get asset list from a temporary env
+        temp_env = TradingEnv(data_dir=data_dir_path, is_training=False, stage=args.stage)
+        assets_to_test = [args.asset]
+
+        tasks = []
+        for asset in assets_to_test:
+            for episode in range(args.episodes):
+                tasks.append({'asset': asset, 'episode': episode})
+                
+        total_tasks = len(tasks)
+        env_buffers = [BacktestMetrics() for _ in range(num_envs)]
+        active_tasks = [None] * num_envs
+        env_step_counts = np.zeros(num_envs, dtype=int)
+        
+        # Initial Task Assignment
         for i in range(num_envs):
-            # If this env has an active task
-            if active_tasks[i] is not None:
-                # Accumulate data
-                info = infos[i]
-                
-                # Capture trades from this step
-                if 'trades' in info:
-                    for trade in info['trades']:
-                        env_buffers[i].add_trade(trade)
+            if tasks:
+                task = tasks.pop(0)
+                active_tasks[i] = task
+                if num_envs > 1:
+                    env.env_method('set_asset', task['asset'], indices=i)
+                else:
+                    env.envs[0].set_asset(task['asset'])
+                    
+        obs = env.reset()
+        dones = np.array([False] * num_envs)
+        completed_tasks = 0
+        
+        while completed_tasks < total_tasks or any(t is not None for t in active_tasks):
+            action, _ = model.predict(obs, deterministic=True)
+            obs, rewards, dones, infos = env.step(action)
+            env_step_counts += 1
+            
+            for i in range(num_envs):
+                if active_tasks[i] is not None:
+                    info = infos[i]
+                    if 'trades' in info:
+                        for trade in info['trades']:
+                            env_buffers[i].add_trade(trade)
+                    if 'equity' in info and 'timestamp' in info:
+                        env_buffers[i].add_equity_point(info['timestamp'], info['equity'])
+                    
+                    is_done = dones[i]
+                    if args.max_steps is not None and env_step_counts[i] >= args.max_steps:
+                        is_done = True
+                    
+                    if is_done:
+                        task = active_tasks[i]
+                        metrics_tracker.trades.extend(env_buffers[i].trades)
+                        metrics_tracker.equity_curve.extend(env_buffers[i].equity_curve)
+                        metrics_tracker.timestamps.extend(env_buffers[i].timestamps)
+                        env_buffers[i] = BacktestMetrics()
+                        completed_tasks += 1
                         
-                # Capture equity from this step
-                if 'equity' in info and 'timestamp' in info:
-                    env_buffers[i].add_equity_point(info['timestamp'], info['equity'])
-                
-                # Check for completion (Normal or Max Steps)
-                is_done = dones[i]
-                if args.max_steps is not None and env_step_counts[i] >= args.max_steps:
-                    is_done = True
-                
-                if is_done:
-                    task = active_tasks[i]
-                    final_equity = info.get('equity', 0)
-                    
-                    logger.info(f"[{task['asset']}] Worker {i} finished Ep {task['episode']+1}. Final Equity: ${final_equity:.2f}")
-                    
-                    # Merge buffer into main metrics
-                    metrics_tracker.trades.extend(env_buffers[i].trades)
-                    metrics_tracker.equity_curve.extend(env_buffers[i].equity_curve)
-                    metrics_tracker.timestamps.extend(env_buffers[i].timestamps)
-                    
-                    # Reset buffer
-                    env_buffers[i] = BacktestMetrics()
-                    
-                    completed_tasks += 1
-                    
-                    # Assign new task if available
-                    if tasks:
-                        new_task = tasks.pop(0)
-                        active_tasks[i] = new_task
-                        logger.info(f"Worker {i} starting: {new_task['asset']} (Ep {new_task['episode']+1})")
-                        if num_envs > 1:
-                            env.env_method('set_asset', new_task['asset'], indices=i)
+                        if tasks:
+                            new_task = tasks.pop(0)
+                            active_tasks[i] = new_task
+                            if num_envs > 1:
+                                env.env_method('set_asset', new_task['asset'], indices=i)
+                            else:
+                                env.envs[0].set_asset(new_task['asset'])
                         else:
-                            env.envs[0].set_asset(new_task['asset'])
-                    else:
-                        active_tasks[i] = None
-                        # Env will continue stepping but we ignore it
-                    
-                    # Reset step count for next task
-                    env_step_counts[i] = 0
-                        
-    env.close()
+                            active_tasks[i] = None
+                        env_step_counts[i] = 0
+        env.close()
     
     # Calculate metrics
     logger.info("\n" + "="*60)
@@ -443,6 +476,7 @@ def run_backtest(args):
     
     logger.info("\nBacktest complete!")
     return metrics
+
 
 
 def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp):

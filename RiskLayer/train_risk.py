@@ -113,7 +113,7 @@ def train():
     )
     
     # 4. Initialize Model and Multi-GPU Wrapper
-    model = RiskModelSL(input_dim=60).to(DEVICE)
+    model = RiskModelSL(input_dim=40).to(DEVICE)
     if NUM_GPUS > 1:
         logger.info(f"Using {NUM_GPUS} GPUs with DataParallel")
         model = nn.DataParallel(model)
