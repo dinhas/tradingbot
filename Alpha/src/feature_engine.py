@@ -380,6 +380,52 @@ class FeatureEngine:
         
         return df
 
+    def get_observation_vectorized(self, df, asset):
+        """
+        Efficiently extracts the 40-feature observation matrix for all rows.
+        Returns: np.array of shape (len(df), 40)
+        """
+        obs_cols = []
+        
+        # --- 1. EXISTING FEATURES (13) ---
+        obs_cols.extend([f"{asset}_close", f"{asset}_return_1", f"{asset}_return_12"])
+        obs_cols.extend([f"{asset}_atr_14", f"{asset}_atr_ratio", f"{asset}_bb_position"])
+        obs_cols.extend([f"{asset}_ema_9", f"{asset}_ema_21", f"{asset}_price_vs_ema9", f"{asset}_ema9_vs_ema21"])
+        obs_cols.extend([f"{asset}_rsi_14", f"{asset}_macd_hist"])
+        obs_cols.append(f"{asset}_volume_ratio")
+        
+        # --- 2. NEW PRO FEATURES (11) ---
+        obs_cols.extend([
+            f"{asset}_htf_ema_alignment", f"{asset}_htf_rsi_divergence", f"{asset}_swing_structure_proximity",
+            f"{asset}_vwap_deviation", f"{asset}_delta_pressure", f"{asset}_volume_shock",
+            f"{asset}_volatility_squeeze", f"{asset}_wick_rejection_strength", f"{asset}_breakout_velocity",
+            f"{asset}_rsi_slope_divergence", f"{asset}_macd_momentum_quality"
+        ])
+
+        # --- 3. CROSS-ASSET (5) ---
+        obs_cols.extend([f"{asset}_corr_basket", f"{asset}_rel_strength", f"{asset}_corr_xauusd", f"{asset}_corr_eurusd", f"{asset}_rank"])
+
+        # --- 4. GLOBAL / TIME (11) ---
+        # Note: These columns are directly in the DF, not asset-prefixed
+        obs_cols.extend([
+            'risk_on_score', 'asset_dispersion', 'market_volatility',
+            'hour_sin', 'hour_cos', 'day_sin', 'day_cos',
+            'session_asian', 'session_london', 'session_ny', 'session_overlap'
+        ])
+        
+        # Extract and handle missing columns with zeros
+        existing_cols = [c for c in obs_cols if c in df.columns]
+        missing_cols = [c for c in obs_cols if c not in df.columns]
+        
+        data = df[existing_cols].values
+        if missing_cols:
+            zeros = np.zeros((len(df), len(missing_cols)))
+            # We need to ensure the order matches obs_cols
+            # This is a bit more complex, let's just reindex the df
+            data = df.reindex(columns=obs_cols, fill_value=0).values
+            
+        return data.astype(np.float32)
+
     def get_observation(self, current_step_data, portfolio_state, asset):
         """
         Constructs the 40-feature observation vector for a single asset.

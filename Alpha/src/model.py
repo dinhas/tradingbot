@@ -22,28 +22,41 @@ class FocalLoss(nn.Module):
         else:
             return focal_loss
 
+class ResidualBlock(nn.Module):
+    def __init__(self, dim, dropout=0.2):
+        super(ResidualBlock, self).__init__()
+        self.ln1 = nn.LayerNorm(dim)
+        self.fc1 = nn.Linear(dim, dim * 2)
+        self.fc2 = nn.Linear(dim * 2, dim)
+        self.dropout = nn.Dropout(dropout)
+        self.activation = nn.LeakyReLU(0.1)
+
+    def forward(self, x):
+        residual = x
+        out = self.ln1(x)
+        out = self.fc1(out)
+        out = self.activation(out)
+        out = self.dropout(out)
+        out = self.fc2(out)
+        return residual + out
+
 class AlphaSLModel(nn.Module):
-    def __init__(self, input_dim: int = 40, hidden_dim: int = 128):
+    def __init__(self, input_dim: int = 40, hidden_dim: int = 256, num_res_blocks: int = 4):
         super(AlphaSLModel, self).__init__()
 
-        # Shared Trunk
-        self.trunk = nn.Sequential(
+        # Initial Projection
+        self.input_proj = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.2)
+            nn.LeakyReLU(0.1),
+            nn.LayerNorm(hidden_dim)
         )
 
+        # Residual Backbone
+        self.backbone = nn.Sequential(*[
+            ResidualBlock(hidden_dim) for _ in range(num_res_blocks)
+        ])
+
         # Head A: Direction (3 classes: -1, 0, 1)
-        # The user said "Tanh output (direction)".
-        # To reconcile with "Focal Loss", we'll use 3 units.
-        # If they literally want a single Tanh, we'd use regression, but Focal Loss is for classification.
-        # We will use 3 units and apply Tanh to them? No, Softmax is for classification.
-        # Maybe they want Tanh as a squash for a regression-like direction?
-        # Let's provide both or stick to classification with a Tanh-like feel if possible.
-        # Actually, I'll use 3 units for classification to support Focal Loss.
         self.direction_head = nn.Linear(hidden_dim, 3)
 
         # Head B: Quality (Regression [0, 1])
@@ -53,16 +66,16 @@ class AlphaSLModel(nn.Module):
         self.meta_head = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
-        features = self.trunk(x)
+        features = self.input_proj(x)
+        features = self.backbone(features)
 
         # Direction: 3 classes
         direction_logits = self.direction_head(features)
-        # We'll use the logits for Focal Loss.
 
-        # Quality: Linear output (User said Linear)
+        # Quality: Linear output
         quality = self.quality_head(features)
 
-        # Meta: Sigmoid output (User said Sigmoid)
+        # Meta: Sigmoid output
         meta = torch.sigmoid(self.meta_head(features))
 
         return direction_logits, quality, meta
