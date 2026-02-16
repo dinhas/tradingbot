@@ -53,7 +53,8 @@ class TelegramNotifier:
         app.add_handler(CommandHandler("positions", self._positions_command))
 
         self.logger.info("Telegram command bot listener started.")
-        app.run_polling(close_loop=False)
+        # Fix: Disable signal handlers because we are in a background thread
+        app.run_polling(close_loop=False, stop_signals=None)
 
     async def _start_command(self, update, context):
         """Registers the chat ID for notifications."""
