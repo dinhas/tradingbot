@@ -62,7 +62,8 @@ class FeatureManager:
         # trendbars are often in chronological order but let's be sure
         new_rows = []
         for bar in ohlcv_res.trendbar:
-             divisor = 100.0 if asset == 'XAUUSD' else 100000.0
+             # cTrader Price = value / 100,000 (Consistent with training data fetcher)
+             divisor = 100000.0
              
              low = bar.low / divisor
              new_rows.append({
@@ -87,8 +88,8 @@ class FeatureManager:
         """
         from datetime import datetime
         
-        # Determine divisor based on asset
-        divisor = 100.0 if asset == 'XAUUSD' else 100000.0
+        # cTrader Price = value / 100,000
+        divisor = 100000.0
         
         low = bar.low / divisor
         row = {
@@ -135,18 +136,11 @@ class FeatureManager:
 
     def get_risk_observation(self, asset, alpha_obs):
         """
-        Constructs the 60-feature vector for Risk model.
-        Uses synthetic account and history values as per requirement.
+        Constructs the 40-feature vector for Risk model.
+        Returns only the alpha observation as per current model requirements.
         """
         # 1. Alpha observation (40) is already passed in
-        
-        # 2. Synthetic Account/History (20 dims)
-        # Matches generate_sl_dataset.py Snipers logic
-        syn_account = np.array([1.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32) # [equity_norm, drawdown, leverage, risk_cap, win_streak]
-        syn_pnl = np.zeros(5, dtype=np.float32)
-        syn_acts = np.zeros(10, dtype=np.float32)
-        
-        return np.concatenate([alpha_obs, syn_account, syn_pnl, syn_acts])
+        return alpha_obs
 
 
     def is_ready(self):

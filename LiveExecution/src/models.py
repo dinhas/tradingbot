@@ -28,7 +28,7 @@ class ResidualBlock(nn.Module):
         return residual + out
 
 class RiskModelSL(nn.Module):
-    def __init__(self, input_dim=60, hidden_dim=256, num_res_blocks=3):
+    def __init__(self, input_dim=40, hidden_dim=256, num_res_blocks=3):
         super(RiskModelSL, self).__init__()
 
         # Initial Projection
@@ -113,7 +113,7 @@ class ModelLoader:
                 risk_path = self.project_root / "RiskLayer" / "models" / "risk_model_sl_best.pth"
                 
             self.logger.info(f"Loading SL Risk model from {risk_path}...")
-            self.risk_model = RiskModelSL(input_dim=60)
+            self.risk_model = RiskModelSL(input_dim=40)
             self.risk_model.load_state_dict(torch.load(risk_path, map_location=self.device))
             self.risk_model.to(self.device)
             self.risk_model.eval()

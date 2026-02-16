@@ -32,13 +32,13 @@ class Orchestrator:
         self.pnl_milestones = {} # Maps positionId to last notified % milestone
         self.pending_risk_actions = {} # Maps positionId to risk_actions
         
-        # Price precision (digits) for each asset
+        # Price precision (digits) for each asset (Match native cTrader precision)
         self.symbol_digits = {
             'EURUSD': 5,
             'GBPUSD': 5,
             'USDCHF': 5,
             'USDJPY': 3,
-            'XAUUSD': 3 # Gold is typically 3 digits on cTrader (1 point = 0.001)
+            'XAUUSD': 2 # Gold is 2 digits on most cTrader brokers
         }
     def update_account_state(self, account_res):
         """Updates internal portfolio state from cTrader response."""
@@ -478,25 +478,33 @@ class Orchestrator:
 
             # 5. Calculate Sizing & SL/TP Prices
             digits = self.symbol_digits.get(asset_name, 5)
-            current_price = round(self.fm.history[asset_name].iloc[-1]['close'], digits)
-            atr = self.fm.get_atr(asset_name)
-            if atr <= 0: atr = current_price * 0.0001
             
-            sl_dist = sl_mult * atr
-            tp_dist = tp_mult * atr
+            # Internal price is scaled by 100,000 (from FeatureManager)
+            scaled_price = self.fm.history[asset_name].iloc[-1]['close']
+            real_price = round(scaled_price * 100000 / (10**digits), digits)
             
-            sl_price = round(current_price - (direction * sl_dist), digits)
-            tp_price = round(current_price + (direction * tp_dist), digits)
+            atr_scaled = self.fm.get_atr(asset_name)
+            if atr_scaled <= 0: atr_scaled = scaled_price * 0.0001
             
-            # Round distances to symbol's precision to avoid 'invalid precision' errors
-            pip_unit = 10 ** -digits
-            sl_dist = round(sl_dist / pip_unit) * pip_unit
-            tp_dist = round(tp_dist / pip_unit) * pip_unit
+            sl_dist_scaled = sl_mult * atr_scaled
+            tp_dist_scaled = tp_mult * atr_scaled
             
             # Calculate Relative values for API (Price Distance in Points)
-            multiplier = 10 ** digits
-            relative_sl = int(round(sl_dist * multiplier))
-            relative_tp = int(round(tp_dist * multiplier))
+            # The model was trained on prices divided by 100,000.
+            # So (sl_dist_scaled * 100,000) recovers the original integer points in 5-digit precision.
+            # We must then convert these 5-digit points to native symbol points.
+
+            points_5digit_sl = sl_dist_scaled * 100000
+            points_5digit_tp = tp_dist_scaled * 100000
+
+            # Conversion: 1 native point = 10^(5 - digits) 5-digit points
+            # So native_points = 5digit_points / 10^(5 - digits)
+            relative_sl = int(round(points_5digit_sl / (10**(5 - digits))))
+            relative_tp = int(round(points_5digit_tp / (10**(5 - digits))))
+
+            # Real SL/TP prices for logging
+            sl_price = round(real_price - (direction * relative_sl / (10**digits)), digits)
+            tp_price = round(real_price + (direction * relative_tp / (10**digits)), digits)
             
             # Lot Calculation (Match Backtest calculate_position_size)
             equity = self.portfolio_state.get('equity', 10.0)
@@ -506,11 +514,11 @@ class Orchestrator:
             position_size = equity * size_out
             position_value_usd = position_size * MAX_LEVERAGE
 
-            # Calculate lot_value_usd
+            # Calculate lot_value_usd using REAL price
             contract_size = 100 if asset_name == 'XAUUSD' else 100000
             is_usd_quote = asset_name in ['EURUSD', 'GBPUSD', 'XAUUSD']
             if is_usd_quote:
-                lot_value_usd = contract_size * current_price
+                lot_value_usd = contract_size * real_price
             else:
                 lot_value_usd = contract_size
                 
