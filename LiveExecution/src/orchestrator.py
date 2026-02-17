@@ -442,24 +442,32 @@ class Orchestrator:
     def run_inference_chain(self, symbol_id):
         """
         Executes the full inference pipeline for a given symbol.
-        Matching Backtest Logic Exactly.
+        Matching SL Alpha Logic with Thresholds.
         """
         try:
             asset_name = self._get_symbol_name(symbol_id)
             # 1. Get Alpha Observation (40)
             alpha_obs = self.fm.get_alpha_observation(asset_name, self.portfolio_state)
             
-            # 2. Alpha Prediction
-            alpha_actions = self.ml.get_alpha_action(alpha_obs)
-            alpha_val = alpha_actions[0]
+            # 2. Alpha Prediction (SL Model)
+            alpha_out = self.ml.get_alpha_action(alpha_obs)
+            direction = int(alpha_out['direction'][0])
+            quality = float(alpha_out['quality'][0])
+            meta = float(alpha_out['meta'][0])
             
-            # Parse Alpha Direction (Match Backtest: > 0.33 Buy, < -0.33 Sell)
-            direction = 1 if alpha_val > 0.33 else (-1 if alpha_val < -0.33 else 0)
-            
-            self.logger.info(f"Alpha predicted direction for {asset_name}: {direction} (raw: {alpha_val:.4f})")
+            self.logger.info(f"Alpha Prediction for {asset_name}: Dir={direction}, Qual={quality:.3f}, Meta={meta:.3f}")
             
             if direction == 0:
                 return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold'}
+            
+            # Apply SL Thresholds
+            if meta < 0.78:
+                self.logger.info(f"Alpha Block for {asset_name}: Meta {meta:.3f} < 0.78")
+                return {'action': 0, 'allowed': False, 'reason': f'Meta Block ({meta:.3f})'}
+            
+            if quality < 0.30:
+                self.logger.info(f"Alpha Block for {asset_name}: Quality {quality:.3f} < 0.30")
+                return {'action': 0, 'allowed': False, 'reason': f'Quality Block ({quality:.3f})'}
             
             # 3. Get Risk Observation (60)
             risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs)

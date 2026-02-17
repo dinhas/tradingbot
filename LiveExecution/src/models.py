@@ -4,10 +4,9 @@ import torch
 import torch.nn as nn
 import joblib
 import numpy as np
-from stable_baselines3 import PPO
 from pathlib import Path
 
-# --- PyTorch SL Risk Model Architecture ---
+# --- PyTorch Model Architectures ---
 
 class ResidualBlock(nn.Module):
     def __init__(self, dim, dropout=0.1):
@@ -26,6 +25,46 @@ class ResidualBlock(nn.Module):
         out = self.dropout(out)
         out = self.fc2(out)
         return residual + out
+
+class AlphaSLModel(nn.Module):
+    def __init__(self, input_dim: int = 40, hidden_dim: int = 256, num_res_blocks: int = 4):
+        super(AlphaSLModel, self).__init__()
+
+        # Initial Projection
+        self.input_proj = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.LeakyReLU(0.1),
+            nn.LayerNorm(hidden_dim)
+        )
+
+        # Residual Backbone
+        self.backbone = nn.Sequential(*[
+            ResidualBlock(hidden_dim, dropout=0.2) for _ in range(num_res_blocks)
+        ])
+
+        # Head A: Direction (3 classes: -1, 0, 1)
+        self.direction_head = nn.Linear(hidden_dim, 3)
+
+        # Head B: Quality (Regression [0, 1])
+        self.quality_head = nn.Linear(hidden_dim, 1)
+
+        # Head C: Meta (Binary [0, 1])
+        self.meta_head = nn.Linear(hidden_dim, 1)
+
+    def forward(self, x):
+        features = self.input_proj(x)
+        features = self.backbone(features)
+
+        # Direction: 3 classes
+        direction_logits = self.direction_head(features)
+
+        # Quality: Linear output
+        quality = self.quality_head(features)
+
+        # Meta: Raw Logits (For BCEWithLogitsLoss stability)
+        meta_logits = self.meta_head(features)
+
+        return direction_logits, quality, meta_logits
 
 class RiskModelSL(nn.Module):
     def __init__(self, input_dim=40, hidden_dim=256, num_res_blocks=3):
@@ -101,11 +140,16 @@ class ModelLoader:
     def load_all_models(self):
         """Loads all models from their respective paths."""
         try:
-            # 1. Alpha Model - PPO
-            alpha_path = self.project_root / "models" / "checkpoints" / "ppo_final_model.zip"
+            # 1. Alpha Model - Supervised Learning
+            alpha_path = self.project_root / "Alpha" / "models" / "alpha_model.pth"
+            if not alpha_path.exists():
+                alpha_path = self.project_root / "models" / "alpha" / "alpha_model.pth"
 
-            self.logger.info(f"Loading Alpha model from {alpha_path}...")
-            self.alpha_model = PPO.load(alpha_path, device='cpu')
+            self.logger.info(f"Loading Alpha SL model from {alpha_path}...")
+            self.alpha_model = AlphaSLModel(input_dim=40)
+            self.alpha_model.load_state_dict(torch.load(alpha_path, map_location=self.device))
+            self.alpha_model.to(self.device)
+            self.alpha_model.eval()
             
             # 2. Risk Model (SL Best) - PyTorch
             risk_path = self.project_root / "models" / "risk" / "risk_model_sl_best.pth"
@@ -133,14 +177,34 @@ class ModelLoader:
             return False
 
     def get_alpha_action(self, observation):
-        """Predicts direction (Long/Short/Hold) from Alpha model."""
+        """Predicts direction, quality, and meta from Alpha SL model."""
         if self.alpha_model is None:
             raise RuntimeError("Alpha model not loaded.")
-        # Ensure observation is 2D for SB3
+        
         if observation.ndim == 1:
             observation = observation.reshape(1, -1)
-        action, _ = self.alpha_model.predict(observation, deterministic=True)
-        return action.flatten()
+        
+        # SL model doesn't have a normalizer yet (as per user), so use raw features
+        obs_tensor = torch.from_numpy(observation.astype(np.float32)).to(self.device)
+        
+        with torch.no_grad():
+            direction_logits, quality, meta_logits = self.alpha_model(obs_tensor)
+            
+            # 1. Direction: Map (0, 1, 2) -> (-1, 0, 1)
+            pred_class = torch.argmax(direction_logits, dim=1)
+            direction = (pred_class - 1).cpu().numpy().astype(float)
+            
+            # 2. Quality: Linear output [0, 1]
+            quality_val = quality.cpu().numpy().flatten().astype(float)
+            
+            # 3. Meta: Sigmoid of logits [0, 1]
+            meta_val = torch.sigmoid(meta_logits).cpu().numpy().flatten().astype(float)
+            
+        return {
+            'direction': direction,
+            'quality': quality_val,
+            'meta': meta_val
+        }
 
     def get_risk_action(self, observation):
         """Predicts SL/TP multipliers and confidence (size) using SL model."""
