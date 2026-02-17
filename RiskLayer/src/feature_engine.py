@@ -45,22 +45,30 @@ class FeatureEngine:
         aligned_df = self._align_data(data_dict)
         
         # 2. Calculate Technical Indicators per Asset
+        all_new_cols = {}
         for asset in self.assets:
-            aligned_df = self._add_technical_indicators(aligned_df, asset)
+            asset_cols = self._get_technical_indicators(aligned_df, asset)
+            all_new_cols.update(asset_cols)
             
         # 3. Calculate Cross-Asset Features
-        aligned_df = self._add_cross_asset_features(aligned_df)
+        cross_asset_cols = self._get_cross_asset_features(aligned_df, all_new_cols)
+        all_new_cols.update(cross_asset_cols)
         
         # 4. Add Global/Session Features
-        aligned_df = self._add_session_features(aligned_df)
+        session_cols = self._get_session_features(aligned_df, all_new_cols)
+        all_new_cols.update(session_cols)
+
+        # Concatenate all new features at once
+        new_features_df = pd.DataFrame(all_new_cols, index=aligned_df.index).astype(np.float32)
+        aligned_df = pd.concat([aligned_df, new_features_df], axis=1)
         
         # 5. Normalize Features (Robust Scaling)
         normalized_df = aligned_df.copy()
         normalized_df = self._normalize_features(normalized_df)
         
         # 6. Handle Missing Values
-        normalized_df = normalized_df.ffill().fillna(0)
-        aligned_df = aligned_df.ffill().fillna(0)
+        normalized_df = normalized_df.ffill().fillna(0).astype(np.float32)
+        aligned_df = aligned_df.ffill().fillna(0).astype(np.float32)
         
         return aligned_df, normalized_df
 
@@ -73,123 +81,146 @@ class FeatureEngine:
             else:
                 common_index = common_index.intersection(df.index)
         
-        aligned_df = pd.DataFrame(index=common_index)
+        aligned_parts = []
         for asset, df in data_dict.items():
             df_subset = df.loc[common_index].copy()
             df_subset.columns = [f"{asset}_{col}" for col in df_subset.columns]
-            aligned_df = pd.concat([aligned_df, df_subset], axis=1)
+            aligned_parts.append(df_subset)
+            
+        if aligned_parts:
+            aligned_df = pd.concat(aligned_parts, axis=1)
+        else:
+            aligned_df = pd.DataFrame(index=common_index)
             
         return aligned_df
 
-    def _add_technical_indicators(self, df, asset):
+    def _get_technical_indicators(self, df, asset):
         close = df[f"{asset}_close"]
         high = df[f"{asset}_high"]
         low = df[f"{asset}_low"]
         volume = df[f"{asset}_volume"]
         
+        new_cols = {}
         # Returns
-        df[f"{asset}_return_1"] = close.pct_change(1)
-        df[f"{asset}_return_12"] = close.pct_change(12)
+        new_cols[f"{asset}_return_1"] = close.pct_change(1)
+        new_cols[f"{asset}_return_12"] = close.pct_change(12)
         
         # Volatility
-        atr = AverageTrueRange(high, low, close, window=14).average_true_range()
+        atr_indicator = AverageTrueRange(high, low, close, window=14)
+        atr = atr_indicator.average_true_range()
         atr_ma = atr.rolling(window=20).mean()
-        df[f"{asset}_atr_14"] = atr
-        df[f"{asset}_atr_ratio"] = atr / atr_ma
+        new_cols[f"{asset}_atr_14"] = atr
+        new_cols[f"{asset}_atr_ratio"] = atr / atr_ma
         
         bb = BollingerBands(close, window=20, window_dev=2)
-        df[f"{asset}_bb_position"] = (close - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband())
+        new_cols[f"{asset}_bb_position"] = (close - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband())
         
         # Trend
         ema9 = EMAIndicator(close, window=9).ema_indicator()
         ema21 = EMAIndicator(close, window=21).ema_indicator()
-        df[f"{asset}_ema_9"] = ema9
-        df[f"{asset}_ema_21"] = ema21
-        df[f"{asset}_price_vs_ema9"] = (close - ema9) / ema9
-        df[f"{asset}_ema9_vs_ema21"] = (ema9 - ema21) / ema21
+        new_cols[f"{asset}_ema_9"] = ema9
+        new_cols[f"{asset}_ema_21"] = ema21
+        new_cols[f"{asset}_price_vs_ema9"] = (close - ema9) / ema9
+        new_cols[f"{asset}_ema9_vs_ema21"] = (ema9 - ema21) / ema21
         
         # Momentum
-        df[f"{asset}_rsi_14"] = RSIIndicator(close, window=14).rsi()
+        new_cols[f"{asset}_rsi_14"] = RSIIndicator(close, window=14).rsi()
         macd = MACD(close)
-        df[f"{asset}_macd_hist"] = macd.macd_diff()
+        new_cols[f"{asset}_macd_hist"] = macd.macd_diff()
         
         # Volume
         vol_ma = volume.rolling(window=20).mean()
-        df[f"{asset}_volume_ratio"] = volume / vol_ma
+        new_cols[f"{asset}_volume_ratio"] = volume / vol_ma
         
-        return df
+        return new_cols
 
-    def _add_cross_asset_features(self, df):
-        # Calculate basket return (average of all assets)
-        returns = df[[f"{a}_return_1" for a in self.assets]]
-        basket_return = returns.mean(axis=1)
+    def _get_cross_asset_features(self, df, technical_cols):
+        new_cols = {}
+        returns_list = []
+        for a in self.assets:
+            if f"{a}_return_1" in technical_cols:
+                returns_list.append(technical_cols[f"{a}_return_1"])
+            else:
+                returns_list.append(df[f"{a}_return_1"])
+                
+        returns_df = pd.concat(returns_list, axis=1)
+        basket_return = returns_df.mean(axis=1)
         
         for asset in self.assets:
-            asset_ret = df[f"{asset}_return_1"]
+            asset_ret = technical_cols.get(f"{asset}_return_1", df.get(f"{asset}_return_1"))
             
-            # Correlation to basket (50 period)
-            df[f"{asset}_corr_basket"] = asset_ret.rolling(50).corr(basket_return)
+            new_cols[f"{asset}_corr_basket"] = asset_ret.rolling(50).corr(basket_return)
+            new_cols[f"{asset}_rel_strength"] = asset_ret - basket_return
             
-            # Relative Strength
-            df[f"{asset}_rel_strength"] = asset_ret - basket_return
-            
-            # Correlation to XAUUSD
-            if f"XAUUSD_return_1" in df.columns:
-                df[f"{asset}_corr_xauusd"] = asset_ret.rolling(50).corr(df["XAUUSD_return_1"])
+            xau_ret = technical_cols.get("XAUUSD_return_1", df.get("XAUUSD_return_1"))
+            if xau_ret is not None:
+                new_cols[f"{asset}_corr_xauusd"] = asset_ret.rolling(50).corr(xau_ret)
             else:
-                df[f"{asset}_corr_xauusd"] = 0
+                new_cols[f"{asset}_corr_xauusd"] = pd.Series(0, index=df.index)
                 
-            # Correlation to EURUSD
-            if f"EURUSD_return_1" in df.columns:
-                df[f"{asset}_corr_eurusd"] = asset_ret.rolling(50).corr(df["EURUSD_return_1"])
+            eur_ret = technical_cols.get("EURUSD_return_1", df.get("EURUSD_return_1"))
+            if eur_ret is not None:
+                new_cols[f"{asset}_corr_eurusd"] = asset_ret.rolling(50).corr(eur_ret)
             else:
-                df[f"{asset}_corr_eurusd"] = 0
+                new_cols[f"{asset}_corr_eurusd"] = pd.Series(0, index=df.index)
                 
-        # Asset Rank (1-5 based on return_12)
-        ret12_cols = [f"{a}_return_12" for a in self.assets]
-        ranks = df[ret12_cols].rank(axis=1, ascending=False)
-        for asset, col in zip(self.assets, ret12_cols):
-            df[f"{asset}_rank"] = ranks[col]
+        # Asset Rank
+        ret12_list = []
+        for a in self.assets:
+            ret12_list.append(technical_cols.get(f"{a}_return_12", df.get(f"{a}_return_12")))
+        
+        ret12_df = pd.concat(ret12_list, axis=1)
+        ranks = ret12_df.rank(axis=1, ascending=False)
+        for i, asset in enumerate(self.assets):
+            new_cols[f"{asset}_rank"] = ranks.iloc[:, i]
             
-        return df
+        return new_cols
 
-    def _add_session_features(self, df):
+    def _get_session_features(self, df, technical_cols):
+        new_cols = {}
         # Time features
-        df['hour_sin'] = np.sin(2 * np.pi * df.index.hour / 24)
-        df['hour_cos'] = np.cos(2 * np.pi * df.index.hour / 24)
-        df['day_sin'] = np.sin(2 * np.pi * df.index.dayofweek / 7)
-        df['day_cos'] = np.cos(2 * np.pi * df.index.dayofweek / 7)
+        new_cols['hour_sin'] = np.sin(2 * np.pi * df.index.hour / 24)
+        new_cols['hour_cos'] = np.cos(2 * np.pi * df.index.hour / 24)
+        new_cols['day_sin'] = np.sin(2 * np.pi * df.index.dayofweek / 7)
+        new_cols['day_cos'] = np.cos(2 * np.pi * df.index.dayofweek / 7)
         
         # Sessions (UTC)
         hours = df.index.hour
-        df['session_asian'] = ((hours >= 0) & (hours < 9)).astype(int)
-        df['session_london'] = ((hours >= 8) & (hours < 17)).astype(int)
-        df['session_ny'] = ((hours >= 13) & (hours < 22)).astype(int)
-        df['session_overlap'] = ((hours >= 13) & (hours < 17)).astype(int)
+        new_cols['session_asian'] = ((hours >= 0) & (hours < 9)).astype(int)
+        new_cols['session_london'] = ((hours >= 8) & (hours < 17)).astype(int)
+        new_cols['session_ny'] = ((hours >= 13) & (hours < 22)).astype(int)
+        new_cols['session_overlap'] = ((hours >= 13) & (hours < 17)).astype(int)
         
         # Global Market Regime Features
-        gbp_ret = df.get("GBPUSD_return_1", 0)
-        xau_ret = df.get("XAUUSD_return_1", 0)
-        if isinstance(gbp_ret, pd.Series) and isinstance(xau_ret, pd.Series):
-            df['risk_on_score'] = (gbp_ret + xau_ret) / 2
-        else:
-            df['risk_on_score'] = 0
+        gbp_ret = technical_cols.get("GBPUSD_return_1", df.get("GBPUSD_return_1", 0))
+        xau_ret = technical_cols.get("XAUUSD_return_1", df.get("XAUUSD_return_1", 0))
+        new_cols['risk_on_score'] = (gbp_ret + xau_ret) / 2
         
         # Asset dispersion
-        ret_cols = [f"{a}_return_1" for a in self.assets if f"{a}_return_1" in df.columns]
+        ret_cols = []
+        for a in self.assets:
+            r = technical_cols.get(f"{a}_return_1", df.get(f"{a}_return_1"))
+            if r is not None:
+                ret_cols.append(r)
+        
         if ret_cols:
-            df['asset_dispersion'] = df[ret_cols].std(axis=1)
+            new_cols['asset_dispersion'] = pd.concat(ret_cols, axis=1).std(axis=1)
         else:
-            df['asset_dispersion'] = 0
+            new_cols['asset_dispersion'] = pd.Series(0, index=df.index)
             
         # Market volatility
-        atr_ratio_cols = [f"{a}_atr_ratio" for a in self.assets if f"{a}_atr_ratio" in df.columns]
+        atr_ratio_cols = []
+        for a in self.assets:
+            r = technical_cols.get(f"{a}_atr_ratio", df.get(f"{a}_atr_ratio"))
+            if r is not None:
+                atr_ratio_cols.append(r)
+                
         if atr_ratio_cols:
-            df['market_volatility'] = df[atr_ratio_cols].mean(axis=1)
+            new_cols['market_volatility'] = pd.concat(atr_ratio_cols, axis=1).mean(axis=1)
         else:
-            df['market_volatility'] = 0
+            new_cols['market_volatility'] = pd.Series(0, index=df.index)
             
-        return df
+        return new_cols
 
     def _normalize_features(self, df):
         """Robust Scaling: (value - median) / IQR"""

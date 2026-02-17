@@ -5,11 +5,18 @@ import numpy as np
 import pandas as pd
 import torch
 from datetime import datetime
-from stable_baselines3 import PPO
 from tqdm import tqdm
 import logging
 import gc
+
+# Add project root to sys.path to import Alpha models
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+sys.path.append(PROJECT_ROOT)
+
 from src.frozen_alpha_env import TradingEnv
+from Alpha.src.model import AlphaSLModel
+from Alpha.src.feature_engine import FeatureEngine as AlphaFeatureEngine
 
 # Add numpy 1.x/2.x compatibility shim
 if not hasattr(np, "_core"):
@@ -20,10 +27,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Paths
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(BASE_DIR)
-
-DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "ppo_final_model.zip")
+DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "Alpha", "models", "alpha_model.pth")
 DEFAULT_DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 DEFAULT_OUTPUT_FILE = os.path.join(BASE_DIR, "data", "sl_risk_dataset.parquet")
 
@@ -42,11 +46,19 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
         return
 
     logger.info(f"Loading Alpha Model from {model_path}...")
-    model = PPO.load(model_path, device='cpu')
+    model = AlphaSLModel(input_dim=40)
+    model.load_state_dict(torch.load(model_path, map_location='cpu'))
+    model.eval()
 
     # 2. Load Data & Env
     logger.info(f"Loading data from {data_dir}...")
     env = TradingEnv(data_dir=data_dir, stage=3, is_training=False)
+    
+    # Switch to Alpha Feature Engine for consistency with Alpha Model
+    logger.info("Switching to Alpha Feature Engine...")
+    env.feature_engine = AlphaFeatureEngine()
+    env.raw_data, env.processed_data = env.feature_engine.preprocess_data(env.data)
+    
     df = env.processed_data
     total_rows = len(df)
     
@@ -82,14 +94,21 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
         
         # Get Alpha Model Actions
         asset_actions_all = {}
+        asset_obs_all = {}
         for asset in assets:
-            # Construct 40-dim observation for this asset across batch
-            obs_batch = []
-            for _, row in batch_df_slice.iterrows():
-                obs_batch.append(env.feature_engine.get_observation(row, asset=asset))
-            obs_batch = np.array(obs_batch, dtype=np.float32)
+            # Vectorized observation extraction
+            obs_batch = env.feature_engine.get_observation_vectorized(batch_df_slice, asset)
+            asset_obs_all[asset] = obs_batch
             
-            actions, _ = model.predict(obs_batch, deterministic=True)
+            # SL Model Prediction
+            obs_tensor = torch.from_numpy(obs_batch)
+            with torch.no_grad():
+                dir_logits, quality, meta_logits = model(obs_tensor)
+            
+            # Convert logits to direction: argmax - 1
+            # 0 -> -1, 1 -> 0, 2 -> 1
+            pred_classes = torch.argmax(dir_logits, dim=1).numpy()
+            actions = pred_classes - 1
             asset_actions_all[asset] = actions.flatten()
         
         batch_results = {
@@ -104,6 +123,7 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
                 break
 
             asset_actions = asset_actions_all[asset]
+            obs_batch = asset_obs_all[asset]
             mask = (asset_actions > 0.33) | (asset_actions < -0.33)
             if not np.any(mask): continue
                 
@@ -126,8 +146,7 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
                 if len(future_highs) == 0: continue
                 
                 # --- Feature Extraction (40-dim) ---
-                row = batch_df_slice.iloc[local_idx]
-                full_features = env.feature_engine.get_observation(row, asset=asset)
+                full_features = obs_batch[local_idx]
 
                 # --- Labeling Logic ---
                 if direction == 1: # LONG
