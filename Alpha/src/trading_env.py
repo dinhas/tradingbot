@@ -132,25 +132,93 @@ class TradingEnv(gym.Env):
     def _get_current_timestamp(self):
         return self.processed_data.index[self.current_step]
 
-    def _update_positions(self):
-        prices = {a: self.close_arrays[a][self.current_step] for a in self.assets}
-        for asset, pos in list(self.positions.items()):
-            if pos is None: continue
-            price = prices[asset]
-            if pos['direction'] == 1:
-                if price <= pos['sl'] or price >= pos['tp']: self._close_position(asset, price)
-            else:
-                if price >= pos['sl'] or price <= pos['tp']: self._close_position(asset, price)
-
-    def _close_position(self, asset, price):
-        pos = self.positions[asset]
-        pnl = (price - pos['entry_price']) * pos['direction'] * (pos['size'] * self.leverage / pos['entry_price'])
-        self.equity += pnl
-        self.completed_trades.append({'asset': asset, 'pnl': pnl, 'timestamp': self._get_current_timestamp()})
-        self.positions[asset] = None
+    def _execute_trades(self, actions):
+        """Execute trading decisions for all assets."""
+        current_prices = self._get_current_prices()
+        atrs = self._get_current_atrs()
+        
+        for asset, act in actions.items():
+            direction = act['direction']
+            current_pos = self.positions[asset]
+            price = current_prices[asset]
+            atr = atrs[asset]
+            
+            if current_pos is None:
+                if direction != 0:
+                    self._open_position(asset, direction, act, price, atr)
+            elif current_pos['direction'] == direction:
+                pass
+            elif direction != 0 and current_pos['direction'] != direction:
+                self._close_position(asset, price)
+                self._open_position(asset, direction, act, price, atr)
+            elif direction == 0 and current_pos is not None:
+                self._close_position(asset, price)
 
     def _open_position(self, asset, direction, act, price, atr):
         size = act['size'] * self.MAX_POS_SIZE_PCT * self.equity
-        sl = price - (direction * act['sl_mult'] * atr)
-        tp = price + (direction * act['tp_mult'] * atr)
-        self.positions[asset] = {'direction': direction, 'entry_price': price, 'size': size, 'sl': sl, 'tp': tp, 'entry_step': self.current_step}
+        # Handle zero ATR
+        atr = max(atr, price * self.MIN_ATR_MULTIPLIER)
+        sl_dist = act['sl_mult'] * atr
+        tp_dist = act['tp_mult'] * atr
+        sl = price - (direction * sl_dist)
+        tp = price + (direction * tp_dist)
+        
+        self.positions[asset] = {
+            'direction': direction,
+            'entry_price': price,
+            'size': size,
+            'sl': sl,
+            'tp': tp,
+            'entry_step': self.current_step,
+            'sl_dist': sl_dist,
+            'tp_dist': tp_dist
+        }
+        # Entry fee
+        self.equity -= size * 0.00002
+
+    def _close_position(self, asset, price):
+        pos = self.positions[asset]
+        if pos is None: return
+        
+        # Leveraged P&L calculation
+        price_change_pct = (price - pos['entry_price']) / pos['entry_price'] * pos['direction']
+        pnl = price_change_pct * (pos['size'] * self.leverage)
+        
+        self.equity += pnl
+        # Exit fee
+        self.equity -= pos['size'] * 0.00002
+        
+        self.completed_trades.append({
+            'timestamp': self._get_current_timestamp(),
+            'asset': asset,
+            'pnl': pnl,
+            'net_pnl': pnl - (pos['size'] * 0.00004), # Approx total fees
+            'entry_price': pos['entry_price'],
+            'exit_price': price,
+            'size': pos['size']
+        })
+        self.positions[asset] = None
+
+    def _get_current_prices(self):
+        return {asset: self.close_arrays[asset][self.current_step] for asset in self.assets}
+
+    def _get_current_atrs(self):
+        return {asset: self.atr_arrays[asset][self.current_step] for asset in self.assets}
+
+    def _update_positions(self):
+        """Check SL/TP for all open positions."""
+        current_prices = self._get_current_prices()
+        for asset, pos in list(self.positions.items()):
+            if pos is None:
+                continue
+            price = current_prices[asset]
+            if pos['direction'] == 1:  # Long
+                if price <= pos['sl']:
+                    self._close_position(asset, pos['sl'])
+                elif price >= pos['tp']:
+                    self._close_position(asset, pos['tp'])
+            else:  # Short
+                if price >= pos['sl']:
+                    self._close_position(asset, pos['sl'])
+                elif price <= pos['tp']:
+                    self._close_position(asset, pos['tp'])
