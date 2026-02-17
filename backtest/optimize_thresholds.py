@@ -103,7 +103,7 @@ def optimize_thresholds():
         X = engine.get_observation_vectorized(filtered_norm_df, asset)
         X_tensor = torch.from_numpy(X).to(DEVICE)
         
-        actual_dirs = torch.from_numpy(filtered_labels_df['direction'].values).to(DEVICE)
+        actual_dirs = torch.from_numpy(filtered_labels_df['direction'].values).to(DEVICE).long()
         
         batch_size = 8192
         with torch.no_grad():
@@ -170,9 +170,24 @@ def optimize_thresholds():
             avg_r = r_returns.mean().item()
             win_rate = is_win.float().mean().item()
             
-            # Max Loss Streak calculation (efficiently on CPU/NumPy for this part)
-            # Streak logic is hard to vectorize perfectly in torch without custom kernels
-            # but we only do it for successful threshold pairs
+            # Max Loss Streak calculation (on CPU for streak logic)
+            # A loss is any trade where r_return < 0
+            is_loss_np = (r_returns < 0).cpu().numpy().astype(int)
+            if len(is_loss_np) > 0:
+                # Group consecutive values and count
+                streak_groups = (is_loss_np != np.concatenate([[0], is_loss_np[:-1]])).cumsum()
+                loss_streaks = np.where(is_loss_np == 1, 1, 0)
+                # Sum within groups of 1s
+                max_streak = 0
+                current_streak = 0
+                for val in is_loss_np:
+                    if val == 1:
+                        current_streak += 1
+                        max_streak = max(max_streak, current_streak)
+                    else:
+                        current_streak = 0
+            else:
+                max_streak = 0
             
             res = {
                 'meta_thresh': m_t.item(),
@@ -180,6 +195,7 @@ def optimize_thresholds():
                 'num_trades': num_trades,
                 'win_rate': win_rate,
                 'avg_r': avg_r,
+                'max_loss_streak': max_streak,
                 'expectancy': avg_r
             }
             all_results.append(res)
@@ -187,25 +203,6 @@ def optimize_thresholds():
             if avg_r > best_expectancy:
                 best_expectancy = avg_r
                 best_params = res
-
-    # 5. Output Results
-    if best_params:
-        logger.info("\n" + "="*40)
-        logger.info("OPTIMAL THRESHOLDS FOUND (GPU RUN)")
-        logger.info("="*40)
-        logger.info(f"Meta Threshold:    {best_params['meta_thresh']:.2f}")
-        logger.info(f"Quality Threshold: {best_params['qual_thresh']:.2f}")
-        logger.info(f"Expected Win Rate: {best_params['win_rate']:.1%}")
-        logger.info(f"Expected Avg R:    {best_params['avg_r']:.3f}")
-        logger.info(f"Total Trades (2025): {best_params['num_trades']}")
-        logger.info("="*40)
-        
-        output_file = PROJECT_ROOT / "backtest" / "results" / "threshold_optimization.csv"
-        os.makedirs(output_file.parent, exist_ok=True)
-        pd.DataFrame(all_results).sort_values('expectancy', ascending=False).to_csv(output_file, index=False)
-        logger.info(f"Full sweep results saved to {output_file}")
-    else:
-        logger.warning("No valid threshold combinations found.")
 
     # 5. Output Results
     if best_params:
