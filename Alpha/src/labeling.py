@@ -3,14 +3,15 @@ import numpy as np
 from typing import List, Tuple, Dict
 
 class Labeler:
-    def __init__(self, upper_mult: float = 4.0, lower_mult: float = 1.5, time_barrier: int = 20):
+    def __init__(self, upper_mult: float = 4.0, lower_mult: float = 1.5, time_barrier: int = 20, stride: int = 1):
         self.upper_mult = upper_mult
         self.lower_mult = lower_mult
         self.time_barrier = time_barrier
+        self.stride = stride
 
     def label_data(self, df: pd.DataFrame, asset: str) -> pd.DataFrame:
         """
-        Implements Triple Barrier Labeling with non-overlapping windows.
+        Implements Triple Barrier Labeling with a sliding window.
         Returns a DataFrame with [Direction, Quality, Meta, Exit_Time, Exit_Price, Barrier_Hit]
         """
         # Required columns: close, atr_14
@@ -25,15 +26,19 @@ class Labeler:
         labels = []
         indices = []
 
-        curr_idx = 0
         n = len(df)
+        # Vectorized pre-calculation of high/low/close to speed up the loop
+        prices_close = df[close_col].values
+        prices_high = df[high_col].values
+        prices_low = df[low_col].values
+        atrs = df[atr_col].values
+        timestamps = df.index
 
-        while curr_idx < n - self.time_barrier:
-            entry_price = df[close_col].iloc[curr_idx]
-            atr = df[atr_col].iloc[curr_idx]
+        for curr_idx in range(0, n - self.time_barrier, self.stride):
+            entry_price = prices_close[curr_idx]
+            atr = atrs[curr_idx]
 
-            if pd.isna(atr) or atr == 0:
-                curr_idx += 1
+            if np.isnan(atr) or atr == 0:
                 continue
 
             upper_barrier = entry_price + self.upper_mult * atr
@@ -43,21 +48,20 @@ class Labeler:
             barrier_hit = 0 # 0: Time, 1: Upper, -1: Lower
 
             # Look ahead for barrier hits
-            for j in range(curr_idx + 1, curr_idx + self.time_barrier + 1):
-                if j >= n:
-                    break
-
-                high = df[high_col].iloc[j]
-                low = df[low_col].iloc[j]
-
-                if high >= upper_barrier:
-                    barrier_hit = 1
-                    exit_idx = j
-                    break
-                elif low <= lower_barrier:
-                    barrier_hit = -1
-                    exit_idx = j
-                    break
+            # Slice the numpy arrays for performance
+            window_highs = prices_high[curr_idx + 1:curr_idx + self.time_barrier + 1]
+            window_lows = prices_low[curr_idx + 1:curr_idx + self.time_barrier + 1]
+            
+            # Find first occurrence where barrier is hit
+            upper_hits = np.where(window_highs >= upper_barrier)[0]
+            lower_hits = np.where(window_lows <= lower_barrier)[0]
+            
+            if len(upper_hits) > 0 and (len(lower_hits) == 0 or upper_hits[0] < lower_hits[0]):
+                barrier_hit = 1
+                exit_idx = curr_idx + 1 + upper_hits[0]
+            elif len(lower_hits) > 0:
+                barrier_hit = -1
+                exit_idx = curr_idx + 1 + lower_hits[0]
 
             # Direction Label
             direction = barrier_hit
@@ -65,39 +69,37 @@ class Labeler:
             # Meta Label
             meta = 1 if direction != 0 else 0
 
-            # Calculate Quality Score (MFE/MAE) conditionally based on direction
-            window_high = df[high_col].iloc[curr_idx + 1:exit_idx + 1].max()
-            window_low = df[low_col].iloc[curr_idx + 1:exit_idx + 1].min()
+            # Calculate Quality Score
+            # Slice the arrays again for the specific exit window
+            slice_highs = prices_high[curr_idx + 1:exit_idx + 1]
+            slice_lows = prices_low[curr_idx + 1:exit_idx + 1]
+            
+            if slice_highs.size == 0 or slice_lows.size == 0:
+                continue
+                
+            window_max = np.max(slice_highs)
+            window_min = np.min(slice_lows)
 
             if direction == -1: # Short
-                mfe = entry_price - window_low
-                mae = window_high - entry_price
-            else: # Long or Flat (Default to Long logic)
-                mfe = window_high - entry_price
-                mae = entry_price - window_low
+                mfe = entry_price - window_min
+                mae = window_max - entry_price
+            else: # Long or Flat
+                mfe = window_max - entry_price
+                mae = entry_price - window_min
 
             raw_quality = (mfe - mae) / (atr + 1e-6)
-            # Clip to [-2, 2] and normalize to [0, 1]
             clipped_quality = np.clip(raw_quality, -2, 2)
             normalized_quality = (clipped_quality + 2) / 4
 
-            # Store label
             labels.append({
                 'direction': direction,
                 'quality': normalized_quality,
                 'meta': meta,
-                'entry_idx': curr_idx,
-                'exit_idx': exit_idx,
-                'entry_time': df.index[curr_idx],
-                'exit_time': df.index[exit_idx],
-                'barrier_hit': barrier_hit,
-                'mfe': mfe,
-                'mae': mae
+                'entry_time': timestamps[curr_idx],
+                'exit_time': timestamps[exit_idx],
+                'barrier_hit': barrier_hit
             })
-            indices.append(df.index[curr_idx])
-
-            # Non-overlapping window: jump to exit_idx + 1
-            curr_idx = exit_idx + 1
+            indices.append(timestamps[curr_idx])
 
         return pd.DataFrame(labels, index=indices)
 
