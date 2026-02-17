@@ -129,7 +129,7 @@ def train_model(features_path, labels_path, model_save_path):
     # Configuration for large scale training
     BATCH_SIZE = 16384 # Increased for 2.5M rows and multi-GPU throughput
     LEARNING_RATE = 1e-3
-    EPOCHS = 50 # 50 epochs is likely enough for 2.5M samples
+    EPOCHS = 100 # Increased to 100 epochs
     NUM_GPUS = torch.cuda.device_count()
     
     # 1. Dataset Split

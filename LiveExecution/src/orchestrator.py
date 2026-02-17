@@ -442,24 +442,32 @@ class Orchestrator:
     def run_inference_chain(self, symbol_id):
         """
         Executes the full inference pipeline for a given symbol.
-        Matching Backtest Logic Exactly.
+        Matching SL Alpha Logic with Thresholds.
         """
         try:
             asset_name = self._get_symbol_name(symbol_id)
             # 1. Get Alpha Observation (40)
             alpha_obs = self.fm.get_alpha_observation(asset_name, self.portfolio_state)
             
-            # 2. Alpha Prediction
-            alpha_actions = self.ml.get_alpha_action(alpha_obs)
-            alpha_val = alpha_actions[0]
+            # 2. Alpha Prediction (SL Model)
+            alpha_out = self.ml.get_alpha_action(alpha_obs)
+            direction = int(alpha_out['direction'][0])
+            quality = float(alpha_out['quality'][0])
+            meta = float(alpha_out['meta'][0])
             
-            # Parse Alpha Direction (Match Backtest: > 0.33 Buy, < -0.33 Sell)
-            direction = 1 if alpha_val > 0.33 else (-1 if alpha_val < -0.33 else 0)
-            
-            self.logger.info(f"Alpha predicted direction for {asset_name}: {direction} (raw: {alpha_val:.4f})")
+            self.logger.info(f"Alpha Prediction for {asset_name}: Dir={direction}, Qual={quality:.3f}, Meta={meta:.3f}")
             
             if direction == 0:
                 return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold'}
+            
+            # Apply SL Thresholds
+            if meta < 0.78:
+                self.logger.info(f"Alpha Block for {asset_name}: Meta {meta:.3f} < 0.78")
+                return {'action': 0, 'allowed': False, 'reason': f'Meta Block ({meta:.3f})'}
+            
+            if quality < 0.30:
+                self.logger.info(f"Alpha Block for {asset_name}: Quality {quality:.3f} < 0.30")
+                return {'action': 0, 'allowed': False, 'reason': f'Quality Block ({quality:.3f})'}
             
             # 3. Get Risk Observation (60)
             risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs)
@@ -479,32 +487,35 @@ class Orchestrator:
             # 5. Calculate Sizing & SL/TP Prices
             digits = self.symbol_digits.get(asset_name, 5)
             
-            # Internal price is scaled by 100,000 (from FeatureManager)
-            scaled_price = self.fm.history[asset_name].iloc[-1]['close']
-            real_price = round(scaled_price * 100000 / (10**digits), digits)
+            # The price from FeatureManager is already the actual price (divisor=100k applied)
+            real_price = self.fm.history[asset_name].iloc[-1]['close']
             
             atr_scaled = self.fm.get_atr(asset_name)
-            if atr_scaled <= 0: atr_scaled = scaled_price * 0.0001
+            if atr_scaled <= 0: atr_scaled = real_price * 0.0001
             
-            sl_dist_scaled = sl_mult * atr_scaled
-            tp_dist_scaled = tp_mult * atr_scaled
+            # Calculate distances in actual price units
+            sl_dist = sl_mult * atr_scaled
+            tp_dist = tp_mult * atr_scaled
             
-            # Calculate Relative values for API (Price Distance in Points)
-            # The model was trained on prices divided by 100,000.
-            # So (sl_dist_scaled * 100,000) recovers the original integer points in 5-digit precision.
-            # We must then convert these 5-digit points to native symbol points.
+            # cTrader OpenAPI relative SL/TP are in 1/100,000th units for ALL symbols, 
+            # but MUST be aligned with the symbol's tick size.
+            # tick_size = 1/10^digits. In 10^-5 units, this is 100,000 / 10^digits = 10^(5-digits).
+            step = 10**(5 - digits)
+            
+            points_5digit_sl = sl_dist * 100000
+            points_5digit_tp = tp_dist * 100000
+            
+            # Round to the nearest tick size in 10^-5 scale
+            relative_sl = int(round(points_5digit_sl / step) * step)
+            relative_tp = int(round(points_5digit_tp / step) * step)
 
-            points_5digit_sl = sl_dist_scaled * 100000
-            points_5digit_tp = tp_dist_scaled * 100000
+            # Ensure relative SL/TP is at least 1 tick distance if it's supposed to be present
+            relative_sl = max(relative_sl, step)
+            relative_tp = max(relative_tp, step)
 
-            # Conversion: 1 native point = 10^(5 - digits) 5-digit points
-            # So native_points = 5digit_points / 10^(5 - digits)
-            relative_sl = int(round(points_5digit_sl / (10**(5 - digits))))
-            relative_tp = int(round(points_5digit_tp / (10**(5 - digits))))
-
-            # Real SL/TP prices for logging
-            sl_price = round(real_price - (direction * relative_sl / (10**digits)), digits)
-            tp_price = round(real_price + (direction * relative_tp / (10**digits)), digits)
+            # Real SL/TP prices for logging (calculated from entry price and distance)
+            sl_price = round(real_price - (direction * relative_sl / 100000.0), digits)
+            tp_price = round(real_price + (direction * relative_tp / 100000.0), digits)
             
             # Lot Calculation (Match Backtest calculate_position_size)
             equity = self.portfolio_state.get('equity', 10.0)
