@@ -30,7 +30,7 @@ class Orchestrator:
         self.active_positions = {} 
         self.entry_prices = {} # Maps positionId to entry_price
         self.pnl_milestones = {} # Maps positionId to last notified % milestone
-        self.pending_risk_actions = {} # Maps positionId to risk_actions
+        self.pending_risk_info = {} # Maps positionId to risk_info
         
         # Price precision (digits) for each asset (Match native cTrader precision)
         self.symbol_digits = {
@@ -425,12 +425,12 @@ class Orchestrator:
                 'size': f"{decision['lots']:.2f} lots"
             })
             
-            # Record risk actions for this position to use when it closes
+            # Record risk info for this position to use when it closes
             if hasattr(execution_res, 'position') and execution_res.position:
                 pos_id = execution_res.position.positionId
-                self.pending_risk_actions[pos_id] = decision.get('risk_actions', np.zeros(3))
+                self.pending_risk_info[pos_id] = decision.get('risk_info', {})
                 self.active_positions[symbol_id] = pos_id
-                self.logger.info(f"Recorded pending risk actions for {asset_name} position {pos_id}")
+                self.logger.info(f"Recorded pending risk info for {asset_name} position {pos_id}")
             else:
                 # Optimistically lock asset if we don't have ID yet
                 self.active_positions[symbol_id] = "PENDING"
@@ -442,89 +442,98 @@ class Orchestrator:
     def run_inference_chain(self, symbol_id):
         """
         Executes the full inference pipeline for a given symbol.
-        Matching Backtest Logic Exactly.
+        New probabilistic risk model logic (No forward-looking data).
         """
         try:
             asset_name = self._get_symbol_name(symbol_id)
+
             # 1. Get Alpha Observation (40)
             alpha_obs = self.fm.get_alpha_observation(asset_name, self.portfolio_state)
             
-            # 2. Alpha Prediction
-            alpha_actions = self.ml.get_alpha_action(alpha_obs)
-            alpha_val = alpha_actions[0]
+            # 2. Alpha Prediction (Multi-head)
+            preds = self.ml.get_alpha_predictions(alpha_obs)
             
-            # Parse Alpha Direction (Match Backtest: > 0.33 Buy, < -0.33 Sell)
-            direction = 1 if alpha_val > 0.33 else (-1 if alpha_val < -0.33 else 0)
+            dir_score = preds['direction_score']
+            quality = preds['predicted_quality']
+            meta_prob = preds['meta_probability']
             
-            self.logger.info(f"Alpha predicted direction for {asset_name}: {direction} (raw: {alpha_val:.4f})")
+            self.logger.info(f"Alpha Predictions for {asset_name}: Dir={dir_score:.4f}, Qual={quality:.4f}, Meta={meta_prob:.4f}")
             
-            if direction == 0:
-                return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold'}
+            # 3. New Probabilistic Execution Rules
+            threshold_meta = self.config.get("threshold_meta", 0.5)
+            threshold_direction = self.config.get("threshold_direction", 0.33)
+            threshold_quality = self.config.get("threshold_quality", 0.5)
             
-            # 3. Get Risk Observation (60)
-            risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs)
-            
-            # 4. Risk Prediction (SL Model)
-            risk_action = self.ml.get_risk_action(risk_obs)
-            
-            sl_mult = risk_action['sl_mult']
-            tp_mult = risk_action['tp_mult']
-            size_out = risk_action['size']
-            
-            # Blocking Logic (Threshold: 0.10 confidence)
-            if size_out < 0.10:
-                self.logger.info(f"Risk Block for {asset_name}: confidence {size_out:.4f} < 0.10")
-                return {'action': 0, 'allowed': False, 'reason': f'Risk Block ({size_out:.2f})'}
+            if meta_prob < threshold_meta:
+                return {'action': 0, 'allowed': False, 'reason': f'Low Meta Prob ({meta_prob:.2f})'}
 
-            # 5. Calculate Sizing & SL/TP Prices
-            digits = self.symbol_digits.get(asset_name, 5)
+            if abs(dir_score) < threshold_direction:
+                return {'action': 0, 'allowed': False, 'reason': f'Neutral Direction ({dir_score:.2f})'}
+
+            if quality < threshold_quality:
+                return {'action': 0, 'allowed': False, 'reason': f'Low Quality ({quality:.2f})'}
             
-            # Internal price is scaled by 100,000 (from FeatureManager)
-            scaled_price = self.fm.history[asset_name].iloc[-1]['close']
-            real_price = round(scaled_price * 100000 / (10**digits), digits)
+            direction = 1 if dir_score > 0 else -1
             
+            # 4. SL/TP Logic
             atr_scaled = self.fm.get_atr(asset_name)
-            if atr_scaled <= 0: atr_scaled = scaled_price * 0.0001
+            # Fallback if ATR is not available
+            if atr_scaled <= 0:
+                scaled_price = self.fm.history[asset_name].iloc[-1]['close']
+                atr_scaled = scaled_price * 0.0001
+
+            sl_mult = 1.5
+            if quality > 0.8:
+                tp_mult = 3.0
+            elif quality > 0.6:
+                tp_mult = 2.0
+            else:
+                tp_mult = 1.5 # Range 1.5-2.0
             
+            # 5. Position Sizing
+            equity = self.portfolio_state.get('equity', 10.0)
+            base_risk_pct = self.config.get("base_risk_pct", 0.01) # Default 1%
+            base_risk_usd = equity * base_risk_pct
+            
+            risk_capital = base_risk_usd * meta_prob * quality
+            
+            # SL distance in scaled units
             sl_dist_scaled = sl_mult * atr_scaled
-            tp_dist_scaled = tp_mult * atr_scaled
             
-            # Calculate Relative values for API (Price Distance in Points)
-            # The model was trained on prices divided by 100,000.
-            # So (sl_dist_scaled * 100,000) recovers the original integer points in 5-digit precision.
-            # We must then convert these 5-digit points to native symbol points.
+            # Convert SL distance to real price units for sizing
+            digits = self.symbol_digits.get(asset_name, 5)
+            # 1 scaled unit = 1 / 100,000 in 5-digit price
+            # Real price units = scaled_units * 100,000 / 10^(5-digits) / 10^digits ? No.
+            # Real price units = scaled_units * 100,000 / 10^5 = scaled_units.
+            # Actually, the divisor is 100,000. So sl_dist_real = sl_dist_scaled.
+            sl_dist_real = sl_dist_scaled
 
-            points_5digit_sl = sl_dist_scaled * 100000
-            points_5digit_tp = tp_dist_scaled * 100000
+            # Sizing: units = risk_amount / sl_distance_in_price
+            # Example: EURUSD, risk $10, SL 20 pips (0.0020). units = 10 / 0.0020 = 5000.
+            # This is correct.
+            position_size_units = risk_capital / (sl_dist_real + 1e-9)
 
-            # Conversion: 1 native point = 10^(5 - digits) 5-digit points
-            # So native_points = 5digit_points / 10^(5 - digits)
+            # Convert units to lots
+            contract_size = 100 if asset_name == 'XAUUSD' else 100000
+            lots = position_size_units / contract_size
+
+            # Clamp to max risk allowed (e.g. max 5% total equity risk per trade)
+            max_lots = (equity * 0.05) / (sl_dist_real * contract_size + 1e-9)
+            lots = np.clip(lots, 0.01, max_lots)
+
+            # 6. Calculate Relative SL/TP for API
+            points_5digit_sl = sl_mult * atr_scaled * 100000
+            points_5digit_tp = tp_mult * atr_scaled * 100000
+
             relative_sl = int(round(points_5digit_sl / (10**(5 - digits))))
             relative_tp = int(round(points_5digit_tp / (10**(5 - digits))))
 
-            # Real SL/TP prices for logging
+            # Real prices for logging
+            scaled_close = self.fm.history[asset_name].iloc[-1]['close']
+            real_price = round(scaled_close * 100000 / (10**digits), digits)
             sl_price = round(real_price - (direction * relative_sl / (10**digits)), digits)
             tp_price = round(real_price + (direction * relative_tp / (10**digits)), digits)
-            
-            # Lot Calculation (Match Backtest calculate_position_size)
-            equity = self.portfolio_state.get('equity', 10.0)
-            MAX_LEVERAGE = 100.0
-            
-            # Final_Size = Equity * size from model (0.0 to 1.0)
-            position_size = equity * size_out
-            position_value_usd = position_size * MAX_LEVERAGE
 
-            # Calculate lot_value_usd using REAL price
-            contract_size = 100 if asset_name == 'XAUUSD' else 100000
-            is_usd_quote = asset_name in ['EURUSD', 'GBPUSD', 'XAUUSD']
-            if is_usd_quote:
-                lot_value_usd = contract_size * real_price
-            else:
-                lot_value_usd = contract_size
-                
-            lots = position_value_usd / (lot_value_usd + 1e-9)
-            lots = np.clip(lots, 0.01, 100.0)
-            
             return {
                 'symbol_id': symbol_id,
                 'asset': asset_name,
@@ -534,7 +543,11 @@ class Orchestrator:
                 'tp': float(tp_price),
                 'relative_sl': relative_sl,
                 'relative_tp': relative_tp,
-                'risk_actions': risk_action
+                'risk_info': {
+                    'meta_prob': meta_prob,
+                    'quality': quality,
+                    'risk_capital': risk_capital
+                }
             }
             
         except Exception as e:

@@ -15,7 +15,7 @@ sys.path.append(str(PROJECT_ROOT))
 
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.feature_engine import FeatureEngine
-from Alpha.src.labeling import Labeler
+from Alpha.src.labeling import LabelingEngine
 from backtest.data_fetcher_backtest import DataFetcherBacktest, SYMBOL_IDS
 
 # Configure logging
@@ -81,7 +81,7 @@ def optimize_thresholds():
 
     # 3. Preprocess and Generate Predictions
     engine = FeatureEngine()
-    labeler = Labeler(stride=5) 
+    labeler = LabelingEngine(stride=5)
     
     # We'll collect result tensors on GPU
     all_pred_dirs = []

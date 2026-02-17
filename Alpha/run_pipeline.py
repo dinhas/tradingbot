@@ -16,7 +16,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(PROJECT_ROOT)
 
 from Alpha.src.data_loader import DataLoader as MyDataLoader
-from Alpha.src.labeling import Labeler
+from Alpha.src.labeling import LabelingEngine
 from Alpha.src.model import AlphaSLModel, multi_head_loss
 from Alpha.src.feature_engine import FeatureEngine
 
@@ -60,7 +60,7 @@ def generate_dataset(data_dir, output_dir, smoke_test=False):
     """Generates labeled dataset for all assets efficiently using vectorization."""
     logger.info(f"Generating dataset from {data_dir}...")
     loader = MyDataLoader(data_dir=data_dir)
-    labeler = Labeler()
+    labeler = LabelingEngine()
     engine = FeatureEngine()
 
     # 1. Get raw and normalized features

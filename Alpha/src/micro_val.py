@@ -11,7 +11,7 @@ import logging
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from Alpha.src.data_loader import DataLoader as MyDataLoader
-from Alpha.src.labeling import Labeler
+from Alpha.src.labeling import LabelingEngine
 from Alpha.src.model import AlphaSLModel, multi_head_loss
 from Alpha.src.feature_engine import FeatureEngine
 
@@ -33,7 +33,7 @@ def run_micro_validation():
         return
 
     # 2. Labeling (Phases 2-4)
-    labeler = Labeler()
+    labeler = LabelingEngine()
     asset = 'EURUSD'
     labels_df = labeler.label_data(aligned_df, asset)
     labels_500 = labels_df.head(500)
