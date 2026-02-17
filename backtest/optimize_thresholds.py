@@ -209,29 +209,22 @@ def optimize_thresholds():
 
     # 5. Output Results
     if best_params:
-        logger.info("
-" + "="*40)
-        logger.info("OPTIMAL THRESHOLDS FOUND")
+        logger.info("\n" + "="*40)
+        logger.info("OPTIMAL THRESHOLDS FOUND (GPU RUN)")
         logger.info("="*40)
         logger.info(f"Meta Threshold:    {best_params['meta_thresh']:.2f}")
         logger.info(f"Quality Threshold: {best_params['qual_thresh']:.2f}")
         logger.info(f"Expected Win Rate: {best_params['win_rate']:.1%}")
         logger.info(f"Expected Avg R:    {best_params['avg_r']:.3f}")
         logger.info(f"Total Trades (2025): {best_params['num_trades']}")
-        logger.info(f"Max Loss Streak:   {best_params['max_loss_streak']}")
         logger.info("="*40)
         
-        # Save results to CSV
         output_file = PROJECT_ROOT / "backtest" / "results" / "threshold_optimization.csv"
         os.makedirs(output_file.parent, exist_ok=True)
-        pd.DataFrame(all_metrics).sort_values('expectancy', ascending=False).to_csv(output_file, index=False)
+        pd.DataFrame(all_results).sort_values('expectancy', ascending=False).to_csv(output_file, index=False)
         logger.info(f"Full sweep results saved to {output_file}")
-        
-        # Recommend implementation
-        logger.info(f"
-Recommended filter: Meta > {best_params['meta_thresh']:.2f} AND Quality > {best_params['qual_thresh']:.2f}")
     else:
-        logger.warning("No valid threshold combinations found with minimum trade count.")
+        logger.warning("No valid threshold combinations found.")
 
 if __name__ == "__main__":
     optimize_thresholds()
