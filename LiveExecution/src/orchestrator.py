@@ -1,5 +1,6 @@
 import logging
 import time
+from datetime import datetime
 import numpy as np
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, gatherResults
@@ -31,7 +32,22 @@ class Orchestrator:
         self.entry_prices = {} # Maps positionId to entry_price
         self.pnl_milestones = {} # Maps positionId to last notified % milestone
         self.pending_risk_actions = {} # Maps positionId to risk_actions
+        self.live_trade_count = 0 # Track first 5 trades for Phase 8 logging
         
+        # Risk Model Configuration (Configurable via self.config)
+        self.risk_cfg = {
+            'meta_threshold': 0.70,
+            'direction_threshold': 0.10,
+            'quality_threshold': 0.30,
+            'k_sl': 1.5,
+            'base_risk_percent': 0.01, # 1% of balance
+            'max_risk_cap': 0.05,      # 5% max risk
+            'min_required_rr': 1.0,
+            'max_leverage': 100.0
+        }
+        if self.config:
+            self.risk_cfg.update({k.lower(): v for k, v in self.config.items() if k.lower() in self.risk_cfg})
+
         # Price precision (digits) for each asset (Match native cTrader precision)
         self.symbol_digits = {
             'EURUSD': 5,
@@ -425,12 +441,12 @@ class Orchestrator:
                 'size': f"{decision['lots']:.2f} lots"
             })
             
-            # Record risk actions for this position to use when it closes
+            # Record decision for this position to use when it closes
             if hasattr(execution_res, 'position') and execution_res.position:
                 pos_id = execution_res.position.positionId
-                self.pending_risk_actions[pos_id] = decision.get('risk_actions', np.zeros(3))
+                self.pending_risk_actions[pos_id] = decision
                 self.active_positions[symbol_id] = pos_id
-                self.logger.info(f"Recorded pending risk actions for {asset_name} position {pos_id}")
+                self.logger.info(f"Recorded decision for {asset_name} position {pos_id}")
             else:
                 # Optimistically lock asset if we don't have ID yet
                 self.active_positions[symbol_id] = "PENDING"
@@ -442,98 +458,106 @@ class Orchestrator:
     def run_inference_chain(self, symbol_id):
         """
         Executes the full inference pipeline for a given symbol.
-        Matching SL Alpha Logic with Thresholds.
+        REDESIGNED RISK ENGINE: No Oracle, Probabilistic sizing, Dynamic RR.
         """
         try:
             asset_name = self._get_symbol_name(symbol_id)
+
+            # --- PHASE 8 SAFETY CHECKS ---
+            latest_bar = self.fm.history[asset_name].iloc[-1]
+            now_utc = datetime.utcnow().timestamp()
+            # Ensure no future timestamps: bar timestamp should be in the past or very recent
+            assert latest_bar.name.timestamp() <= now_utc + 300, f"FUTURE DATA DETECTED: {latest_bar.name} > {datetime.utcnow()}"
+
             # 1. Get Alpha Observation (40)
             alpha_obs = self.fm.get_alpha_observation(asset_name, self.portfolio_state)
             
-            # 2. Alpha Prediction (SL Model)
+            # 2. Alpha Prediction (Multi-Head Model)
             alpha_out = self.ml.get_alpha_action(alpha_obs)
-            direction = int(alpha_out['direction'][0])
-            quality = float(alpha_out['quality'][0])
-            meta = float(alpha_out['meta'][0])
+            direction_score = float(alpha_out['direction'][0]) # Continuous -1 to 1
+            quality_score = float(alpha_out['quality'][0])     # Continuous 0 to 1
+            meta_prob = float(alpha_out['meta'][0])           # Continuous 0 to 1
             
-            self.logger.info(f"Alpha Prediction for {asset_name}: Dir={direction}, Qual={quality:.3f}, Meta={meta:.3f}")
+            self.logger.info(f"Alpha Output [{asset_name}]: Dir={direction_score:+.3f}, Qual={quality_score:.3f}, Meta={meta_prob:.3f}")
             
-            if direction == 0:
-                return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold'}
+            # --- PHASE 3: TRADE FILTERING ---
+            if meta_prob < self.risk_cfg['meta_threshold']:
+                self.logger.info(f"Filter Block [{asset_name}]: Meta {meta_prob:.3f} < {self.risk_cfg['meta_threshold']}")
+                return {'action': 0, 'reason': 'Meta Filter'}
             
-            # Apply SL Thresholds
-            if meta < 0.78:
-                self.logger.info(f"Alpha Block for {asset_name}: Meta {meta:.3f} < 0.78")
-                return {'action': 0, 'allowed': False, 'reason': f'Meta Block ({meta:.3f})'}
-            
-            if quality < 0.30:
-                self.logger.info(f"Alpha Block for {asset_name}: Quality {quality:.3f} < 0.30")
-                return {'action': 0, 'allowed': False, 'reason': f'Quality Block ({quality:.3f})'}
-            
-            # 3. Get Risk Observation (60)
-            risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs)
-            
-            # 4. Risk Prediction (SL Model)
-            risk_action = self.ml.get_risk_action(risk_obs)
-            
-            sl_mult = risk_action['sl_mult']
-            tp_mult = risk_action['tp_mult']
-            size_out = risk_action['size']
-            
-            # Blocking Logic (Threshold: 0.10 confidence)
-            if size_out < 0.10:
-                self.logger.info(f"Risk Block for {asset_name}: confidence {size_out:.4f} < 0.10")
-                return {'action': 0, 'allowed': False, 'reason': f'Risk Block ({size_out:.2f})'}
+            if abs(direction_score) < self.risk_cfg['direction_threshold']:
+                self.logger.info(f"Filter Block [{asset_name}]: Direction {abs(direction_score):.3f} < {self.risk_cfg['direction_threshold']}")
+                return {'action': 0, 'reason': 'Direction Filter'}
 
-            # 5. Calculate Sizing & SL/TP Prices
+            if quality_score < self.risk_cfg['quality_threshold']:
+                self.logger.info(f"Filter Block [{asset_name}]: Quality {quality_score:.3f} < {self.risk_cfg['quality_threshold']}")
+                return {'action': 0, 'reason': 'Quality Filter'}
+
+            # --- PHASE 4: STOP LOSS (NO LOOKAHEAD) ---
             digits = self.symbol_digits.get(asset_name, 5)
-            
-            # Internal price is scaled by 100,000 (from FeatureManager)
-            scaled_price = self.fm.history[asset_name].iloc[-1]['close']
+            # Internal price scaled by 100,000
+            scaled_price = latest_bar['close']
             real_price = round(scaled_price * 100000 / (10**digits), digits)
             
             atr_scaled = self.fm.get_atr(asset_name)
             if atr_scaled <= 0: atr_scaled = scaled_price * 0.0001
             
-            sl_dist_scaled = sl_mult * atr_scaled
-            tp_dist_scaled = tp_mult * atr_scaled
+            sl_distance_scaled = self.risk_cfg['k_sl'] * atr_scaled
             
-            # Calculate Relative values for API (Price Distance in Points)
-            # The model was trained on prices divided by 100,000.
-            # So (sl_dist_scaled * 100,000) recovers the original integer points in 5-digit precision.
-            # We must then convert these 5-digit points to native symbol points.
-
-            points_5digit_sl = sl_dist_scaled * 100000
-            points_5digit_tp = tp_dist_scaled * 100000
-
-            # Conversion: 1 native point = 10^(5 - digits) 5-digit points
-            # So native_points = 5digit_points / 10^(5 - digits)
-            relative_sl = int(round(points_5digit_sl / (10**(5 - digits))))
-            relative_tp = int(round(points_5digit_tp / (10**(5 - digits))))
-
-            # Real SL/TP prices for logging
-            sl_price = round(real_price - (direction * relative_sl / (10**digits)), digits)
-            tp_price = round(real_price + (direction * relative_tp / (10**digits)), digits)
+            # --- PHASE 5: DYNAMIC TAKE PROFIT ---
+            if quality_score > 0.8:
+                rr = 3.0
+            elif quality_score > 0.6:
+                rr = 2.0
+            else:
+                rr = 1.5
             
-            # Lot Calculation (Match Backtest calculate_position_size)
-            equity = self.portfolio_state.get('equity', 10.0)
-            MAX_LEVERAGE = 100.0
+            tp_distance_scaled = rr * sl_distance_scaled
             
-            # Final_Size = Equity * size from model (0.0 to 1.0)
-            position_size = equity * size_out
-            position_value_usd = position_size * MAX_LEVERAGE
+            # Final decision parameters
+            direction = 1 if direction_score > 0 else -1
+            
+            # --- PHASE 6: PROBABILISTIC POSITION SIZING ---
+            balance = self.portfolio_state.get('balance', 10.0)
+            base_risk = self.risk_cfg['base_risk_percent'] * balance
+            
+            # Edge Factor calculation
+            edge_strength = meta_prob * quality_score * abs(direction_score)
+            allocated_risk = base_risk * edge_strength
 
-            # Calculate lot_value_usd using REAL price
+            # Cap risk to safety limit
+            max_risk = self.risk_cfg['max_risk_cap'] * balance
+            allocated_risk = min(allocated_risk, max_risk)
+
+            # position_size = allocated_risk / sl_distance (in real units)
+            sl_distance_real = (sl_distance_scaled * 100000) / (10**digits)
+            if sl_distance_real <= 0:
+                return {'action': 0, 'reason': 'Zero SL Distance'}
+
+            # Convert to units, then to lots
             contract_size = 100 if asset_name == 'XAUUSD' else 100000
             is_usd_quote = asset_name in ['EURUSD', 'GBPUSD', 'XAUUSD']
-            if is_usd_quote:
-                lot_value_usd = contract_size * real_price
-            else:
-                lot_value_usd = contract_size
-                
-            lots = position_value_usd / (lot_value_usd + 1e-9)
-            lots = np.clip(lots, 0.01, 100.0)
             
-            return {
+            # For non-USD quote pairs, we must convert risk to quote currency first
+            risk_in_quote = allocated_risk * (1.0 if is_usd_quote else real_price)
+            position_units = risk_in_quote / sl_distance_real
+            
+            lots = position_units / contract_size
+            lots = np.clip(lots, 0.01, 50.0) # Reasonable live cap
+
+            # RR Check
+            if rr < self.risk_cfg['min_required_rr']:
+                self.logger.info(f"Filter Block [{asset_name}]: RR {rr:.1f} < {self.risk_cfg['min_required_rr']}")
+                return {'action': 0, 'reason': 'RR Filter'}
+
+            # API Point calculations
+            relative_sl = int(round(sl_distance_scaled * 100000 / (10**(5 - digits))))
+            relative_tp = int(round(tp_distance_scaled * 100000 / (10**(5 - digits))))
+
+            sl_price = round(real_price - (direction * relative_sl / (10**digits)), digits)
+            tp_price = round(real_price + (direction * relative_tp / (10**digits)), digits)
+
+            decision = {
                 'symbol_id': symbol_id,
                 'asset': asset_name,
                 'action': 1 if direction == 1 else 2,
@@ -542,8 +566,19 @@ class Orchestrator:
                 'tp': float(tp_price),
                 'relative_sl': relative_sl,
                 'relative_tp': relative_tp,
-                'risk_actions': risk_action
+                'rr': rr,
+                'edge_strength': edge_strength
             }
+
+            # --- PHASE 8: LOG FIRST 5 TRADES ---
+            if self.live_trade_count < 5:
+                self.logger.info(f"=== LIVE TRADE #{self.live_trade_count + 1} DETAIL ===")
+                self.logger.info(f"Outputs: Dir={direction_score:.4f}, Qual={quality_score:.4f}, Meta={meta_prob:.4f}")
+                self.logger.info(f"Risk: SL={sl_price} ({relative_sl} pts), TP={tp_price} ({relative_tp} pts), RR={rr}")
+                self.logger.info(f"Sizing: Edge={edge_strength:.4f}, AllocRisk=${allocated_risk:.2f}, Lots={lots:.2f}")
+                self.live_trade_count += 1
+
+            return decision
             
         except Exception as e:
             self.logger.error(f"Error in inference chain for symbol {symbol_id}: {e}")

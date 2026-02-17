@@ -56,8 +56,8 @@ class AlphaSLModel(nn.Module):
             ResidualBlock(hidden_dim) for _ in range(num_res_blocks)
         ])
 
-        # Head A: Direction (3 classes: -1, 0, 1)
-        self.direction_head = nn.Linear(hidden_dim, 3)
+        # Head A: Direction (Continuous -1 to 1)
+        self.direction_head = nn.Linear(hidden_dim, 1)
 
         # Head B: Quality (Regression [0, 1])
         self.quality_head = nn.Linear(hidden_dim, 1)
@@ -69,8 +69,8 @@ class AlphaSLModel(nn.Module):
         features = self.input_proj(x)
         features = self.backbone(features)
 
-        # Direction: 3 classes
-        direction_logits = self.direction_head(features)
+        # Direction: Tanh score (-1 to 1)
+        direction_score = torch.tanh(self.direction_head(features))
 
         # Quality: Linear output
         quality = self.quality_head(features)
@@ -78,23 +78,20 @@ class AlphaSLModel(nn.Module):
         # Meta: Raw Logits (For BCEWithLogitsLoss stability)
         meta_logits = self.meta_head(features)
 
-        return direction_logits, quality, meta_logits
+        return direction_score, quality, meta_logits
 
 def multi_head_loss(outputs, targets, weights=(2.0, 0.5, 1.0), alpha_dir=None):
     """
     Computes weighted multi-head loss.
-    outputs: (dir_logits, quality_pred, meta_logits)
+    outputs: (dir_score, quality_pred, meta_logits)
     targets: (dir_target, quality_target, meta_target)
     """
-    dir_logits, qual_pred, meta_logits = outputs
+    dir_score, qual_pred, meta_logits = outputs
     dir_target, qual_target, meta_target = targets
     w_dir, w_qual, w_meta = weights
 
-    # Direction Loss: Focal Loss
-    # Map dir_target from {-1, 0, 1} to {0, 1, 2}
-    dir_target_mapped = (dir_target + 1).long()
-    focal_criterion = FocalLoss(alpha=alpha_dir)
-    loss_dir = focal_criterion(dir_logits, dir_target_mapped)
+    # Direction Loss: MSE Loss (for continuous -1 to 1)
+    loss_dir = F.mse_loss(dir_score.squeeze(), dir_target.float())
 
     # Quality Loss: Huber Loss
     loss_qual = F.huber_loss(qual_pred.squeeze(), qual_target.float())

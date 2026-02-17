@@ -42,8 +42,8 @@ class AlphaSLModel(nn.Module):
             ResidualBlock(hidden_dim, dropout=0.2) for _ in range(num_res_blocks)
         ])
 
-        # Head A: Direction (3 classes: -1, 0, 1)
-        self.direction_head = nn.Linear(hidden_dim, 3)
+        # Head A: Direction (Continuous -1 to 1)
+        self.direction_head = nn.Linear(hidden_dim, 1)
 
         # Head B: Quality (Regression [0, 1])
         self.quality_head = nn.Linear(hidden_dim, 1)
@@ -55,8 +55,8 @@ class AlphaSLModel(nn.Module):
         features = self.input_proj(x)
         features = self.backbone(features)
 
-        # Direction: 3 classes
-        direction_logits = self.direction_head(features)
+        # Direction: Tanh score (-1 to 1)
+        direction_score = torch.tanh(self.direction_head(features))
 
         # Quality: Linear output
         quality = self.quality_head(features)
@@ -64,7 +64,7 @@ class AlphaSLModel(nn.Module):
         # Meta: Raw Logits (For BCEWithLogitsLoss stability)
         meta_logits = self.meta_head(features)
 
-        return direction_logits, quality, meta_logits
+        return direction_score, quality, meta_logits
 
 class RiskModelSL(nn.Module):
     def __init__(self, input_dim=40, hidden_dim=256, num_res_blocks=3):
@@ -177,7 +177,7 @@ class ModelLoader:
             return False
 
     def get_alpha_action(self, observation):
-        """Predicts direction, quality, and meta from Alpha SL model."""
+        """Predicts direction_score, quality, and meta from Alpha SL model."""
         if self.alpha_model is None:
             raise RuntimeError("Alpha model not loaded.")
         
@@ -188,11 +188,10 @@ class ModelLoader:
         obs_tensor = torch.from_numpy(observation.astype(np.float32)).to(self.device)
         
         with torch.no_grad():
-            direction_logits, quality, meta_logits = self.alpha_model(obs_tensor)
+            direction_score, quality, meta_logits = self.alpha_model(obs_tensor)
             
-            # 1. Direction: Map (0, 1, 2) -> (-1, 0, 1)
-            pred_class = torch.argmax(direction_logits, dim=1)
-            direction = (pred_class - 1).cpu().numpy().astype(float)
+            # 1. Direction: Continuous -1 to 1 (Tanh output)
+            direction_val = direction_score.cpu().numpy().flatten().astype(float)
             
             # 2. Quality: Linear output [0, 1]
             quality_val = quality.cpu().numpy().flatten().astype(float)
@@ -201,7 +200,7 @@ class ModelLoader:
             meta_val = torch.sigmoid(meta_logits).cpu().numpy().flatten().astype(float)
             
         return {
-            'direction': direction,
+            'direction': direction_val,
             'quality': quality_val,
             'meta': meta_val
         }

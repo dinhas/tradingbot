@@ -3,10 +3,10 @@ import numpy as np
 from typing import List, Tuple, Dict
 
 class Labeler:
-    def __init__(self, upper_mult: float = 4.0, lower_mult: float = 1.5, time_barrier: int = 20, stride: int = 1):
+    def __init__(self, upper_mult: float = 4.0, lower_mult: float = 1.5, time_barrier: int = 30, stride: int = 1):
         self.upper_mult = upper_mult
         self.lower_mult = lower_mult
-        self.time_barrier = time_barrier
+        self.time_barrier = time_barrier # 30 bars = 2.5 hours at 5m timeframe
         self.stride = stride
 
     def label_data(self, df: pd.DataFrame, asset: str) -> pd.DataFrame:
@@ -91,13 +91,19 @@ class Labeler:
             clipped_quality = np.clip(raw_quality, -2, 2)
             normalized_quality = (clipped_quality + 2) / 4
 
+            # Optimal RR = MFE / MAE (with protection)
+            optimal_rr = mfe / (mae + 1e-6)
+
             labels.append({
                 'direction': direction,
                 'quality': normalized_quality,
                 'meta': meta,
                 'entry_time': timestamps[curr_idx],
                 'exit_time': timestamps[exit_idx],
-                'barrier_hit': barrier_hit
+                'barrier_hit': barrier_hit,
+                'historical_mfe': mfe,
+                'historical_mae': mae,
+                'historical_optimal_rr': optimal_rr
             })
             indices.append(timestamps[curr_idx])
 

@@ -67,20 +67,20 @@ def run_sl_backtest():
     # Reshape to (N * num_assets, 40) for batch inference
     obs_flat = master_obs.reshape(-1, 40)
     
-    dir_probs_list = []
+    dir_scores_list = []
     meta_probs_list = []
     qual_scores_list = []
     
     with torch.no_grad():
         for i in tqdm(range(0, len(obs_flat), args.batch_size), desc="Inference"):
             batch = torch.from_numpy(obs_flat[i : i + args.batch_size]).to(DEVICE)
-            dir_logits, qual_pred, meta_logits = model(batch)
+            dir_score, qual_pred, meta_logits = model(batch)
             
-            dir_probs_list.append(torch.softmax(dir_logits, dim=1).cpu().numpy())
+            dir_scores_list.append(dir_score.cpu().numpy())
             meta_probs_list.append(torch.sigmoid(meta_logits).cpu().numpy())
             qual_scores_list.append(qual_pred.cpu().numpy())
             
-    dir_probs_all = np.concatenate(dir_probs_list, axis=0).reshape(N, num_assets, 3)
+    dir_scores_all = np.concatenate(dir_scores_list, axis=0).reshape(N, num_assets)
     meta_probs_all = np.concatenate(meta_probs_list, axis=0).reshape(N, num_assets)
     qual_scores_all = np.concatenate(qual_scores_list, axis=0).reshape(N, num_assets)
     
@@ -103,16 +103,15 @@ def run_sl_backtest():
         
         # Look up pre-calculated signals for this step
         for i, asset in enumerate(env.assets):
-            dir_probs = dir_probs_all[step_idx, i]
+            dir_score = dir_scores_all[step_idx, i]
             meta_prob = meta_probs_all[step_idx, i]
             qual_score = qual_scores_all[step_idx, i]
             
-            # Get predicted direction
-            pred_idx = np.argmax(dir_probs)
-            direction = pred_idx - 1 # Map {0,1,2} -> {-1,0,1}
+            # Get predicted direction (continuous score)
+            direction = 1 if dir_score > 0 else -1
             
             # Apply thresholds
-            if meta_prob >= args.meta_thresh and qual_score >= args.qual_thresh:
+            if meta_prob >= args.meta_thresh and qual_score >= args.qual_thresh and abs(dir_score) >= 0.1:
                 actions[asset] = {
                     'direction': direction,
                     'size': 0.2, 
