@@ -144,7 +144,7 @@ def train_model(features_path, labels_path, model_save_path):
         train_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=True, 
-        num_workers=8, # Increased workers for faster batch prep
+        num_workers=4, # Reduced to match system suggestion
         pin_memory=True,
         prefetch_factor=2
     )
@@ -152,7 +152,7 @@ def train_model(features_path, labels_path, model_save_path):
         val_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=False, 
-        num_workers=8,
+        num_workers=4, # Reduced to match system suggestion
         pin_memory=True
     )
     
@@ -172,8 +172,8 @@ def train_model(features_path, labels_path, model_save_path):
         pct_start=0.3 # Longer warm-up
     )
     
-    # FP16 Mixed Precision
-    scaler = torch.cuda.amp.GradScaler()
+    # Modern FP16 Mixed Precision API
+    scaler = torch.amp.GradScaler('cuda')
     
     best_val_loss = float('inf')
     early_stop_patience = 5
@@ -189,7 +189,8 @@ def train_model(features_path, labels_path, model_save_path):
             
             optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast():
+            # Use modern autocast API
+            with torch.amp.autocast('cuda'):
                 outputs = model(b_X)
                 # Task weighting: Direction and Meta are critical
                 loss, _ = multi_head_loss(
@@ -210,7 +211,7 @@ def train_model(features_path, labels_path, model_save_path):
         with torch.no_grad():
             for batch in val_loader:
                 b_X, b_dir, b_qual, b_meta = [t.to(DEVICE, non_blocking=True) for t in batch]
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     outputs = model(b_X)
                     loss, _ = multi_head_loss(outputs, (b_dir, b_qual, b_meta))
                     val_loss += loss.item()

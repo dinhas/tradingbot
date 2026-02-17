@@ -75,19 +75,20 @@ class AlphaSLModel(nn.Module):
         # Quality: Linear output
         quality = self.quality_head(features)
 
-        # Meta: Sigmoid output
-        meta = torch.sigmoid(self.meta_head(features))
+        # Meta: Raw Logits (For BCEWithLogitsLoss stability)
+        meta_logits = self.meta_head(features)
 
-        return direction_logits, quality, meta
+        return direction_logits, quality, meta_logits
 
-def multi_head_loss(outputs, targets, alpha_dir=None):
+def multi_head_loss(outputs, targets, weights=(2.0, 0.5, 1.0), alpha_dir=None):
     """
     Computes weighted multi-head loss.
-    outputs: (dir_logits, quality_pred, meta_pred)
+    outputs: (dir_logits, quality_pred, meta_logits)
     targets: (dir_target, quality_target, meta_target)
     """
-    dir_logits, qual_pred, meta_pred = outputs
+    dir_logits, qual_pred, meta_logits = outputs
     dir_target, qual_target, meta_target = targets
+    w_dir, w_qual, w_meta = weights
 
     # Direction Loss: Focal Loss
     # Map dir_target from {-1, 0, 1} to {0, 1, 2}
@@ -98,10 +99,10 @@ def multi_head_loss(outputs, targets, alpha_dir=None):
     # Quality Loss: Huber Loss
     loss_qual = F.huber_loss(qual_pred.squeeze(), qual_target.float())
 
-    # Meta Loss: BCE Loss
-    loss_meta = F.binary_cross_entropy(meta_pred.squeeze(), meta_target.float())
+    # Meta Loss: BCE with Logits (Safe for AMP/Autocast)
+    loss_meta = F.binary_cross_entropy_with_logits(meta_logits.squeeze(), meta_target.float())
 
-    total_loss = loss_dir + loss_qual + loss_meta
+    total_loss = (w_dir * loss_dir) + (w_qual * loss_qual) + (w_meta * loss_meta)
 
     return total_loss, (loss_dir, loss_qual, loss_meta)
 
