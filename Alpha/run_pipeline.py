@@ -123,6 +123,9 @@ def train_model(features_path, labels_path, model_save_path):
     """Trains the AlphaSLModel with optimizations for large datasets (2.5M rows)."""
     logger.info(f"Starting optimized large-scale training...")
     
+    # Ensure models directory exists
+    os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+    
     # Configuration for large scale training
     BATCH_SIZE = 16384 # Increased for 2.5M rows and multi-GPU throughput
     LEARNING_RATE = 1e-3
