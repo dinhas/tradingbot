@@ -16,6 +16,7 @@ class CTraderClient:
         self.on_authenticated = None
         self.on_order_execution = None
         self.on_order_error = None
+        self.on_spot_event = None
         
         # State tracking for deduplication
         self.last_bar_timestamps = {}
@@ -107,6 +108,8 @@ class CTraderClient:
             payload = Protobuf.extract(message)
             
             if isinstance(payload, ProtoOASpotEvent):
+                if self.on_spot_event:
+                    self.on_spot_event(payload)
                 self._handle_spot_event(payload)
             elif isinstance(payload, ProtoOAExecutionEvent):
                 if self.on_order_execution:

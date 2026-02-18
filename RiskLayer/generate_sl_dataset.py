@@ -93,7 +93,7 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
         batch_df_slice = all_observations_df.iloc[b_start:b_end]
         
         # Get Alpha Model Actions
-        asset_actions_all = {}
+        asset_predictions_all = {}
         asset_obs_all = {}
         for asset in assets:
             # Vectorized observation extraction
@@ -105,15 +105,23 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
             with torch.no_grad():
                 dir_logits, quality, meta_logits = model(obs_tensor)
             
-            # Convert logits to direction: argmax - 1
-            # 0 -> -1, 1 -> 0, 2 -> 1
-            pred_classes = torch.argmax(dir_logits, dim=1).numpy()
-            actions = pred_classes - 1
-            asset_actions_all[asset] = actions.flatten()
+            # Alpha outputs
+            probs = torch.softmax(dir_logits, dim=1)
+            alpha_dir = (probs[:, 2] - probs[:, 0]).numpy() # Expected value
+            alpha_qual = torch.sigmoid(quality).numpy().flatten() if quality.shape[1] == 1 else quality.numpy().flatten()
+            alpha_meta = torch.sigmoid(meta_logits).numpy().flatten()
+            
+            asset_predictions_all[asset] = {
+                'dir': alpha_dir,
+                'qual': alpha_qual,
+                'meta': alpha_meta
+            }
         
         batch_results = {
             'timestamp': [], 'asset': [], 'direction': [], 'entry_price': [], 'atr': [],
+            'alpha_direction': [], 'alpha_quality': [], 'alpha_meta': [],
             'features': [], 'target_sl_mult': [], 'target_tp_mult': [], 'target_size': [],
+            'target_execution_buffer_mult': [], 'target_expected_value': [], 'target_tp_first': [],
             'mfe': [], 'mae': []
         }
         
@@ -122,61 +130,121 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
             if max_samples and total_signals >= max_samples:
                 break
 
-            asset_actions = asset_actions_all[asset]
+            preds = asset_predictions_all[asset]
             obs_batch = asset_obs_all[asset]
-            mask = (asset_actions > 0.33) | (asset_actions < -0.33)
+            
+            # Alpha v2 thresholds: meta >= 0.30, quality >= 0.30, abs(direction) > 0.20
+            mask = (preds['meta'] >= 0.30) & (preds['qual'] >= 0.30) & (np.abs(preds['dir']) > 0.20)
             if not np.any(mask): continue
                 
             active_local_indices = np.where(mask)[0]
             global_indices = start_idx + b_start + active_local_indices
             
+            # Spread and Slippage estimates
+            spread_val = 0.3 if asset == 'XAUUSD' else 0.00002
+            
             for local_idx, global_idx in zip(active_local_indices, global_indices):
                 if max_samples and total_signals >= max_samples:
                     break
 
-                direction = 1 if asset_actions[local_idx] > 0.33 else -1
-                entry_price = close_arrays[asset][global_idx]
+                direction = 1 if preds['dir'][local_idx] > 0 else -1
+                raw_entry = close_arrays[asset][global_idx]
                 atr = atr_arrays[asset][global_idx]
                 if atr == 0: continue
 
-                # Future Window
-                f_end_step = min(global_idx + LOOKAHEAD_BARS, len(high_arrays[asset]))
+                # Bid/Ask aware entry
+                entry_price = raw_entry + (direction * spread_val / 2.0)
+                
+                # Slippage estimate: rolling mean of (|open - prev_close|) in ATR units
+                lookback_slippage = 20
+                if global_idx > lookback_slippage:
+                    opens = env.raw_data[f"{asset}_open"].values[global_idx-lookback_slippage:global_idx+1]
+                    prev_closes = env.raw_data[f"{asset}_close"].values[global_idx-lookback_slippage-1:global_idx]
+                    slippage_estimate = np.mean(np.abs(opens - prev_closes)) / atr
+                else:
+                    slippage_estimate = 0.05
+                
+                execution_buffer = (spread_val / atr) + slippage_estimate
+
+                # Dynamic Lookahead search
+                # Estimate average true range per bar (rolling 100) to gauge volatility
+                if global_idx >= 100:
+                    lookback_vol = 100
+                    tr_window = np.abs(high_arrays[asset][global_idx-lookback_vol:global_idx] - low_arrays[asset][global_idx-lookback_vol:global_idx])
+                    avg_tr_per_bar = np.mean(tr_window)
+                else:
+                    avg_tr_per_bar = atr / 5.0 # Crude fallback
+                
+                # Target at least 5 ATR potential movement coverage
+                dynamic_lookahead = int(np.ceil((5.0 * atr) / (avg_tr_per_bar + 1e-9)))
+                dynamic_lookahead = int(np.clip(dynamic_lookahead, 20, 300))
+                
+                f_end_step = min(global_idx + dynamic_lookahead, len(high_arrays[asset]))
+                
+                future_opens = env.raw_data[f"{asset}_open"].values[global_idx+1 : f_end_step]
                 future_highs = high_arrays[asset][global_idx+1 : f_end_step]
                 future_lows = low_arrays[asset][global_idx+1 : f_end_step]
+                
                 if len(future_highs) == 0: continue
                 
-                # --- Feature Extraction (40-dim) ---
-                full_features = obs_batch[local_idx]
-
-                # --- Labeling Logic ---
                 if direction == 1: # LONG
-                    mfe_idx = np.argmax(future_highs)
-                    mfe_dist = future_highs[mfe_idx] - entry_price
-                    mae_dist = entry_price - np.min(future_lows[:mfe_idx+1])
+                    bid_highs = future_highs - (spread_val / 2.0)
+                    bid_lows = future_lows - (spread_val / 2.0)
+                    mae_dist = entry_price - np.min(bid_lows)
+                    mfe_dist = np.max(bid_highs) - entry_price
                 else: # SHORT
-                    mfe_idx = np.argmin(future_lows)
-                    mfe_dist = entry_price - future_lows[mfe_idx]
-                    mae_dist = np.max(future_highs[:mfe_idx+1]) - entry_price
+                    ask_lows = future_lows + (spread_val / 2.0)
+                    ask_highs = future_highs + (spread_val / 2.0)
+                    mae_dist = np.max(ask_highs) - entry_price
+                    mfe_dist = entry_price - np.min(ask_lows)
+
+                mfe_atr = max(mfe_dist / atr, 0.1)
+                mae_atr = max(mae_dist / atr, 0.1)
                 
-                mfe_atr, mae_atr = mfe_dist / atr, mae_dist / atr
-                
-                # Target SL & TP
                 target_sl_mult = np.clip(mae_atr + 0.2, 0.2, 5.0)
-                target_tp_mult = np.clip(mfe_atr, 0.1, 10.0)
+                target_tp_mult = np.clip(mfe_atr * 0.8, 0.2, 10.0)
+
+                # TP First check
+                tp_price = entry_price + (direction * target_tp_mult * atr)
+                sl_price = entry_price - (direction * target_sl_mult * atr)
                 
-                # Confidence / Size
-                rr_ratio = target_tp_mult / max(target_sl_mult, 1e-9)
-                target_size = np.clip((mfe_atr - 0.5) / 2.0, 0.0, 1.0) if rr_ratio >= 1.5 else 0.0
+                target_tp_first = 0
+                for i in range(len(future_highs)):
+                    if direction == 1: # LONG
+                        if future_lows[i] - (spread_val / 2.0) <= sl_price:
+                            break
+                        if future_highs[i] - (spread_val / 2.0) >= tp_price:
+                            target_tp_first = 1
+                            break
+                    else: # SHORT
+                        if future_highs[i] + (spread_val / 2.0) >= sl_price:
+                            break
+                        if future_lows[i] + (spread_val / 2.0) <= tp_price:
+                            target_tp_first = 1
+                            break
+
+                # Expected Value Logic
+                transaction_cost = (spread_val / atr) + slippage_estimate
+                p_win = 0.6 if target_tp_first == 1 else 0.4 
+                ev = (p_win * target_tp_mult) - ((1 - p_win) * target_sl_mult) - transaction_cost
                 
+                target_size = np.clip(ev / target_sl_mult, 0.0, 1.0)
+
                 batch_results['timestamp'].append(timestamps[b_start + local_idx])
                 batch_results['asset'].append(asset)
                 batch_results['direction'].append(direction)
                 batch_results['entry_price'].append(entry_price)
                 batch_results['atr'].append(atr)
-                batch_results['features'].append(full_features.tolist())
+                batch_results['alpha_direction'].append(preds['dir'][local_idx])
+                batch_results['alpha_quality'].append(preds['qual'][local_idx])
+                batch_results['alpha_meta'].append(preds['meta'][local_idx])
+                batch_results['features'].append(obs_batch[local_idx].tolist())
                 batch_results['target_sl_mult'].append(target_sl_mult)
                 batch_results['target_tp_mult'].append(target_tp_mult)
                 batch_results['target_size'].append(target_size)
+                batch_results['target_execution_buffer_mult'].append(execution_buffer)
+                batch_results['target_expected_value'].append(ev)
+                batch_results['target_tp_first'].append(target_tp_first)
                 batch_results['mfe'].append(mfe_atr)
                 batch_results['mae'].append(mae_atr)
                 total_signals += 1
@@ -190,6 +258,17 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
             else:
                 batch_df.to_parquet(output_file, index=False)
         gc.collect()
+
+    # Print distribution summary
+    if total_signals > 0:
+        final_df = pd.read_parquet(output_file)
+        logger.info("\n--- Dataset Distribution Summary ---")
+        logger.info(f"Total Samples: {len(final_df)}")
+        logger.info(f"SL Mult: Mean={final_df['target_sl_mult'].mean():.2f}, Std={final_df['target_sl_mult'].std():.2f}")
+        logger.info(f"TP Mult: Mean={final_df['target_tp_mult'].mean():.2f}, Std={final_df['target_tp_mult'].std():.2f}")
+        logger.info(f"EV: Mean={final_df['target_expected_value'].mean():.2f}, Std={final_df['target_expected_value'].std():.2f}")
+        logger.info(f"Size: Mean={final_df['target_size'].mean():.2f}, Std={final_df['target_size'].std():.2f}")
+        logger.info(f"TP First %: {final_df['target_tp_first'].mean():.1%}")
 
     logger.info(f"Dataset Generation Complete. Saved {total_signals} samples to {output_file}")
 

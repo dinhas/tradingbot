@@ -439,6 +439,24 @@ class Orchestrator:
             self.logger.error(f"Execution failed: {e}")
             self.notifier.send_error(f"Execution failed for {decision['asset']}: {e}")
 
+    def on_spot_event(self, event):
+        """
+        Handles real-time price updates (bid/ask).
+        """
+        asset_name = self._get_symbol_name(event.symbolId)
+        if asset_name == "Unknown":
+            return
+            
+        # cTrader prices are divisor-normalized in Client, but let's check
+        # Usually ProtoOASpotEvent has bid/ask
+        bid = getattr(event, 'bid', None)
+        ask = getattr(event, 'ask', None)
+        
+        if bid is not None and ask is not None:
+             # Convert to real price
+             divisor = 100000.0
+             self.fm.push_spot(asset_name, bid / divisor, ask / divisor)
+
     def run_inference_chain(self, symbol_id):
         """
         Executes the full inference pipeline for a given symbol.
@@ -460,17 +478,21 @@ class Orchestrator:
             if direction == 0:
                 return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold'}
             
-            # Apply SL Thresholds
-            if meta < 0.78:
-                self.logger.info(f"Alpha Block for {asset_name}: Meta {meta:.3f} < 0.78")
+            # Apply Alpha v2 Thresholds: meta >= 0.30, quality >= 0.30, abs(direction) > 0.20
+            if meta < 0.30:
+                self.logger.info(f"Alpha Block for {asset_name}: Meta {meta:.3f} < 0.30")
                 return {'action': 0, 'allowed': False, 'reason': f'Meta Block ({meta:.3f})'}
             
             if quality < 0.30:
                 self.logger.info(f"Alpha Block for {asset_name}: Quality {quality:.3f} < 0.30")
                 return {'action': 0, 'allowed': False, 'reason': f'Quality Block ({quality:.3f})'}
             
-            # 3. Get Risk Observation (60)
-            risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs)
+            if abs(direction) <= 0.20:
+                self.logger.info(f"Alpha Block for {asset_name}: Direction {direction} <= 0.20")
+                return {'action': 0, 'allowed': False, 'reason': f'Direction Block ({direction})'}
+
+            # 3. Get Risk Observation (40)
+            risk_obs = self.fm.get_risk_observation(asset_name, alpha_out, self.portfolio_state)
             
             # 4. Risk Prediction (SL Model)
             risk_action = self.ml.get_risk_action(risk_obs)

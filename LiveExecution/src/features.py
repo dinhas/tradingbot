@@ -3,6 +3,7 @@ import numpy as np
 import logging
 from collections import deque
 from Alpha.src.feature_engine import FeatureEngine as AlphaFeatureEngine
+from RiskLayer.src.feature_engine import FeatureEngine as RiskFeatureEngine
 
 class FeatureManager:
     """
@@ -12,6 +13,7 @@ class FeatureManager:
         self.logger = logging.getLogger("LiveExecution")
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         self.alpha_fe = AlphaFeatureEngine()
+        self.risk_fe = RiskFeatureEngine()
         
         # History buffers for each asset
         self.history = {asset: pd.DataFrame() for asset in self.assets}
@@ -20,6 +22,9 @@ class FeatureManager:
         # Risk-specific history (Last 5 trades per asset)
         self.risk_pnl_history = {asset: deque([0.0]*5, maxlen=5) for asset in self.assets}
         self.risk_action_history = {asset: deque([np.zeros(3) for _ in range(5)], maxlen=5) for asset in self.assets}
+        
+        # Real-time spread tracking
+        self.live_spreads = {asset: {'bid': 0.0, 'ask': 0.0, 'spread': 0.0} for asset in self.assets}
 
     def push_candle(self, asset, candle_data):
         """
@@ -134,13 +139,52 @@ class FeatureManager:
         # Alpha model needs 40 features: 25 asset-specific + 15 global
         return self.alpha_fe.get_observation(latest_features, portfolio_state, asset)
 
-    def get_risk_observation(self, asset, alpha_obs):
+    def push_spot(self, asset, bid, ask):
+        """Updates the latest real-time spread, bid, and ask for an asset."""
+        if asset not in self.live_spreads:
+            return
+        self.live_spreads[asset] = {
+            'bid': bid,
+            'ask': ask,
+            'spread': ask - bid
+        }
+
+    def get_risk_observation(self, asset, alpha_outputs, portfolio_state):
         """
-        Constructs the 40-feature vector for Risk model.
-        Returns only the alpha observation as per current model requirements.
+        Constructs the 40-feature vector for Risk model using RiskFeatureEngine.
+        alpha_outputs: dict with [direction, quality, meta]
         """
-        # 1. Alpha observation (40) is already passed in
-        return alpha_obs
+        data_dict = {a: df for a, df in self.history.items() if not df.empty}
+        
+        # Inject current live spreads and alpha outputs into the data for preprocessing
+        # We'll create a temporary copy to avoid polluting historical data with partial rows
+        processed_data = {}
+        for a, df in data_dict.items():
+            temp_df = df.copy()
+            # Add spread column for RiskFeatureEngine to use
+            spread_val = self.live_spreads[a]['spread']
+            if spread_val <= 0:
+                 spread_val = 0.3 if a == 'XAUUSD' else 0.00002
+            temp_df[f"{a}_spread"] = spread_val
+            
+            # Add alpha outputs as columns
+            if a == asset:
+                temp_df[f"{a}_alpha_direction"] = alpha_outputs.get('direction', 0)
+                temp_df[f"{a}_alpha_quality"] = alpha_outputs.get('quality', 0)
+                temp_df[f"{a}_alpha_meta"] = alpha_outputs.get('meta', 0)
+            else:
+                temp_df[f"{a}_alpha_direction"] = 0
+                temp_df[f"{a}_alpha_quality"] = 0
+                temp_df[f"{a}_alpha_meta"] = 0
+                
+            processed_data[a] = temp_df
+
+        # Preprocess using Risk Feature Engine
+        _, normalized_df = self.risk_fe.preprocess_data(processed_data)
+        latest_features = normalized_df.iloc[-1].to_dict()
+        
+        # Get 40-dim observation
+        return self.risk_fe.get_observation(latest_features, portfolio_state, asset)
 
 
     def is_ready(self):
