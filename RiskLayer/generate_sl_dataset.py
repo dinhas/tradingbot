@@ -7,6 +7,7 @@ import torch
 from datetime import datetime
 from tqdm import tqdm
 import logging
+import shutil
 import gc
 
 # Add project root to sys.path
@@ -79,11 +80,37 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
         slippage_dict[asset] = simulate_slippage(raw_df, asset, f"{asset}_atr_14").values
     
     # 4. Process in Batches
-    os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
-    if os.path.exists(output_file): os.remove(output_file)
+    # Determine parquet engine and strategy
+    try:
+        import fastparquet
+        use_fastparquet = True
+        logger.info("Using fastparquet for efficient appending.")
+    except ImportError:
+        use_fastparquet = False
+        logger.info("fastparquet not found. Switching to directory-based partitioned dataset (pyarrow compatible).")
+
+    # If using directory mode, output_file will be treated as the directory name
+    if not use_fastparquet:
+        # If it was a file, remove it
+        if os.path.exists(output_file) and os.path.isfile(output_file):
+            os.remove(output_file)
+        os.makedirs(output_file, exist_ok=True)
+        # Clean existing chunks
+        for f in os.listdir(output_file):
+            if f.endswith('.parquet'):
+                os.remove(os.path.join(output_file, f))
+    else:
+        # File mode
+        os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
+        if os.path.exists(output_file): 
+            if os.path.isdir(output_file):
+                shutil.rmtree(output_file)
+            else:
+                os.remove(output_file)
     
     batch_starts = np.arange(start_idx, end_idx, BATCH_SIZE)
     total_signals = 0
+    batch_count = 0
     
     for b_start in tqdm(batch_starts, desc="Generating Dataset"):
         if max_samples and total_signals >= max_samples: break
@@ -218,10 +245,16 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
             
         if results:
             batch_df = pd.DataFrame(results)
-            if os.path.exists(output_file):
-                batch_df.to_parquet(output_file, engine='fastparquet', append=True)
+            if use_fastparquet:
+                if os.path.exists(output_file):
+                    batch_df.to_parquet(output_file, engine='fastparquet', append=True)
+                else:
+                    batch_df.to_parquet(output_file, engine='fastparquet')
             else:
-                batch_df.to_parquet(output_file, engine='fastparquet')
+                # Directory mode: save chunk
+                chunk_path = os.path.join(output_file, f"part_{batch_count:05d}.parquet")
+                batch_df.to_parquet(chunk_path) # Uses default engine (pyarrow usually)
+                batch_count += 1
         
         gc.collect()
 
