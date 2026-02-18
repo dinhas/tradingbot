@@ -26,7 +26,6 @@ DATASET_PATH = os.environ.get("SL_DATASET_PATH", os.path.join(os.path.dirname(__
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
-# Optimizing for T4 GPUs
 BATCH_SIZE = 8192 
 LEARNING_RATE = 1e-3 
 EPOCHS = int(os.environ.get("EPOCHS", 100))
@@ -38,26 +37,22 @@ W_SL = 1.0
 W_TP = 1.0
 W_SIZE = 2.0 
 W_PROB = 1.0
+W_EXEC = 0.5
+W_EV = 1.5
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
 class RiskDataset(Dataset):
     def __init__(self, features, targets):
-        self.features = features
-        self.targets = targets # Dict of numpy arrays
+        self.features = torch.from_numpy(features)
+        self.targets = {k: torch.tensor(v, dtype=torch.float32) for k, v in targets.items()}
 
     def __len__(self):
         return len(self.features)
 
     def __getitem__(self, idx):
-        return (
-            torch.from_numpy(self.features[idx]), 
-            torch.tensor(self.targets['sl_mult'][idx], dtype=torch.float32), 
-            torch.tensor(self.targets['tp_mult'][idx], dtype=torch.float32), 
-            torch.tensor(self.targets['size_factor'][idx], dtype=torch.float32),
-            torch.tensor(self.targets['prob_tp_first'][idx], dtype=torch.float32)
-        )
+        return self.features[idx], {k: v[idx] for k, v in self.targets.items()}
 
 def train():
     logger.info(f"Starting Multi-Task Risk Model Training on {DEVICE}")
@@ -71,18 +66,26 @@ def train():
     df = pd.read_parquet(DATASET_PATH)
     
     X = np.stack(df['features'].values).astype(np.float32)
-    targets = {
-        'sl_mult': df['target_sl_mult'].values.astype(np.float32),
-        'tp_mult': df['target_tp_mult'].values.astype(np.float32),
-        'size_factor': df['target_size_factor'].values.astype(np.float32),
-        'prob_tp_first': df['target_prob_tp_first'].values.astype(np.float32)
-    }
+    target_names = [
+        'target_sl_mult', 'target_tp_mult', 'target_size',
+        'target_execution_buffer_mult', 'target_expected_value', 'target_tp_first'
+    ]
+    
+    # Check for missing targets
+    for t in target_names:
+        if t not in df.columns:
+            logger.error(f"Missing target column: {t}")
+            return
+            
+    y = {t: df[t].values.astype(np.float32) for t in target_names}
     
     # 2. Split and Scale
-    X_train, X_val, y_sl_train, y_sl_val, y_tp_train, y_tp_val, y_size_train, y_size_val, y_prob_train, y_prob_val = train_test_split(
-        X, targets['sl_mult'], targets['tp_mult'], targets['size_factor'], targets['prob_tp_first'], 
-        test_size=0.10, random_state=42
-    )
+    indices = np.arange(len(X))
+    train_idx, val_idx = train_test_split(indices, test_size=0.10, random_state=42)
+    
+    X_train, X_val = X[train_idx], X[val_idx]
+    y_train = {k: v[train_idx] for k, v in y.items()}
+    y_val = {k: v[val_idx] for k, v in y.items()}
     
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
@@ -92,11 +95,8 @@ def train():
     joblib.dump(scaler, scaler_path)
     
     # 3. Create DataLoaders
-    train_targets = {'sl_mult': y_sl_train, 'tp_mult': y_tp_train, 'size_factor': y_size_train, 'prob_tp_first': y_prob_train}
-    val_targets = {'sl_mult': y_sl_val, 'tp_mult': y_tp_val, 'size_factor': y_size_val, 'prob_tp_first': y_prob_val}
-    
-    train_dataset = RiskDataset(X_train_scaled, train_targets)
-    val_dataset = RiskDataset(X_val_scaled, val_targets)
+    train_dataset = RiskDataset(X_train_scaled, y_train)
+    val_dataset = RiskDataset(X_val_scaled, y_val)
     
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=4, pin_memory=True)
@@ -109,33 +109,40 @@ def train():
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=LEARNING_RATE, steps_per_epoch=len(train_loader), epochs=EPOCHS)
     
-    l1_loss = nn.L1Loss()
     mse_loss = nn.MSELoss()
-    bce_loss = nn.BCELoss()
+    huber_loss = nn.HuberLoss()
+    # Fix: Use BCEWithLogitsLoss for numerical stability with AMP
+    bce_logits_loss = nn.BCEWithLogitsLoss()
     
     best_val_loss = float('inf')
-    scaler_amp = torch.cuda.amp.GradScaler()
+    # Fix: Use torch.amp.GradScaler for newer PyTorch versions
+    scaler_amp = torch.amp.GradScaler('cuda')
     
     # 5. Training Loop
     for epoch in range(EPOCHS):
         model.train()
         train_loss = 0
         
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
-            features, sl_target, tp_target, size_target, prob_target = [b.to(DEVICE, non_blocking=True) for b in batch]
+        for features, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
+            features = features.to(DEVICE, non_blocking=True)
+            targets = {k: v.to(DEVICE, non_blocking=True) for k, v in targets.items()}
             
             optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast():
+            # Fix: Use torch.amp.autocast
+            with torch.amp.autocast('cuda'):
                 preds = model(features)
                 
-                # Loss Breakdown
-                loss_sl = l1_loss(preds['sl_mult'].squeeze(), sl_target)
-                loss_tp = l1_loss(preds['tp_mult'].squeeze(), tp_target)
-                loss_size = mse_loss(preds['size_factor'].squeeze(), size_target)
-                loss_prob = bce_loss(preds['prob_tp_first'].squeeze(), prob_target)
+                loss_sl = huber_loss(preds['sl_mult'].squeeze(), targets['target_sl_mult'])
+                loss_tp = huber_loss(preds['tp_mult'].squeeze(), targets['target_tp_mult'])
+                loss_size = mse_loss(preds['size'].squeeze(), targets['target_size'])
+                # Fix: Use logits output and BCEWithLogitsLoss
+                loss_prob = bce_logits_loss(preds['prob_tp_first_logits'].squeeze(), targets['target_tp_first'])
+                loss_exec = huber_loss(preds['execution_buffer'].squeeze(), targets['target_execution_buffer_mult'])
+                loss_ev = mse_loss(preds['expected_value'].squeeze(), targets['target_expected_value'])
                 
-                total_loss = (W_SL * loss_sl) + (W_TP * loss_tp) + (W_SIZE * loss_size) + (W_PROB * loss_prob)
+                total_loss = (W_SL * loss_sl) + (W_TP * loss_tp) + (W_SIZE * loss_size) + \
+                             (W_PROB * loss_prob) + (W_EXEC * loss_exec) + (W_EV * loss_ev)
             
             scaler_amp.scale(total_loss).backward()
             scaler_amp.step(optimizer)
@@ -148,15 +155,22 @@ def train():
         model.eval()
         val_loss = 0
         with torch.no_grad():
-            for batch in val_loader:
-                features, sl_target, tp_target, size_target, prob_target = [b.to(DEVICE, non_blocking=True) for b in batch]
-                with torch.cuda.amp.autocast():
+            for features, targets in val_loader:
+                features = features.to(DEVICE, non_blocking=True)
+                targets = {k: v.to(DEVICE, non_blocking=True) for k, v in targets.items()}
+                
+                with torch.amp.autocast('cuda'):
                     preds = model(features)
-                    v_sl = l1_loss(preds['sl_mult'].squeeze(), sl_target)
-                    v_tp = l1_loss(preds['tp_mult'].squeeze(), tp_target)
-                    v_size = mse_loss(preds['size_factor'].squeeze(), size_target)
-                    v_prob = bce_loss(preds['prob_tp_first'].squeeze(), prob_target)
-                    v_total = (W_SL * v_sl) + (W_TP * v_tp) + (W_SIZE * v_size) + (W_PROB * v_prob)
+                    v_sl = huber_loss(preds['sl_mult'].squeeze(), targets['target_sl_mult'])
+                    v_tp = huber_loss(preds['tp_mult'].squeeze(), targets['target_tp_mult'])
+                    v_size = mse_loss(preds['size'].squeeze(), targets['target_size'])
+                    # Fix: Use logits output and BCEWithLogitsLoss
+                    v_prob = bce_logits_loss(preds['prob_tp_first_logits'].squeeze(), targets['target_tp_first'])
+                    v_exec = huber_loss(preds['execution_buffer'].squeeze(), targets['target_execution_buffer_mult'])
+                    v_ev = mse_loss(preds['expected_value'].squeeze(), targets['target_expected_value'])
+                    
+                    v_total = (W_SL * v_sl) + (W_TP * v_tp) + (W_SIZE * v_size) + \
+                              (W_PROB * v_prob) + (W_EXEC * v_exec) + (W_EV * v_ev)
                     val_loss += v_total.item()
         
         avg_train_loss = train_loss / len(train_loader)

@@ -36,52 +36,63 @@ class RiskModelSL(nn.Module):
             ResidualBlock(hidden_dim) for _ in range(num_res_blocks)
         ])
         
-        # --- Task Specific Heads (4 TOTAL) ---
+        # --- Task Specific Heads (6 TOTAL) ---
         
-        # 1. SL Head: Predicts multiplier (target_sl_mult = mae_atr + 0.15)
+        # 1. SL Head: Predicts multiplier
         self.sl_head = nn.Sequential(
             nn.Linear(hidden_dim, 128),
             nn.LeakyReLU(0.1),
             nn.Linear(128, 1),
-            nn.Softplus() # Positive output
+            nn.Softplus() 
         )
         
-        # 2. TP Head: Predicts multiplier (target_tp_mult = mfe_atr)
+        # 2. TP Head: Predicts multiplier
         self.tp_head = nn.Sequential(
             nn.Linear(hidden_dim, 128),
             nn.LeakyReLU(0.1),
             nn.Linear(128, 1),
-            nn.Softplus() # Positive output
+            nn.Softplus()
         )
         
-        # 3. Size Factor Head: Predicts EV-based size (EV / SL)
+        # 3. Size Head: Predicts position size factor [0, 1]
         self.size_head = nn.Sequential(
             nn.Linear(hidden_dim, 128),
             nn.LeakyReLU(0.1),
             nn.Linear(128, 1),
-            nn.Softplus() # EV-based size is positive
+            nn.Sigmoid() 
         )
         
-        # 4. Prob TP First Head: Binary prediction (0-1)
+        # 4. Prob TP First Head: Binary prediction (logits)
         self.prob_head = nn.Sequential(
             nn.Linear(hidden_dim, 128),
             nn.LeakyReLU(0.1),
+            nn.Linear(128, 1)
+        )
+        
+        # 5. Execution Buffer Head: Predicts (spread + slippage) / ATR
+        self.exec_buffer_head = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.LeakyReLU(0.1),
             nn.Linear(128, 1),
-            nn.Sigmoid() # Probability [0, 1]
+            nn.Softplus()
+        )
+        
+        # 6. Expected Value Head: Predicts net ATR-normalized EV
+        self.ev_head = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.LeakyReLU(0.1),
+            nn.Linear(128, 1)
         )
 
     def forward(self, x):
         features = self.input_proj(x)
         features = self.backbone(features)
         
-        sl = self.sl_head(features)
-        tp = self.tp_head(features)
-        size = self.size_head(features)
-        prob = self.prob_head(features)
-        
         return {
-            'sl_mult': sl,
-            'tp_mult': tp,
-            'size_factor': size,
-            'prob_tp_first': prob
+            'sl_mult': self.sl_head(features),
+            'tp_mult': self.tp_head(features),
+            'size': self.size_head(features),
+            'prob_tp_first_logits': self.prob_head(features),
+            'execution_buffer': self.exec_buffer_head(features),
+            'expected_value': self.ev_head(features)
         }

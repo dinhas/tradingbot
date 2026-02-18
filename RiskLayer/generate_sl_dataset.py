@@ -9,18 +9,14 @@ from tqdm import tqdm
 import logging
 import gc
 
-# Add project root to sys.path to import Alpha models
+# Add project root to sys.path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
 sys.path.append(PROJECT_ROOT)
 
-from RiskLayer.src.frozen_alpha_env import TradingEnv
+from RiskLayer.src.feature_engine import FeatureEngine as RiskFeatureEngine
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.feature_engine import FeatureEngine as AlphaFeatureEngine
-
-# Add numpy 1.x/2.x compatibility shim
-if not hasattr(np, "_core"):
-    sys.modules["numpy._core"] = np.core
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -32,283 +28,221 @@ DEFAULT_DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 DEFAULT_OUTPUT_FILE = os.path.join(BASE_DIR, "data", "sl_risk_dataset.parquet")
 
 # Configuration
-LOOKAHEAD_BARS = 300  # Increased for deeper search
-BATCH_SIZE = 10000
+MAX_LOOKAHEAD = 500  # Max bars to look forward
+BATCH_SIZE = 5000
 
-def get_atr_percentile(env, asset, global_idx):
-    """Calculates ATR percentile relative to recent history."""
-    lookback = 1000
-    if global_idx < lookback: return 0.5
-    recent_atrs = env.atr_arrays[asset][global_idx-lookback:global_idx]
-    current_atr = env.atr_arrays[asset][global_idx]
-    return (recent_atrs < current_atr).mean()
-
-def get_wick_body_ratio(env, asset, global_idx):
-    """Calculates recent average wick to body ratio."""
-    lookback = 10
-    if global_idx < lookback: return 1.0
-    
-    highs = env.high_arrays[asset][global_idx-lookback:global_idx+1]
-    lows = env.low_arrays[asset][global_idx-lookback:global_idx+1]
-    closes = env.close_arrays[asset][global_idx-lookback:global_idx+1]
-    opens = env.raw_data[f"{asset}_open"].values[global_idx-lookback:global_idx+1]
-    
-    bodies = np.abs(closes - opens)
-    wicks = (highs - np.maximum(opens, closes)) + (np.minimum(opens, closes) - lows)
-    
-    return np.mean(wicks / (bodies + 1e-9))
+def simulate_slippage(df, asset, atr_col):
+    """Slippage estimate = rolling mean of (|open - prev_close|) in ATR units."""
+    open_ = df[f"{asset}_open"]
+    prev_close = df[f"{asset}_close"].shift(1)
+    atr = df[atr_col]
+    slippage = (open_ - prev_close).abs() / (atr + 1e-9)
+    return slippage.rolling(100).mean().fillna(0.1) # Default 0.1 ATR slippage
 
 def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_samples=None):
-    # 1. Load Alpha Model
+    # 1. Load Alpha Model (V2: 3 outputs)
     if not os.path.exists(model_path):
-        logger.error(f"Model not found at {model_path}")
+        logger.error(f"Alpha model not found at {model_path}")
         return
 
     logger.info(f"Loading Alpha Model from {model_path}...")
-    model = AlphaSLModel(input_dim=40)
-    model.load_state_dict(torch.load(model_path, map_location='cpu'))
-    model.eval()
+    alpha_model = AlphaSLModel(input_dim=40)
+    alpha_model.load_state_dict(torch.load(model_path, map_location='cpu'))
+    alpha_model.eval()
 
-    # 2. Load Data & Env
-    logger.info(f"Loading data from {data_dir}...")
-    env = TradingEnv(data_dir=data_dir, stage=3, is_training=False, skip_preprocess=True)
-    env.feature_engine = AlphaFeatureEngine()
+    # 2. Load and Preprocess Data
+    assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+    data_dict = {}
+    for asset in assets:
+        path = os.path.join(data_dir, f"{asset}_5m.parquet")
+        if not os.path.exists(path):
+            path = os.path.join(data_dir, f"{asset}_5m_2025.parquet")
+        data_dict[asset] = pd.read_parquet(path)
     
-    if limit:
-        logger.info(f"Slicing data to limit: {limit} samples")
-        buffer = 300 
-        for asset in env.assets:
-            env.data[asset] = env.data[asset].iloc[:limit + buffer]
-            
-    env.raw_data, env.processed_data = env.feature_engine.preprocess_data(env.data)
-    env._cache_data_arrays()
+    logger.info("Preprocessing data with RiskFeatureEngine...")
+    risk_engine = RiskFeatureEngine()
+    raw_df, proc_df = risk_engine.preprocess_data(data_dict)
     
-    df = env.processed_data
-    total_rows = len(df)
+    logger.info("Preprocessing data with AlphaFeatureEngine for model inputs...")
+    alpha_engine = AlphaFeatureEngine()
+    _, alpha_proc_df = alpha_engine.preprocess_data(data_dict)
     
-    start_idx = 200 # Buffer for indicators
-    end_idx = total_rows - 100 # End buffer
+    # 3. Setup for Labeling
+    total_rows = len(proc_df)
+    start_idx = 500
+    end_idx = total_rows - 50 # Leave room for lookahead
     if limit: end_idx = min(start_idx + limit, end_idx)
     
-    assets = env.assets
-    close_arrays = env.close_arrays
-    high_arrays = env.high_arrays
-    low_arrays = env.low_arrays
-    atr_arrays = env.atr_arrays
+    # Pre-calculate slippage for all assets
+    slippage_dict = {}
+    for asset in assets:
+        slippage_dict[asset] = simulate_slippage(raw_df, asset, f"{asset}_atr_14").values
     
-    # 3. Process Batches
+    # 4. Process in Batches
     os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
     if os.path.exists(output_file): os.remove(output_file)
     
-    num_rows = end_idx - start_idx
-    batch_starts = np.arange(0, num_rows, BATCH_SIZE)
+    batch_starts = np.arange(start_idx, end_idx, BATCH_SIZE)
     total_signals = 0
-    timestamps = df.index[start_idx:end_idx]
     
-    for b_start in tqdm(batch_starts, desc="Processing Batches"):
-        if max_samples and total_signals >= max_samples:
-            break
-
-        b_end = min(b_start + BATCH_SIZE, num_rows)
-        batch_df_slice = df.iloc[start_idx + b_start : start_idx + b_end]
+    for b_start in tqdm(batch_starts, desc="Generating Dataset"):
+        if max_samples and total_signals >= max_samples: break
         
-        # 1. Alpha Model Predictions for the batch
-        asset_preds = {}
-        asset_obs = {}
+        b_end = min(b_start + BATCH_SIZE, end_idx)
+        batch_proc = proc_df.iloc[b_start:b_end]
+        batch_alpha = alpha_proc_df.iloc[b_start:b_end]
+        
+        results = []
+        
         for asset in assets:
-            obs = env.feature_engine.get_observation_vectorized(batch_df_slice, asset)
-            asset_obs[asset] = obs
+            # Get Alpha Inputs (40 features)
+            alpha_obs = alpha_engine.get_observation_vectorized(batch_alpha, asset)
             
+            # Get Alpha Predictions
             with torch.no_grad():
-                dir_logits, quality, meta_logits = model(torch.from_numpy(obs))
+                dir_logits, quality, meta_logits = alpha_model(torch.from_numpy(alpha_obs))
+                
+            # Convert to probabilities / classes
+            dir_probs = torch.softmax(dir_logits, dim=1).numpy()
+            dir_pred = np.argmax(dir_probs, axis=1) - 1 # {-1, 0, 1}
+            qual_val = torch.sigmoid(quality).numpy().flatten()
+            meta_val = torch.sigmoid(meta_logits).numpy().flatten()
             
-            probs = torch.softmax(dir_logits, dim=1)
-            asset_preds[asset] = {
-                'dir': (probs[:, 2] - probs[:, 0]).numpy(),
-                'qual': quality.numpy().flatten(),
-                'meta': torch.sigmoid(meta_logits).numpy().flatten()
-            }
-        
-        batch_results = {
-            'timestamp': [], 'asset': [], 'direction': [], 'entry_price': [], 'atr': [],
-            'alpha_direction': [], 'alpha_quality': [], 'alpha_meta': [],
-            'features': [], 
-            'target_sl_mult': [], 'target_tp_mult': [], 'target_size_factor': [], 'target_prob_tp_first': []
-        }
-        
-        has_data = False
-        for asset in assets:
-            if max_samples and total_signals >= max_samples:
-                break
-
-            preds = asset_preds[asset]
-            obs_batch = asset_obs[asset]
+            # Filter Signals
+            # - meta >= 0.30
+            # - quality >= 0.30
+            # - abs(direction) > 0.20 (weighted direction)
+            weighted_dir = (dir_probs[:, 2] - dir_probs[:, 0])
             
-            # MANDATORY Alpha v2 filtering
-            mask = (preds['meta'] >= 0.30) & (preds['qual'] >= 0.30) & (np.abs(preds['dir']) > 0.20)
-            if not np.any(mask): continue
-                
-            active_indices = np.where(mask)[0]
+            mask = (meta_val >= 0.30) & (qual_val >= 0.30) & (np.abs(weighted_dir) > 0.20)
+            valid_indices = np.where(mask)[0]
             
-            # Fixed spread per asset
-            spread_val = 0.3 if asset == 'XAUUSD' else 0.00002
-            
-            for local_idx in active_indices:
-                if max_samples and total_signals >= max_samples:
-                    break
+            for local_idx in valid_indices:
+                global_idx = b_start + local_idx
+                if global_idx >= end_idx: continue
                 
-                global_idx = start_idx + b_start + local_idx
-                direction = 1 if preds['dir'][local_idx] > 0 else -1
-                atr = atr_arrays[asset][global_idx]
-                if atr <= 0: continue
+                direction = 1 if weighted_dir[local_idx] > 0 else -1
+                atr = raw_df[f"{asset}_atr_14"].iloc[global_idx]
+                entry_price = raw_df[f"{asset}_close"].iloc[global_idx]
+                spread = proc_df[f"{asset}_spread"].iloc[global_idx] # Raw spread value
                 
-                # 1. SPREAD-AWARE EXECUTION
-                # Entry: For LONG use Ask, for SHORT use Bid
-                entry_price = close_arrays[asset][global_idx] + (direction * spread_val / 2.0)
+                # EXECUTION AWARE LABELING
+                # Simulation: Bid/Ask
+                # LONG Entry: Buy at Ask. Exit at Bid.
+                # SHORT Entry: Sell at Bid. Exit at Ask.
+                # For simplicity in this generator, entry is at 'entry_price' (close).
+                # We adjust the TP/SL levels to be bid/ask aware.
                 
-                # 2. LOOKAHEAD & LABELING (MFE/MAE)
-                lookahead = 300
-                f_end = min(global_idx + lookahead, len(high_arrays[asset]))
+                # Future Window
+                f_start = global_idx + 1
+                f_end = min(global_idx + MAX_LOOKAHEAD, total_rows)
+                future_highs = raw_df[f"{asset}_high"].values[f_start:f_end]
+                future_lows = raw_df[f"{asset}_low"].values[f_start:f_end]
                 
-                f_highs = high_arrays[asset][global_idx+1 : f_end]
-                f_lows = low_arrays[asset][global_idx+1 : f_end]
-                f_closes = close_arrays[asset][global_idx+1 : f_end]
+                if len(future_highs) < 5: continue
                 
-                if len(f_highs) == 0: continue
-                
-                # Execution Realistic Prices
+                # ATR-normalized MFE/MAE calculation
                 if direction == 1: # LONG
-                    bid_highs = f_highs - (spread_val / 2.0)
-                    bid_lows = f_lows - (spread_val / 2.0)
+                    # TP hit if Bid_high >= TP. Bid_high = High - spread
+                    # SL hit if Bid_low <= SL. Bid_low = Low - spread
+                    bid_highs = future_highs - spread
+                    bid_lows = future_lows - spread
                     
-                    # MFE Calculation
                     mfe_idx = np.argmax(bid_highs)
-                    mfe_val = bid_highs[mfe_idx] - entry_price
-                    
-                    # MAE Calculation (BEFORE MFE PEAK)
-                    if mfe_idx > 0:
-                        mae_val = entry_price - np.min(bid_lows[:mfe_idx+1])
-                    else:
-                        mae_val = entry_price - bid_lows[0]
+                    mfe_dist = bid_highs[mfe_idx] - entry_price
+                    mae_dist = entry_price - np.min(bid_lows[:mfe_idx+1])
                 else: # SHORT
-                    ask_lows = f_lows + (spread_val / 2.0)
-                    ask_highs = f_highs + (spread_val / 2.0)
+                    # TP hit if Ask_low <= TP. Ask_low = Low + spread
+                    # SL hit if Ask_high >= SL. Ask_high = High + spread
+                    ask_highs = future_highs + spread
+                    ask_lows = future_lows + spread
                     
-                    # MFE Calculation
                     mfe_idx = np.argmin(ask_lows)
-                    mfe_val = entry_price - ask_lows[mfe_idx]
-                    
-                    # MAE Calculation (BEFORE MFE PEAK)
-                    if mfe_idx > 0:
-                        mae_val = np.max(ask_highs[:mfe_idx+1]) - entry_price
-                    else:
-                        mae_val = ask_highs[0] - entry_price
+                    mfe_dist = entry_price - ask_lows[mfe_idx]
+                    mae_dist = np.max(ask_highs[:mfe_idx+1]) - entry_price
                 
-                mfe_atr = max(mfe_val / atr, 0.0)
-                mae_atr = max(mae_val / atr, 0.0)
+                mfe_atr = mfe_dist / (atr + 1e-9)
+                mae_atr = mae_dist / (atr + 1e-9)
                 
-                # 3. TARGET DEFINITIONS
-                target_sl_mult = mae_atr + 0.15
-                target_tp_mult = mfe_atr
+                # --- TARGETS ---
+                target_sl_mult = np.clip(mae_atr + 0.2, 0.5, 4.0)
+                target_tp_mult = np.clip(mfe_atr * 0.8, 0.5, 8.0) # Conservative TP
                 
-                # 4. PROB TP FIRST SIMULATION
-                tp_price = entry_price + (direction * target_tp_mult * atr)
-                sl_price = entry_price - (direction * target_sl_mult * atr)
+                # Execution Buffer
+                # execution_buffer = (spread / ATR) + slippage
+                slippage = slippage_dict[asset][global_idx]
+                target_exec_buffer = (spread / (atr + 1e-9)) + slippage
                 
-                target_prob_tp_first = 0
-                for i in range(len(f_highs)):
-                    if direction == 1: # LONG
-                        if bid_lows[i] <= sl_price: break
-                        if bid_highs[i] >= tp_price: 
-                            target_prob_tp_first = 1
-                            break
-                    else: # SHORT
-                        if ask_highs[i] >= sl_price: break
-                        if ask_lows[i] <= tp_price: 
-                            target_prob_tp_first = 1
-                            break
+                # Expected Value Logic
+                # transaction_cost = spread + slippage (in ATR units)
+                tx_cost_atr = (spread / (atr + 1e-9)) + slippage
                 
-                # 5. EV-BASED SIZE FACTOR
-                # Slippage estimate
-                lookback_slip = 20
-                if global_idx > lookback_slip:
-                    opens = env.raw_data[f"{asset}_open"].values[global_idx-lookback_slip:global_idx+1]
-                    prev_closes = env.raw_data[f"{asset}_close"].values[global_idx-lookback_slip-1:global_idx]
-                    slippage_estimate_atr = np.mean(np.abs(opens - prev_closes)) / atr
-                else:
-                    slippage_estimate_atr = 0.05
+                # If we assume P_win = 0.5 for neutral sizing, or we can use the "best" outcome
+                # Here we label "tp_first" as 1 if MFE reached 2*MAE before MAE hit
+                target_tp_first = 1 if mfe_atr > (2.0 * mae_atr) else 0
                 
-                execution_cost_atr = (spread_val / atr) + slippage_estimate_atr
+                # EV = (P_win * TP) - (P_loss * SL) - Costs
+                # For labeling, we use the actual realized outcomes
+                realized_ev = mfe_atr - mae_atr - tx_cost_atr
+                target_expected_value = realized_ev
                 
-                # Use binary outcome for labeling
-                p_win = 1.0 if target_prob_tp_first == 1 else 0.0
-                ev = (p_win * target_tp_mult) - ((1 - p_win) * target_sl_mult) - execution_cost_atr
+                # Position Size
+                # target_size = max(EV / SL_mult, 0)
+                target_size = np.clip(realized_ev / (target_sl_mult + 1e-9), 0, 1)
                 
-                if ev <= 0:
-                    target_size_factor = 0.0
-                else:
-                    target_size_factor = np.clip(ev / target_sl_mult, 0.0, 5.0)
-
-                # 6. ENHANCED FEATURES (8 NEW)
-                # alpha features (40)
-                alpha_features = obs_batch[local_idx].tolist()
+                # Update Risk Features in observation
+                obs_vector = risk_engine.get_observation(proc_df.iloc[global_idx], {}, asset)
+                # Feature indices for alpha outputs (from feature_engine.py):
+                # 40: alpha_direction, 41: alpha_meta, 42: alpha_quality
+                obs_vector[40] = weighted_dir[local_idx]
+                obs_vector[41] = meta_val[local_idx]
+                obs_vector[42] = qual_val[local_idx]
                 
-                # New features
-                atr_p = get_atr_percentile(env, asset, global_idx)
-                wb_ratio = get_wick_body_ratio(env, asset, global_idx)
-                
-                # Spread expansion (dummy/placeholder for now as we have fixed spread in env)
-                spread_expansion = 1.0 
-                
-                extra_features = [
-                    preds['dir'][local_idx],
-                    preds['meta'][local_idx],
-                    preds['qual'][local_idx],
-                    spread_val,
-                    spread_val / atr,
-                    atr_p,
-                    wb_ratio,
-                    spread_expansion
-                ]
-                
-                combined_features = alpha_features + extra_features
-                
-                # 7. STORE
-                batch_results['timestamp'].append(timestamps[b_start + local_idx])
-                batch_results['asset'].append(asset)
-                batch_results['direction'].append(direction)
-                batch_results['entry_price'].append(entry_price)
-                batch_results['atr'].append(atr)
-                batch_results['alpha_direction'].append(preds['dir'][local_idx])
-                batch_results['alpha_quality'].append(preds['qual'][local_idx])
-                batch_results['alpha_meta'].append(preds['meta'][local_idx])
-                batch_results['features'].append(combined_features)
-                batch_results['target_sl_mult'].append(target_sl_mult)
-                batch_results['target_tp_mult'].append(target_tp_mult)
-                batch_results['target_size_factor'].append(target_size_factor)
-                batch_results['target_prob_tp_first'].append(target_prob_tp_first)
-                
+                results.append({
+                    'timestamp': proc_df.index[global_idx],
+                    'asset': asset,
+                    'features': obs_vector.tolist(),
+                    'target_sl_mult': float(target_sl_mult),
+                    'target_tp_mult': float(target_tp_mult),
+                    'target_size': float(target_size),
+                    'target_execution_buffer_mult': float(target_exec_buffer),
+                    'target_expected_value': float(target_expected_value),
+                    'target_tp_first': int(target_tp_first),
+                    'alpha_direction': float(weighted_dir[local_idx]),
+                    'alpha_meta': float(meta_val[local_idx]),
+                    'alpha_quality': float(qual_val[local_idx])
+                })
                 total_signals += 1
-                has_data = True
-
-        if has_data:
-            batch_df = pd.DataFrame(batch_results)
+                if max_samples and total_signals >= max_samples: break
+            if max_samples and total_signals >= max_samples: break
+            
+        if results:
+            batch_df = pd.DataFrame(results)
             if os.path.exists(output_file):
-                existing_df = pd.read_parquet(output_file)
-                pd.concat([existing_df, batch_df], ignore_index=True).to_parquet(output_file, index=False)
+                batch_df.to_parquet(output_file, engine='fastparquet', append=True)
             else:
-                batch_df.to_parquet(output_file, index=False)
+                batch_df.to_parquet(output_file, engine='fastparquet')
+        
         gc.collect()
 
-    logger.info(f"Dataset Generation Complete. Saved {total_signals} samples to {output_file}")
+    logger.info(f"Dataset Generation Complete. Total Samples: {total_signals}")
+    
+    # Validation Print
+    if total_signals > 0:
+        final_df = pd.read_parquet(output_file)
+        logger.info("\n--- Dataset Distribution Summary ---")
+        logger.info(f"Mean SL Mult: {final_df['target_sl_mult'].mean():.2f}")
+        logger.info(f"Mean TP Mult: {final_df['target_tp_mult'].mean():.2f}")
+        logger.info(f"Mean EV: {final_df['target_expected_value'].mean():.2f}")
+        logger.info(f"Mean Size: {final_df['target_size'].mean():.2f}")
+        logger.info(f"TP First Ratio: {final_df['target_tp_first'].mean():.2%}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--data", type=str, default=DEFAULT_DATA_DIR)
+    parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_FILE)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_FILE)
-    parser.add_argument("--data", type=str, default=DEFAULT_DATA_DIR, help="Directory for raw market data")
-    parser.add_argument("--model-path", type=str, default=DEFAULT_MODEL_PATH, help="Path to Alpha model")
     args = parser.parse_args()
-    
-    generate_sl_dataset(args.model_path, args.data, args.output, args.limit, args.max_samples)
+    generate_sl_dataset(args.model, args.data, args.output, args.limit, args.max_samples)
