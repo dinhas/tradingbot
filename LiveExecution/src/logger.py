@@ -24,7 +24,7 @@ def setup_logger(name="LiveExecution"):
         
         # Rotating File Handler (10MB per file, keep 5 backups)
         file_handler = RotatingFileHandler(
-            log_file, maxBytes=10*1024*1024, backupCount=5
+            log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'
         )
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)

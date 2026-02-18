@@ -375,6 +375,14 @@ class Orchestrator:
             
             total_time = time.time() - start_time
             self.logger.info(f"M5 Cycle for {asset_name} completed in {total_time:.3f}s (Inference: {inference_time:.3f}s)")
+            
+            # 6. Safety Proactive Position Sync (4 minutes after candle close)
+            # This fixes "stale lock" bugs by ensuring the memory is refreshed before the next candle.
+            # T+0: Candle Close -> Prediction
+            # T+4: Proactive Sync -> Refresh Memory
+            # T+5: Next Candle Close -> Fresh Data
+            self.logger.info(f"Scheduling safety position sync for {asset_name} in 4 minutes...")
+            reactor.callLater(240.0, self.sync_active_positions)
                 
         except Exception as e:
             self.logger.error(f"Orchestration error for {asset_name}: {e}")
@@ -460,13 +468,16 @@ class Orchestrator:
             if direction == 0:
                 return {'action': 0, 'allowed': False, 'reason': 'Alpha Hold'}
             
-            # Apply SL Thresholds
-            if meta < 0.78:
-                self.logger.info(f"Alpha Block for {asset_name}: Meta {meta:.3f} < 0.78")
+            # Apply SL Thresholds from Config
+            meta_thresh = self.config.get('META_THRESHOLD', 0.80)
+            qual_thresh = self.config.get('QUAL_THRESHOLD', 0.35)
+            
+            if meta < meta_thresh:
+                self.logger.info(f"Alpha Block for {asset_name}: Meta {meta:.3f} < {meta_thresh}")
                 return {'action': 0, 'allowed': False, 'reason': f'Meta Block ({meta:.3f})'}
             
-            if quality < 0.30:
-                self.logger.info(f"Alpha Block for {asset_name}: Quality {quality:.3f} < 0.30")
+            if quality < qual_thresh:
+                self.logger.info(f"Alpha Block for {asset_name}: Quality {quality:.3f} < {qual_thresh}")
                 return {'action': 0, 'allowed': False, 'reason': f'Quality Block ({quality:.3f})'}
             
             # 3. Get Risk Observation (60)
@@ -479,9 +490,10 @@ class Orchestrator:
             tp_mult = risk_action['tp_mult']
             size_out = risk_action['size']
             
-            # Blocking Logic (Threshold: 0.10 confidence)
-            if size_out < 0.10:
-                self.logger.info(f"Risk Block for {asset_name}: confidence {size_out:.4f} < 0.10")
+            # Blocking Logic (Threshold from Config)
+            risk_thresh = self.config.get('RISK_THRESHOLD', 0.15)
+            if size_out < risk_thresh:
+                self.logger.info(f"Risk Block for {asset_name}: confidence {size_out:.4f} < {risk_thresh}")
                 return {'action': 0, 'allowed': False, 'reason': f'Risk Block ({size_out:.2f})'}
 
             # 5. Calculate Sizing & SL/TP Prices
