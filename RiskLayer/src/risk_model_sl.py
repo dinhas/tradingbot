@@ -21,7 +21,7 @@ class ResidualBlock(nn.Module):
         return residual + out
 
 class RiskModelSL(nn.Module):
-    def __init__(self, input_dim=40, hidden_dim=256, num_res_blocks=3):
+    def __init__(self, input_dim=48, hidden_dim=256, num_res_blocks=4):
         super(RiskModelSL, self).__init__()
         
         # Initial Projection
@@ -36,30 +36,38 @@ class RiskModelSL(nn.Module):
             ResidualBlock(hidden_dim) for _ in range(num_res_blocks)
         ])
         
-        # --- Task Specific Heads ---
+        # --- Task Specific Heads (4 TOTAL) ---
         
-        # SL Head: Predicts multiplier (e.g., 0.2 to 5.0)
+        # 1. SL Head: Predicts multiplier (target_sl_mult = mae_atr + 0.15)
         self.sl_head = nn.Sequential(
             nn.Linear(hidden_dim, 128),
             nn.LeakyReLU(0.1),
             nn.Linear(128, 1),
-            nn.Softplus() # Ensures positive output
+            nn.Softplus() # Positive output
         )
         
-        # TP Head: Predicts multiplier (e.g., 0.1 to 10.0)
+        # 2. TP Head: Predicts multiplier (target_tp_mult = mfe_atr)
         self.tp_head = nn.Sequential(
             nn.Linear(hidden_dim, 128),
             nn.LeakyReLU(0.1),
             nn.Linear(128, 1),
-            nn.Softplus()
+            nn.Softplus() # Positive output
         )
         
-        # Size Head: Predicts confidence/size (0.0 to 1.0)
+        # 3. Size Factor Head: Predicts EV-based size (EV / SL)
         self.size_head = nn.Sequential(
             nn.Linear(hidden_dim, 128),
             nn.LeakyReLU(0.1),
             nn.Linear(128, 1),
-            nn.Sigmoid() # Constrains to [0, 1]
+            nn.Softplus() # EV-based size is positive
+        )
+        
+        # 4. Prob TP First Head: Binary prediction (0-1)
+        self.prob_head = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.LeakyReLU(0.1),
+            nn.Linear(128, 1),
+            nn.Sigmoid() # Probability [0, 1]
         )
 
     def forward(self, x):
@@ -69,9 +77,11 @@ class RiskModelSL(nn.Module):
         sl = self.sl_head(features)
         tp = self.tp_head(features)
         size = self.size_head(features)
+        prob = self.prob_head(features)
         
         return {
-            'sl': sl,
-            'tp': tp,
-            'size': size
+            'sl_mult': sl,
+            'tp_mult': tp,
+            'size_factor': size,
+            'prob_tp_first': prob
         }

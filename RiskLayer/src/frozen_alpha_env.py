@@ -20,7 +20,7 @@ class TradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, data_dir='data', stage=3, is_training=True):
+    def __init__(self, data_dir='data', stage=3, is_training=True, skip_preprocess=False):
         super(TradingEnv, self).__init__()
         
         self.data_dir = data_dir
@@ -38,11 +38,15 @@ class TradingEnv(gym.Env):
 
         # Load Data
         self.data = self._load_data()
-        self.feature_engine = FeatureEngine()
-        self.raw_data, self.processed_data = self.feature_engine.preprocess_data(self.data)
+        self.processed_data = None
+        self.raw_data = None
         
-        # OPTIMIZATION: Cache data as numpy arrays for fast access
-        self._cache_data_arrays()
+        if not skip_preprocess:
+            self.feature_engine = FeatureEngine()
+            self.raw_data, self.processed_data = self.feature_engine.preprocess_data(self.data)
+            
+            # OPTIMIZATION: Cache data as numpy arrays for fast access
+            self._cache_data_arrays()
         
         # Define Action Space based on Stage
         if self.stage == 1:
@@ -59,7 +63,7 @@ class TradingEnv(gym.Env):
         
         # State Variables
         self.current_step = 0
-        self.max_steps = len(self.processed_data) - 1
+        self.max_steps = len(self.processed_data) - 1 if self.processed_data is not None else 0
         self.equity = 10000.0
         self.leverage = 100
         self.positions = {asset: None for asset in self.assets}

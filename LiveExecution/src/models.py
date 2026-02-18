@@ -67,7 +67,7 @@ class AlphaSLModel(nn.Module):
         return direction_logits, quality, meta_logits
 
 class RiskModelSL(nn.Module):
-    def __init__(self, input_dim=40, hidden_dim=256, num_res_blocks=3):
+    def __init__(self, input_dim=48, hidden_dim=256, num_res_blocks=4):
         super(RiskModelSL, self).__init__()
 
         # Initial Projection
@@ -82,44 +82,34 @@ class RiskModelSL(nn.Module):
             ResidualBlock(hidden_dim) for _ in range(num_res_blocks)
         ])
 
-        # --- Task Specific Heads ---
-
-        # SL Head: Predicts multiplier (e.g., 0.2 to 5.0)
+        # --- Task Specific Heads (4 TOTAL) ---
         self.sl_head = nn.Sequential(
-            nn.Linear(hidden_dim, 128),
-            nn.LeakyReLU(0.1),
-            nn.Linear(128, 1),
-            nn.Softplus() # Ensures positive output
+            nn.Linear(hidden_dim, 128), nn.LeakyReLU(0.1),
+            nn.Linear(128, 1), nn.Softplus()
         )
-
-        # TP Head: Predicts multiplier (e.g., 0.1 to 10.0)
         self.tp_head = nn.Sequential(
-            nn.Linear(hidden_dim, 128),
-            nn.LeakyReLU(0.1),
-            nn.Linear(128, 1),
-            nn.Softplus()
+            nn.Linear(hidden_dim, 128), nn.LeakyReLU(0.1),
+            # In live, we might need a small shift if model predicts zero but Softplus handles it
+            nn.Linear(128, 1), nn.Softplus()
         )
-
-        # Size Head: Predicts confidence/size (0.0 to 1.0)
         self.size_head = nn.Sequential(
-            nn.Linear(hidden_dim, 128),
-            nn.LeakyReLU(0.1),
-            nn.Linear(128, 1),
-            nn.Sigmoid() # Constrains to [0, 1]
+            nn.Linear(hidden_dim, 128), nn.LeakyReLU(0.1),
+            nn.Linear(128, 1), nn.Softplus() 
+        )
+        self.prob_head = nn.Sequential(
+            nn.Linear(hidden_dim, 128), nn.LeakyReLU(0.1),
+            nn.Linear(128, 1), nn.Sigmoid()
         )
 
     def forward(self, x):
         features = self.input_proj(x)
         features = self.backbone(features)
 
-        sl = self.sl_head(features)
-        tp = self.tp_head(features)
-        size = self.size_head(features)
-
         return {
-            'sl': sl,
-            'tp': tp,
-            'size': size
+            'sl_mult': self.sl_head(features),
+            'tp_mult': self.tp_head(features),
+            'size_factor': self.size_head(features),
+            'prob_tp_first': self.prob_head(features)
         }
 
 # --- Model Loader ---
@@ -157,7 +147,7 @@ class ModelLoader:
                 risk_path = self.project_root / "RiskLayer" / "models" / "risk_model_sl_best.pth"
                 
             self.logger.info(f"Loading SL Risk model from {risk_path}...")
-            self.risk_model = RiskModelSL(input_dim=40)
+            self.risk_model = RiskModelSL(input_dim=48)
             self.risk_model.load_state_dict(torch.load(risk_path, map_location=self.device))
             self.risk_model.to(self.device)
             self.risk_model.eval()
@@ -184,20 +174,16 @@ class ModelLoader:
         if observation.ndim == 1:
             observation = observation.reshape(1, -1)
         
-        # SL model doesn't have a normalizer yet (as per user), so use raw features
         obs_tensor = torch.from_numpy(observation.astype(np.float32)).to(self.device)
         
         with torch.no_grad():
             direction_logits, quality, meta_logits = self.alpha_model(obs_tensor)
             
-            # 1. Direction: Map (0, 1, 2) -> (-1, 0, 1)
-            pred_class = torch.argmax(direction_logits, dim=1)
-            direction = (pred_class - 1).cpu().numpy().astype(float)
+            # Use raw direction value for thresholding in Orchestrator
+            probs = torch.softmax(direction_logits, dim=1)
+            direction = (probs[:, 2] - probs[:, 0]).cpu().numpy().astype(float)
             
-            # 2. Quality: Linear output [0, 1]
             quality_val = quality.cpu().numpy().flatten().astype(float)
-            
-            # 3. Meta: Sigmoid of logits [0, 1]
             meta_val = torch.sigmoid(meta_logits).cpu().numpy().flatten().astype(float)
             
         return {
@@ -207,25 +193,21 @@ class ModelLoader:
         }
 
     def get_risk_action(self, observation):
-        """Predicts SL/TP multipliers and confidence (size) using SL model."""
+        """Predicts SL/TP multipliers, size_factor, and prob using SL model."""
         if self.risk_model is None or self.risk_scaler is None:
             raise RuntimeError("Risk model or scaler not loaded.")
 
-        # 1. Scale observation
         if observation.ndim == 1:
             observation = observation.reshape(1, -1)
         obs_scaled = self.risk_scaler.transform(observation).astype(np.float32)
-
-        # 2. Convert to tensor
         obs_tensor = torch.from_numpy(obs_scaled).to(self.device)
 
-        # 3. Inference
         with torch.no_grad():
             preds = self.risk_model(obs_tensor)
 
         return {
-            'sl_mult': float(preds['sl'].item()),
-            'tp_mult': float(preds['tp'].item()),
-            'size': float(preds['size'].item())
+            'sl_mult': float(preds['sl_mult'].item()),
+            'tp_mult': float(preds['tp_mult'].item()),
+            'size_factor': float(preds['size_factor'].item()),
+            'prob_tp_first': float(preds['prob_tp_first'].item())
         }
-

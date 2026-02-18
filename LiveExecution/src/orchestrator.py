@@ -499,55 +499,66 @@ class Orchestrator:
             
             sl_mult = risk_action['sl_mult']
             tp_mult = risk_action['tp_mult']
-            size_out = risk_action['size']
+            size_factor = risk_action['size_factor']
+            prob_tp = risk_action['prob_tp_first']
             
-            # Blocking Logic (Threshold: 0.10 confidence)
-            if size_out < 0.10:
-                self.logger.info(f"Risk Block for {asset_name}: confidence {size_out:.4f} < 0.10")
-                return {'action': 0, 'allowed': False, 'reason': f'Risk Block ({size_out:.2f})'}
-
-            # 5. Calculate Sizing & SL/TP Prices
-            digits = self.symbol_digits.get(asset_name, 5)
-            
-            # The price from FeatureManager is already the actual price (divisor=100k applied)
-            real_price = self.fm.history[asset_name].iloc[-1]['close']
-            
+            # 5. Adjusted Execution Formulas
+            # execution_cost_atr = spread/ATR + slippage/ATR
             atr_scaled = self.fm.get_atr(asset_name)
+            real_price = self.fm.history[asset_name].iloc[-1]['close']
             if atr_scaled <= 0: atr_scaled = real_price * 0.0001
             
-            # Calculate distances in actual price units
-            sl_dist = sl_mult * atr_scaled
-            tp_dist = tp_mult * atr_scaled
+            spread_val = self.fm.live_spreads[asset_name]['spread']
+            if spread_val <= 0: spread_val = 0.3 if asset_name == 'XAUUSD' else 0.00002
             
-            # cTrader OpenAPI relative SL/TP are in 1/100,000th units for ALL symbols, 
-            # but MUST be aligned with the symbol's tick size.
-            # tick_size = 1/10^digits. In 10^-5 units, this is 100,000 / 10^digits = 10^(5-digits).
+            # Simple slippage estimate (0.05 ATR fallback)
+            slippage_atr = 0.05
+            execution_cost_atr = (spread_val / atr_scaled) + slippage_atr
+            
+            # Adjusted TP: survive spread
+            final_tp_mult = tp_mult + execution_cost_atr
+            
+            # Final Size Logic
+            if prob_tp < 0.5:
+                final_size_factor = 0.0
+                self.logger.info(f"Risk Block for {asset_name}: TP Probability {prob_tp:.2f} < 0.5")
+                return {'action': 0, 'allowed': False, 'reason': f'Prob Block ({prob_tp:.2f})'}
+            else:
+                # confidence_scale = sigmoid(meta * quality)
+                # (Note: meta and quality are already [0,1], we can use raw or sigmoid of their combo)
+                confidence_scale = torch.sigmoid(torch.tensor(meta * quality)).item()
+                final_size_factor = size_factor * confidence_scale
+
+            # 6. Calculate SL/TP Prices
+            digits = self.symbol_digits.get(asset_name, 5)
+            
+            # Distances in price units
+            sl_dist = sl_mult * atr_scaled
+            tp_dist = final_tp_mult * atr_scaled
+            
             step = 10**(5 - digits)
             
             points_5digit_sl = sl_dist * 100000
             points_5digit_tp = tp_dist * 100000
             
-            # Round to the nearest tick size in 10^-5 scale
             relative_sl = int(round(points_5digit_sl / step) * step)
             relative_tp = int(round(points_5digit_tp / step) * step)
 
-            # Ensure relative SL/TP is at least 1 tick distance if it's supposed to be present
             relative_sl = max(relative_sl, step)
             relative_tp = max(relative_tp, step)
 
-            # Real SL/TP prices for logging (calculated from entry price and distance)
             sl_price = round(real_price - (direction * relative_sl / 100000.0), digits)
             tp_price = round(real_price + (direction * relative_tp / 100000.0), digits)
             
-            # Lot Calculation (Match Backtest calculate_position_size)
+            # Lot Calculation
             equity = self.portfolio_state.get('equity', 10.0)
             MAX_LEVERAGE = 100.0
             
-            # Final_Size = Equity * size from model (0.0 to 1.0)
-            position_size = equity * size_out
+            # Position Value based on size_factor
+            # We clip final_size_factor to reasonable risk (e.g. 1.0 = 100% exposure)
+            position_size = equity * np.clip(final_size_factor, 0.0, 1.0)
             position_value_usd = position_size * MAX_LEVERAGE
 
-            # Calculate lot_value_usd using REAL price
             contract_size = 100 if asset_name == 'XAUUSD' else 100000
             is_usd_quote = asset_name in ['EURUSD', 'GBPUSD', 'XAUUSD']
             if is_usd_quote:
@@ -556,7 +567,7 @@ class Orchestrator:
                 lot_value_usd = contract_size
                 
             lots = position_value_usd / (lot_value_usd + 1e-9)
-            lots = np.clip(lots, 0.01, 100.0)
+            lots = np.clip(lots, 0.01, 10.0)
             
             return {
                 'symbol_id': symbol_id,
