@@ -21,6 +21,10 @@ class BacktestMetrics:
         pnls = np.array([t['net_pnl'] for t in self.trades])
         total_pnl = pnls.sum()
         win_rate = (pnls > 0).mean()
+        
+        gross_profit = pnls[pnls > 0].sum()
+        gross_loss = abs(pnls[pnls < 0].sum())
+        profit_factor = gross_profit / (gross_loss + 1e-9)
 
         # Simple Sharpe (assuming 0 risk-free rate and 5m steps)
         # This is very rough
@@ -30,6 +34,9 @@ class BacktestMetrics:
             "Total Trades": len(self.trades),
             "Win Rate": win_rate,
             "Total Net PnL": total_pnl,
+            "Gross Profit": gross_profit,
+            "Gross Loss": gross_loss,
+            "Profit Factor": profit_factor,
             "Avg PnL per Trade": pnls.mean(),
             "Rough Sharpe": sharpe,
             "Max Drawdown": self._calculate_max_drawdown()

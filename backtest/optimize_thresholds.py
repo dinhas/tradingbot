@@ -85,10 +85,37 @@ def optimize_thresholds():
     alpha_model.load_state_dict(torch.load(alpha_model_path, map_location=DEVICE))
     alpha_model.eval()
 
+    # Try loading best model first, then final if best not found or has NaNs
+    risk_model_path = PROJECT_ROOT / "RiskLayer" / "models" / "risk_model_sl_best.pth"
+    if not risk_model_path.exists():
+        risk_model_path = PROJECT_ROOT / args.risk_model_path
+        
     logger.info(f"Loading Risk model from {risk_model_path}...")
     risk_model = RiskModelSL(input_dim=48, hidden_dim=256, num_res_blocks=4).to(DEVICE)
-    risk_model.load_state_dict(torch.load(risk_model_path, map_location=DEVICE))
-    risk_model.eval()
+    try:
+        risk_model.load_state_dict(torch.load(risk_model_path, map_location=DEVICE))
+        risk_model.eval()
+
+        # Check for NaNs in model parameters
+        has_nans = False
+        for name, param in risk_model.named_parameters():
+            if torch.isnan(param).any():
+                logger.error(f"NaNs found in risk model parameter: {name} in {risk_model_path}")
+                has_nans = True
+                break
+        
+        if has_nans and risk_model_path.name == "risk_model_sl_best.pth":
+            # Try final model as fallback
+            risk_model_path = PROJECT_ROOT / args.risk_model_path
+            logger.info(f"Retrying with Final model from {risk_model_path}...")
+            risk_model.load_state_dict(torch.load(risk_model_path, map_location=DEVICE))
+            risk_model.eval()
+            for name, param in risk_model.named_parameters():
+                if torch.isnan(param).any():
+                    logger.error(f"NaNs found in risk model parameter: {name} in {risk_model_path}")
+                    break
+    except Exception as e:
+        logger.error(f"Failed to load risk model: {e}")
 
     logger.info(f"Loading Risk scaler from {scaler_path}...")
     risk_scaler = joblib.load(scaler_path)
@@ -103,6 +130,7 @@ def optimize_thresholds():
     all_meta_probs = []
     all_qual_preds = []
     all_risk_evs = []
+    all_risk_probs_tp = []
     all_risk_sizes = []
     all_actual_dirs = []
     
@@ -149,19 +177,47 @@ def optimize_thresholds():
                 X_raw_batch[:, 41] = meta_probs.cpu().numpy()
                 X_raw_batch[:, 42] = qual_preds_batch.cpu().numpy()
                 
+                # Debug Check for NaNs in X_raw_batch
+                if np.isnan(X_raw_batch).any():
+                    logger.warning(f"NaNs found in X_raw_batch at batch {i}")
+                    # Count NaNs per column
+                    nan_counts = np.isnan(X_raw_batch).sum(axis=0)
+                    for col_idx, count in enumerate(nan_counts):
+                        if count > 0:
+                            logger.warning(f"Column {col_idx} ({engine.feature_names[col_idx]}) has {count} NaNs")
+                
                 # Scale the complete 48-feature vector
-                X_risk_batch_scaled = risk_scaler.transform(X_raw_batch)
+                try:
+                    X_risk_batch_scaled = risk_scaler.transform(X_raw_batch)
+                except Exception as e:
+                    logger.error(f"Error during risk_scaler.transform: {e}")
+                    X_risk_batch_scaled = np.zeros_like(X_raw_batch)
+
+                if np.isnan(X_risk_batch_scaled).any():
+                    logger.warning(f"NaNs found in X_risk_batch_scaled at batch {i}")
+                    # Check scaler params
+                    if hasattr(risk_scaler, 'mean_') and np.isnan(risk_scaler.mean_).any():
+                        logger.warning("Scaler mean_ contains NaNs")
+                    if hasattr(risk_scaler, 'scale_') and np.isnan(risk_scaler.scale_).any():
+                        logger.warning("Scaler scale_ contains NaNs")
+
                 X_risk_batch = torch.from_numpy(X_risk_batch_scaled).to(DEVICE).float()
                 
                 risk_outputs = risk_model(X_risk_batch)
                 risk_ev = risk_outputs['expected_value'].squeeze()
+                risk_prob_tp = torch.sigmoid(risk_outputs['prob_tp_first_logits']).squeeze()
                 risk_size = risk_outputs['size'].squeeze()
+                
+                if i == 0:
+                    logger.info(f"First 5 Risk EV values: {risk_ev[:5].tolist()}")
+                    logger.info(f"First 5 Risk Prob TP values: {risk_prob_tp[:5].tolist()}")
                 
                 all_pred_dirs.append(pred_dir)
                 all_confidences.append(conf)
                 all_meta_probs.append(meta_probs)
                 all_qual_preds.append(qual_preds_batch)
                 all_risk_evs.append(risk_ev)
+                all_risk_probs_tp.append(risk_prob_tp)
                 all_risk_sizes.append(risk_size)
                 all_actual_dirs.append(actual_dirs[i:i+batch_size])
         
@@ -170,6 +226,7 @@ def optimize_thresholds():
     meta_probs = torch.cat(all_meta_probs)
     qual_preds = torch.cat(all_qual_preds)
     risk_evs = torch.cat(all_risk_evs)
+    risk_probs_tp = torch.cat(all_risk_probs_tp)
     risk_sizes = torch.cat(all_risk_sizes)
     actual_dirs = torch.cat(all_actual_dirs)
     
@@ -177,13 +234,15 @@ def optimize_thresholds():
     logger.info(f"Alpha Meta Prob Dist: Mean={meta_probs.mean():.3f}, Min={meta_probs.min():.3f}, Max={meta_probs.max():.3f}")
     logger.info(f"Alpha Quality Dist:  Mean={qual_preds.mean():.3f}, Min={qual_preds.min():.3f}, Max={qual_preds.max():.3f}")
     logger.info(f"Risk EV Dist:        Mean={risk_evs.mean():.3f}, Min={risk_evs.min():.3f}, Max={risk_evs.max():.3f}")
+    logger.info(f"Risk Prob TP Dist:   Mean={risk_probs_tp.mean():.3f}, Min={risk_probs_tp.min():.3f}, Max={risk_probs_tp.max():.3f}")
 
     # 4. GPU-Accelerated Grid Search
     logger.info(f"Starting GPU-Accelerated Grid Search on {len(pred_dirs)} predictions...")
     
-    meta_thresholds = torch.linspace(0.5, 0.95, 15).to(DEVICE)
-    qual_thresholds = torch.linspace(0.3, 0.8, 10).to(DEVICE)
-    risk_ev_thresholds = torch.linspace(0.0, 1.0, 10).to(DEVICE) # EVs are often low, let's try a range
+    meta_thresholds = torch.linspace(0.80, 0.98, 10).to(DEVICE)
+    qual_thresholds = torch.linspace(0.2, 0.6, 5).to(DEVICE)
+    risk_ev_thresholds = torch.linspace(0.0, 0.5, 5).to(DEVICE)
+    risk_tp_thresholds = torch.linspace(0.4, 0.7, 7).to(DEVICE)
     
     best_expectancy = -np.inf
     best_params = None
@@ -192,69 +251,57 @@ def optimize_thresholds():
     # Vectorized loop for thresholds
     for m_t in tqdm(meta_thresholds, desc="Optimizing"):
         for q_t in qual_thresholds:
-            for r_t in risk_ev_thresholds:
-                # Mask for trades that meet thresholds
-                # meta_probs: Alpha confidence
-                # qual_preds: Alpha quality score
-                # risk_evs: Risk model expected value prediction
-                mask = (meta_probs >= m_t) & (qual_preds >= q_t) & (risk_evs >= r_t) & (pred_dirs != 0)
-                
-                num_trades = mask.sum().item()
-                if num_trades < 25: # Lowered threshold slightly for more combinations
-                    continue
+            for r_ev_t in risk_ev_thresholds:
+                for r_tp_t in risk_tp_thresholds:
+                    # Mask for trades that meet thresholds
+                    mask = (meta_probs >= m_t) & (qual_preds >= q_t) & (risk_evs >= r_ev_t) & (risk_probs_tp >= r_tp_t) & (pred_dirs != 0)
                     
-                # Filtered actual and predicted
-                t_actual = actual_dirs[mask]
-                t_pred = pred_dirs[mask]
-                
-                # Calculate R-Returns on GPU
-                is_win = (t_pred == t_actual)
-                is_time_exit = (t_actual == 0)
-                is_loss = (~is_win) & (~is_time_exit)
-                
-                r_returns = torch.zeros_like(t_actual, dtype=torch.float32)
-                r_returns[is_win] = 4.0
-                r_returns[is_time_exit] = -0.5
-                r_returns[is_loss] = -1.5
-                
-                avg_r = r_returns.mean().item()
-                win_rate = is_win.float().mean().item()
-                
-                # Max Loss Streak calculation (on CPU)
-                is_loss_np = (r_returns < 0).cpu().numpy().astype(int)
-                max_streak = 0
-                current_streak = 0
-                for val in is_loss_np:
-                    if val == 1:
-                        current_streak += 1
-                        max_streak = max(max_streak, current_streak)
-                    else:
-                        current_streak = 0
-                
-                res = {
-                    'meta_thresh': m_t.item(),
-                    'qual_thresh': q_t.item(),
-                    'risk_ev_thresh': r_t.item(),
-                    'num_trades': num_trades,
-                    'win_rate': win_rate,
-                    'avg_r': avg_r,
-                    'max_loss_streak': max_streak,
-                    'expectancy': avg_r
-                }
-                all_results.append(res)
-                
-                if avg_r > best_expectancy:
-                    best_expectancy = avg_r
-                    best_params = res
+                    num_trades = mask.sum().item()
+                    if num_trades < 30:
+                        continue
+                        
+                    # Filtered actual and predicted
+                    t_actual = actual_dirs[mask]
+                    t_pred = pred_dirs[mask]
+                    
+                    # Calculate R-Returns on GPU
+                    is_win = (t_pred == t_actual)
+                    is_time_exit = (t_actual == 0)
+                    is_loss = (~is_win) & (~is_time_exit)
+                    
+                    r_returns = torch.zeros_like(t_actual, dtype=torch.float32)
+                    r_returns[is_win] = 4.0
+                    r_returns[is_time_exit] = -0.5
+                    r_returns[is_loss] = -1.5
+                    
+                    avg_r = r_returns.mean().item()
+                    win_rate = is_win.float().mean().item()
+                    
+                    res = {
+                        'meta_thresh': m_t.item(),
+                        'qual_thresh': q_t.item(),
+                        'risk_ev_thresh': r_ev_t.item(),
+                        'risk_tp_thresh': r_tp_t.item(),
+                        'num_trades': num_trades,
+                        'win_rate': win_rate,
+                        'avg_r': avg_r,
+                        'expectancy': avg_r
+                    }
+                    all_results.append(res)
+                    
+                    if avg_r > best_expectancy:
+                        best_expectancy = avg_r
+                        best_params = res
 
     # 5. Output Results
     if best_params:
         logger.info("\n" + "="*40)
         logger.info("OPTIMAL ALPHA & RISK THRESHOLDS FOUND")
         logger.info("="*40)
-        logger.info(f"Alpha Meta Threshold:    {best_params['meta_thresh']:.2f}")
-        logger.info(f"Alpha Quality Threshold: {best_params['qual_thresh']:.2f}")
-        logger.info(f"Risk EV Threshold:       {best_params['risk_ev_thresh']:.2f}")
+        logger.info(f"Alpha Meta Threshold:    {best_params['meta_thresh']:.3f}")
+        logger.info(f"Alpha Quality Threshold: {best_params['qual_thresh']:.3f}")
+        logger.info(f"Risk EV Threshold:       {best_params['risk_ev_thresh']:.3f}")
+        logger.info(f"Risk TP Prob Threshold:  {best_params['risk_tp_thresh']:.3f}")
         logger.info(f"Expected Win Rate: {best_params['win_rate']:.1%}")
         logger.info(f"Expected Avg R:    {best_params['avg_r']:.3f}")
         logger.info(f"Total Trades (2025): {best_params['num_trades']}")

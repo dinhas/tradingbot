@@ -31,6 +31,7 @@ class Orchestrator:
         self.entry_prices = {} # Maps positionId to entry_price
         self.pnl_milestones = {} # Maps positionId to last notified % milestone
         self.pending_risk_actions = {} # Maps positionId to risk_actions
+        self._last_sync_bar_ts = -1 # Track last scheduled sync refresh
         
         # Price precision (digits) for each asset (Match native cTrader precision)
         self.symbol_digits = {
@@ -321,12 +322,25 @@ class Orchestrator:
             self.logger.error(f"Error during bootstrap: {e}")
             self.notifier.send_error(f"Bootstrap failed: {e}")
 
+    def _schedule_sync_refresh(self, bar_ts):
+        """Schedules a position sync 4 minutes after the candle close."""
+        if self._last_sync_bar_ts == bar_ts:
+            return # Already scheduled for this 5-minute block
+        
+        self._last_sync_bar_ts = bar_ts
+        self.logger.info(f"Scheduling position sync refresh in 240s for bar starting at {bar_ts}...")
+        # Defer the call to sync_active_positions 4 minutes after the candle close
+        deferLater(reactor, 240.0, self.sync_active_positions)
+
     @inlineCallbacks
     def on_m5_candle_close(self, symbol_id, trendbar):
         """
         Main Event Handler: Triggered when an M5 candle closes.
         """
         # NO JITTER - Execute immediately
+        
+        # Schedule sync 4 minutes later if not already scheduled for this window
+        self._schedule_sync_refresh(trendbar.utcTimestampInMinutes)
         
         start_time = time.time()
         asset_name = self._get_symbol_name(symbol_id)
@@ -527,7 +541,27 @@ class Orchestrator:
                 # confidence_scale = sigmoid(meta * quality)
                 # (Note: meta and quality are already [0,1], we can use raw or sigmoid of their combo)
                 confidence_scale = torch.sigmoid(torch.tensor(meta * quality)).item()
-                final_size_factor = size_factor * confidence_scale
+                
+                # Fix #4: Exponential decay for wider stops (k=0.5)
+                size_decay = np.exp(-0.5 * sl_mult)
+                final_size_factor = size_factor * confidence_scale * size_decay
+                
+                # Fix #7: Kill Asymmetric Losses (Hard Defense)
+                if sl_mult > 2.2:
+                    self.logger.info(f"Hard Defense: SL {sl_mult:.2f} > 2.2. Reducing size by 50%.")
+                    final_size_factor *= 0.5
+                
+                # Fix #8: Regime Filter (Volatility scaling)
+                # risk_obs index 45 is atr_percentile (calculated in RiskFeatureEngine)
+                try:
+                    raw_hist = self.fm.history[asset_name]
+                    if f"{asset_name}_atr_percentile" in raw_hist.columns:
+                        curr_atr_p = raw_hist[f"{asset_name}_atr_percentile"].iloc[-1]
+                        if curr_atr_p > 0.80:
+                            self.logger.info(f"Regime Filter: ATR Percentile {curr_atr_p:.2f} > 0.80. Scaling size down by 25%.")
+                            final_size_factor *= 0.75
+                except Exception as e:
+                    self.logger.warning(f"Regime filter failed: {e}")
 
             # 6. Calculate SL/TP Prices
             digits = self.symbol_digits.get(asset_name, 5)

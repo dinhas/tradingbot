@@ -192,7 +192,8 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
                 mae_atr = mae_dist / (atr + 1e-9)
                 
                 # --- TARGETS ---
-                target_sl_mult = np.clip(mae_atr + 0.2, 0.5, 4.0)
+                # Fix #1 & #2: Cap SL Multipliers at 2.5 and reduce buffer
+                target_sl_mult = np.clip(mae_atr + 0.15, 0.5, 2.5)
                 target_tp_mult = np.clip(mfe_atr * 0.8, 0.5, 8.0) # Conservative TP
                 
                 # Execution Buffer
@@ -214,8 +215,13 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
                 target_expected_value = realized_ev
                 
                 # Position Size
-                # target_size = max(EV / SL_mult, 0)
-                target_size = np.clip(realized_ev / (target_sl_mult + 1e-9), 0, 1)
+                # Fix #7: Loss Aversion - Kill signals where drawdown >> upside
+                if mae_atr > (1.5 * mfe_atr):
+                    target_size = 0.0
+                else:
+                    # Fix #4: Exponential decay for wider stops (k=0.5)
+                    decay = np.exp(-0.5 * target_sl_mult)
+                    target_size = np.clip((realized_ev / (target_sl_mult + 1e-9)) * decay, 0, 1)
                 
                 # Update Risk Features in observation
                 obs_vector = risk_engine.get_observation(proc_df.iloc[global_idx], {}, asset)

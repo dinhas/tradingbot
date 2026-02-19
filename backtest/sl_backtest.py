@@ -37,6 +37,8 @@ def run_sl_backtest():
     parser.add_argument("--meta-thresh", type=float, default=0.93)
     parser.add_argument("--qual-thresh", type=float, default=0.30)
     parser.add_argument("--batch-size", type=int, default=8192, help="Batch size for inference")
+    parser.add_argument("--risk-thresh", type=float, default=0.50, help="Risk Model TP Probability Threshold")
+    parser.add_argument("--risk-ev-thresh", type=float, default=0.0, help="Risk Model Expected Value Threshold (ATR units)")
     args = parser.parse_args()
 
     model_path = PROJECT_ROOT / args.model_path
@@ -170,7 +172,7 @@ def run_sl_backtest():
     end_step = min(start_step + args.steps, env.max_steps)
     
     logger.info(f"Starting Backtest from step {start_step} to {end_step} ({end_step - start_step} steps)...")
-    logger.info(f"Thresholds: Meta > {args.meta_thresh}, Quality > {args.qual_thresh}")
+    logger.info(f"Thresholds: Meta > {args.meta_thresh}, Quality > {args.qual_thresh}, Risk_TP_Prob > {args.risk_thresh}, Risk_EV > {args.risk_ev_thresh}")
 
     for step_idx in tqdm(range(start_step, end_step), desc="Backtesting"):
         env.current_step = step_idx
@@ -194,9 +196,13 @@ def run_sl_backtest():
                     tp_mult = float(tp_mults_all[step_idx, i])
                     size = float(sizes_all[step_idx, i])
                     prob_tp = float(probs_tp_all[step_idx, i])
+                    
+                    # Calculate Expected Value (in ATR units)
+                    # EV = (Prob_TP * TP_Mult) - ((1 - Prob_TP) * SL_Mult)
+                    expected_value = (prob_tp * tp_mult) - ((1.0 - prob_tp) * sl_mult)
 
-                    # Risk Model Filter: Only trade if TP probability > 0.5
-                    if prob_tp >= 0.5:
+                    # Risk Model Filter: Only trade if TP probability and EV meet thresholds
+                    if prob_tp >= args.risk_thresh and expected_value >= args.risk_ev_thresh:
                         actions[asset] = {
                             'direction': direction,
                             'size': size,
@@ -259,6 +265,12 @@ def run_sl_backtest():
             logger.info(f"{k:<25}: {v:.4f}")
         else:
             logger.info(f"{k:<25}: {v}")
+            
+    # Per-Asset Detail
+    per_asset = metrics.get_per_asset_metrics()
+    logger.info("\nPer-Asset Breakdown:")
+    for asset, a_metrics in per_asset.items():
+        logger.info(f"  {asset:<10}: Trades: {a_metrics['trades']:<5}, WinRate: {a_metrics['win_rate']:.2%}, PnL: ${a_metrics['pnl']:.2f}")
     
     # Generate Charts
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -266,7 +278,6 @@ def run_sl_backtest():
     os.makedirs(output_dir, exist_ok=True)
     
     try:
-        per_asset = metrics.get_per_asset_metrics()
         generate_all_charts(metrics, per_asset, "SL_Final", output_dir, timestamp)
         logger.info(f"Charts saved to {output_dir}")
     except Exception as e:

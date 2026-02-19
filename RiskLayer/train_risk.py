@@ -114,6 +114,11 @@ def train():
     # Fix: Use BCEWithLogitsLoss for numerical stability with AMP
     bce_logits_loss = nn.BCEWithLogitsLoss()
     
+    # Fix #1: Quantile Loss for SL
+    def quantile_loss(preds, targets, quantile=0.85):
+        errors = targets - preds
+        return torch.max((quantile - 1) * errors, quantile * errors).mean()
+
     best_val_loss = float('inf')
     # Fix: Use torch.amp.GradScaler for newer PyTorch versions
     scaler_amp = torch.amp.GradScaler('cuda')
@@ -133,7 +138,10 @@ def train():
             with torch.amp.autocast('cuda'):
                 preds = model(features)
                 
-                loss_sl = huber_loss(preds['sl_mult'].squeeze(), targets['target_sl_mult'])
+                # Fix #1 & #3: Quantile Loss for SL + Regularization
+                loss_sl = quantile_loss(preds['sl_mult'].squeeze(), targets['target_sl_mult'], 0.85)
+                loss_sl += 0.1 * torch.mean(preds['sl_mult']**2) # Penalize large SL
+                
                 loss_tp = huber_loss(preds['tp_mult'].squeeze(), targets['target_tp_mult'])
                 loss_size = mse_loss(preds['size'].squeeze(), targets['target_size'])
                 # Fix: Use logits output and BCEWithLogitsLoss
@@ -161,7 +169,10 @@ def train():
                 
                 with torch.amp.autocast('cuda'):
                     preds = model(features)
-                    v_sl = huber_loss(preds['sl_mult'].squeeze(), targets['target_sl_mult'])
+                    # Validation also uses Quantile Loss
+                    v_sl = quantile_loss(preds['sl_mult'].squeeze(), targets['target_sl_mult'], 0.85)
+                    v_sl += 0.1 * torch.mean(preds['sl_mult']**2)
+                    
                     v_tp = huber_loss(preds['tp_mult'].squeeze(), targets['target_tp_mult'])
                     v_size = mse_loss(preds['size'].squeeze(), targets['target_size'])
                     # Fix: Use logits output and BCEWithLogitsLoss
