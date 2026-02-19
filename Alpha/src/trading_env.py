@@ -162,8 +162,7 @@ class TradingEnv(gym.Env):
         tp_dist = act['tp_mult'] * atr
         sl = price - (direction * sl_dist)
         tp = price + (direction * tp_dist)
-        
-        self.positions[asset] = {
+        position_data = {
             'direction': direction,
             'entry_price': price,
             'size': size,
@@ -173,6 +172,10 @@ class TradingEnv(gym.Env):
             'sl_dist': sl_dist,
             'tp_dist': tp_dist
         }
+        for key in ['prob_tp', 'expected_value', 'execution_buffer']:
+            if key in act:
+                position_data[key] = act[key]
+        self.positions[asset] = position_data
         # Entry fee
         self.equity -= size * 0.00002
 
@@ -188,7 +191,7 @@ class TradingEnv(gym.Env):
         # Exit fee
         self.equity -= pos['size'] * 0.00002
         
-        self.completed_trades.append({
+        trade_data = {
             'timestamp': self._get_current_timestamp(),
             'asset': asset,
             'pnl': pnl,
@@ -196,7 +199,11 @@ class TradingEnv(gym.Env):
             'entry_price': pos['entry_price'],
             'exit_price': price,
             'size': pos['size']
-        })
+        }
+        for key in ['prob_tp', 'expected_value', 'execution_buffer']:
+            if key in pos:
+                trade_data[key] = pos[key]
+        self.completed_trades.append(trade_data)
         self.positions[asset] = None
 
     def _get_current_prices(self):
