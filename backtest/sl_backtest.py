@@ -15,7 +15,10 @@ sys.path.append(str(PROJECT_ROOT))
 
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.trading_env import TradingEnv
-from backtest.rl_backtest import BacktestMetrics, generate_all_charts
+from RiskLayer.src.risk_model_sl import RiskModelSL
+from RiskLayer.src.feature_engine import FeatureEngine as RiskFeatureEngine
+from backtest.sl_backtest_utils import BacktestMetrics, generate_all_charts
+import joblib
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,6 +29,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def run_sl_backtest():
     parser = argparse.ArgumentParser(description="Alpha Supervised Model Backtester (Optimized)")
     parser.add_argument("--model-path", type=str, default="Alpha/models/alpha_model.pth")
+    parser.add_argument("--risk-model-path", type=str, default="RiskLayer/models/risk_model_sl_best.pth")
+    parser.add_argument("--risk-scaler-path", type=str, default="RiskLayer/models/sl_risk_scaler.pkl")
+    parser.add_argument("--use-risk-model", action="store_true", default=True)
     parser.add_argument("--data-dir", type=str, default="backtest/data")
     parser.add_argument("--steps", type=int, default=100000, help="Number of steps to backtest")
     parser.add_argument("--meta-thresh", type=float, default=0.93)
@@ -48,15 +54,33 @@ def run_sl_backtest():
         logger.error(f"Failed to initialize environment: {e}")
         return
     
-    # 2. Load Model
-    logger.info(f"Loading SL Model from {model_path} to {DEVICE}...")
+    # 2. Load Alpha Model
+    logger.info(f"Loading Alpha SL Model from {model_path} to {DEVICE}...")
     model = AlphaSLModel(input_dim=40, hidden_dim=256, num_res_blocks=4).to(DEVICE)
     try:
         model.load_state_dict(torch.load(model_path, map_location=DEVICE))
         model.eval()
     except Exception as e:
-        logger.error(f"Failed to load model state: {e}")
+        logger.error(f"Failed to load alpha model state: {e}")
         return
+
+    # 2.1 Load Risk Model if enabled
+    risk_model = None
+    risk_scaler = None
+    if args.use_risk_model:
+        risk_model_path = PROJECT_ROOT / args.risk_model_path
+        risk_scaler_path = PROJECT_ROOT / args.risk_scaler_path
+
+        logger.info(f"Loading Risk SL Model from {risk_model_path}...")
+        risk_model = RiskModelSL(input_dim=48, hidden_dim=256, num_res_blocks=4).to(DEVICE)
+        try:
+            risk_model.load_state_dict(torch.load(risk_model_path, map_location=DEVICE))
+            risk_model.eval()
+            logger.info("Loading Risk Scaler...")
+            risk_scaler = joblib.load(risk_scaler_path)
+        except Exception as e:
+            logger.error(f"Failed to load risk components: {e}")
+            args.use_risk_model = False
 
     # 3. Pre-calculate Signals (Vectorized Inference)
     logger.info("Pre-calculating signals for all assets...")
@@ -83,6 +107,57 @@ def run_sl_backtest():
     dir_probs_all = np.concatenate(dir_probs_list, axis=0).reshape(N, num_assets, 3)
     meta_probs_all = np.concatenate(meta_probs_list, axis=0).reshape(N, num_assets)
     qual_scores_all = np.concatenate(qual_scores_list, axis=0).reshape(N, num_assets)
+
+    # 3.1 Pre-calculate Risk Signals
+    sl_mults_all = None
+    tp_mults_all = None
+    sizes_all = None
+    probs_tp_all = None
+
+    if args.use_risk_model and risk_model is not None:
+        logger.info("Calculating Risk Features with simulated spreads...")
+        risk_fe = RiskFeatureEngine()
+        risk_raw_df, _ = risk_fe.preprocess_data(env.data)
+
+        # Inject Alpha signals into Risk features
+        dir_all = np.argmax(dir_probs_all, axis=2) - 1 # (N, num_assets)
+        for i, asset in enumerate(env.assets):
+            risk_raw_df[f"{asset}_alpha_direction"] = dir_all[:, i]
+            risk_raw_df[f"{asset}_alpha_meta"] = meta_probs_all[:, i]
+            risk_raw_df[f"{asset}_alpha_quality"] = qual_scores_all[:, i]
+
+        # Re-normalize Risk features with injected Alpha signals
+        risk_norm_df = risk_fe._normalize_features(risk_raw_df.copy())
+
+        # Vectorized Risk Inference
+        risk_obs_all_assets = []
+        for asset in env.assets:
+            obs = risk_fe.get_observation_vectorized(risk_norm_df, asset)
+            risk_obs_all_assets.append(obs)
+
+        risk_obs_flat = np.concatenate(risk_obs_all_assets, axis=0) # (num_assets * N, 48)
+        risk_obs_scaled = risk_scaler.transform(risk_obs_flat).astype(np.float32)
+
+        sl_mults_list = []
+        tp_mults_list = []
+        sizes_list = []
+        probs_tp_list = []
+
+        with torch.no_grad():
+            for i in tqdm(range(0, len(risk_obs_scaled), args.batch_size), desc="Risk Inference"):
+                batch = torch.from_numpy(risk_obs_scaled[i : i + args.batch_size]).to(DEVICE)
+                preds = risk_model(batch)
+
+                sl_mults_list.append(preds['sl_mult'].cpu().numpy())
+                tp_mults_list.append(preds['tp_mult'].cpu().numpy())
+                sizes_list.append(preds['size'].cpu().numpy())
+                # Using prob_head (which is prob_tp_first_logits in RiskModelSL)
+                probs_tp_list.append(torch.sigmoid(preds['prob_tp_first_logits']).cpu().numpy())
+
+        sl_mults_all = np.concatenate(sl_mults_list, axis=0).reshape(num_assets, N).T
+        tp_mults_all = np.concatenate(tp_mults_list, axis=0).reshape(num_assets, N).T
+        sizes_all = np.concatenate(sizes_list, axis=0).reshape(num_assets, N).T
+        probs_tp_all = np.concatenate(probs_tp_list, axis=0).reshape(num_assets, N).T
     
     # 4. Metrics Tracker
     metrics = BacktestMetrics()
@@ -113,12 +188,31 @@ def run_sl_backtest():
             
             # Apply thresholds
             if meta_prob >= args.meta_thresh and qual_score >= args.qual_thresh:
-                actions[asset] = {
-                    'direction': direction,
-                    'size': 0.2, 
-                    'sl_mult': 1.5,
-                    'tp_mult': 4.0
-                }
+                # Use Risk Model outputs if available
+                if sl_mults_all is not None:
+                    sl_mult = float(sl_mults_all[step_idx, i])
+                    tp_mult = float(tp_mults_all[step_idx, i])
+                    size = float(sizes_all[step_idx, i])
+                    prob_tp = float(probs_tp_all[step_idx, i])
+
+                    # Risk Model Filter: Only trade if TP probability > 0.5
+                    if prob_tp >= 0.5:
+                        actions[asset] = {
+                            'direction': direction,
+                            'size': size,
+                            'sl_mult': sl_mult,
+                            'tp_mult': tp_mult
+                        }
+                    else:
+                        actions[asset] = {'direction': 0}
+                else:
+                    # Fallback to hardcoded values
+                    actions[asset] = {
+                        'direction': direction,
+                        'size': 0.2,
+                        'sl_mult': 1.5,
+                        'tp_mult': 4.0
+                    }
             else:
                 actions[asset] = {'direction': 0}
 
