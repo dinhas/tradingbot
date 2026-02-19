@@ -307,5 +307,8 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_FILE)
+    parser.add_argument("--data", type=str, default=DEFAULT_DATA_DIR, help="Directory for raw market data")
+    parser.add_argument("--model-path", type=str, default=DEFAULT_MODEL_PATH, help="Path to Alpha model")
     args = parser.parse_args()
-    generate_sl_dataset(DEFAULT_MODEL_PATH, DEFAULT_DATA_DIR, args.output, args.limit, args.max_samples)
+    
+    generate_sl_dataset(args.model_path, args.data, args.output, args.limit, args.max_samples)
