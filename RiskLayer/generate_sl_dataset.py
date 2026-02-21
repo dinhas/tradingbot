@@ -160,68 +160,69 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
                 # For simplicity in this generator, entry is at 'entry_price' (close).
                 # We adjust the TP/SL levels to be bid/ask aware.
                 
-                # Future Window
+                # Future Window (1.5 Hours = 18 bars of 5m data)
+                LOOKAHEAD_1_5H = 18
                 f_start = global_idx + 1
-                f_end = min(global_idx + MAX_LOOKAHEAD, total_rows)
+                f_end = min(global_idx + LOOKAHEAD_1_5H, total_rows)
                 future_highs = raw_df[f"{asset}_high"].values[f_start:f_end]
                 future_lows = raw_df[f"{asset}_low"].values[f_start:f_end]
                 
-                if len(future_highs) < 5: continue
+                if len(future_highs) < 1: continue
                 
-                # ATR-normalized MFE/MAE calculation
+                # NEW LABELING LOGIC
                 if direction == 1: # LONG
-                    # TP hit if Bid_high >= TP. Bid_high = High - spread
-                    # SL hit if Bid_low <= SL. Bid_low = Low - spread
-                    bid_highs = future_highs - spread
-                    bid_lows = future_lows - spread
+                    # TP: Highest price in next 1.5h
+                    mfe_idx = np.argmax(future_highs)
+                    tp_price = future_highs[mfe_idx]
                     
-                    mfe_idx = np.argmax(bid_highs)
-                    mfe_dist = bid_highs[mfe_idx] - entry_price
-                    mae_dist = entry_price - np.min(bid_lows[:mfe_idx+1])
+                    # SL: Lowest price BEFORE hitting TP
+                    if mfe_idx == 0:
+                        sl_price = entry_price # Or some minimum buffer
+                    else:
+                        sl_price = np.min(future_lows[:mfe_idx+1])
+                        
+                    mfe_dist = tp_price - entry_price
+                    mae_dist = entry_price - sl_price
                 else: # SHORT
-                    # TP hit if Ask_low <= TP. Ask_low = Low + spread
-                    # SL hit if Ask_high >= SL. Ask_high = High + spread
-                    ask_highs = future_highs + spread
-                    ask_lows = future_lows + spread
+                    # TP: Lowest price in next 1.5h
+                    mfe_idx = np.argmin(future_lows)
+                    tp_price = future_lows[mfe_idx]
                     
-                    mfe_idx = np.argmin(ask_lows)
-                    mfe_dist = entry_price - ask_lows[mfe_idx]
-                    mae_dist = np.max(ask_highs[:mfe_idx+1]) - entry_price
+                    # SL: Highest price BEFORE hitting TP
+                    if mfe_idx == 0:
+                        sl_price = entry_price
+                    else:
+                        sl_price = np.max(future_highs[:mfe_idx+1])
+                        
+                    mfe_dist = entry_price - tp_price
+                    mae_dist = sl_price - entry_price
                 
                 mfe_atr = mfe_dist / (atr + 1e-9)
                 mae_atr = mae_dist / (atr + 1e-9)
                 
                 # --- TARGETS ---
-                # Fix #1 & #2: Cap SL Multipliers at 2.5 and reduce buffer
-                target_sl_mult = np.clip(mae_atr + 0.15, 0.5, 2.5)
-                target_tp_mult = np.clip(mfe_atr * 0.8, 0.5, 8.0) # Conservative TP
+                target_sl_mult = float(np.clip(mae_atr, 0.1, 5.0))
+                target_tp_mult = float(np.clip(mfe_atr, 0.1, 10.0))
+                bars_before_tp = int(mfe_idx + 1)
                 
-                # Execution Buffer
-                # execution_buffer = (spread / ATR) + slippage
-                slippage = slippage_dict[asset][global_idx]
-                target_exec_buffer = (spread / (atr + 1e-9)) + slippage
+                # Position Size Formula: clip( (RRR^p - 1) * exp(-k * bars_before_tp), 0, 1)
+                # Using p=1.5, k=0.1
+                rrr = target_tp_mult / (target_sl_mult + 1e-9)
+                p = 1.5
+                k = 0.1
                 
-                # Expected Value Logic
-                # transaction_cost = spread + slippage (in ATR units)
-                tx_cost_atr = (spread / (atr + 1e-9)) + slippage
-                
-                # If we assume P_win = 0.5 for neutral sizing, or we can use the "best" outcome
-                # Here we label "tp_first" as 1 if MFE reached 2*MAE before MAE hit
-                target_tp_first = 1 if mfe_atr > (2.0 * mae_atr) else 0
-                
-                # EV = (P_win * TP) - (P_loss * SL) - Costs
-                # For labeling, we use the actual realized outcomes
-                realized_ev = mfe_atr - mae_atr - tx_cost_atr
-                target_expected_value = realized_ev
-                
-                # Position Size
-                # Fix #7: Loss Aversion - Kill signals where drawdown >> upside
-                if mae_atr > (1.5 * mfe_atr):
-                    target_size = 0.0
+                if rrr > 1.0:
+                    raw_size = (rrr**p - 1.0) * np.exp(-k * bars_before_tp)
+                    target_size = float(np.clip(raw_size, 0.0, 1.0))
                 else:
-                    # Fix #4: Exponential decay for wider stops (k=0.5)
-                    decay = np.exp(-0.5 * target_sl_mult)
-                    target_size = np.clip((realized_ev / (target_sl_mult + 1e-9)) * decay, 0, 1)
+                    target_size = 0.0
+                
+                # NEW: If RRR < 2, label as no-trade signal
+                if rrr < 2.0:
+                    target_sl_mult = 0.0
+                    target_tp_mult = 0.0
+                    target_size = 0.0
+                    bars_before_tp = 0
                 
                 # Update Risk Features in observation
                 obs_vector = risk_engine.get_observation(proc_df.iloc[global_idx], {}, asset)
@@ -235,12 +236,10 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
                     'timestamp': proc_df.index[global_idx],
                     'asset': asset,
                     'features': obs_vector.tolist(),
-                    'target_sl_mult': float(target_sl_mult),
-                    'target_tp_mult': float(target_tp_mult),
-                    'target_size': float(target_size),
-                    'target_execution_buffer_mult': float(target_exec_buffer),
-                    'target_expected_value': float(target_expected_value),
-                    'target_tp_first': int(target_tp_first),
+                    'target_sl_mult': target_sl_mult,
+                    'target_tp_mult': target_tp_mult,
+                    'target_size': target_size,
+                    'bars_before_tp': bars_before_tp,
                     'alpha_direction': float(weighted_dir[local_idx]),
                     'alpha_meta': float(meta_val[local_idx]),
                     'alpha_quality': float(qual_val[local_idx])
@@ -272,9 +271,8 @@ def generate_sl_dataset(model_path, data_dir, output_file, limit=None, max_sampl
         logger.info("\n--- Dataset Distribution Summary ---")
         logger.info(f"Mean SL Mult: {final_df['target_sl_mult'].mean():.2f}")
         logger.info(f"Mean TP Mult: {final_df['target_tp_mult'].mean():.2f}")
-        logger.info(f"Mean EV: {final_df['target_expected_value'].mean():.2f}")
         logger.info(f"Mean Size: {final_df['target_size'].mean():.2f}")
-        logger.info(f"TP First Ratio: {final_df['target_tp_first'].mean():.2%}")
+        logger.info(f"Mean Bars to TP: {final_df['bars_before_tp'].mean():.2f}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

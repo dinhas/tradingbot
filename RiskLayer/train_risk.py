@@ -36,9 +36,7 @@ NUM_GPUS = torch.cuda.device_count()
 W_SL = 1.0
 W_TP = 1.0
 W_SIZE = 2.0 
-W_PROB = 1.0
-W_EXEC = 0.5
-W_EV = 1.5
+W_BARS = 1.0
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -67,8 +65,7 @@ def train():
     
     X = np.stack(df['features'].values).astype(np.float32)
     target_names = [
-        'target_sl_mult', 'target_tp_mult', 'target_size',
-        'target_execution_buffer_mult', 'target_expected_value', 'target_tp_first'
+        'target_sl_mult', 'target_tp_mult', 'target_size', 'bars_before_tp'
     ]
     
     # Check for missing targets
@@ -144,13 +141,9 @@ def train():
                 
                 loss_tp = huber_loss(preds['tp_mult'].squeeze(), targets['target_tp_mult'])
                 loss_size = mse_loss(preds['size'].squeeze(), targets['target_size'])
-                # Fix: Use logits output and BCEWithLogitsLoss
-                loss_prob = bce_logits_loss(preds['prob_tp_first_logits'].squeeze(), targets['target_tp_first'])
-                loss_exec = huber_loss(preds['execution_buffer'].squeeze(), targets['target_execution_buffer_mult'])
-                loss_ev = mse_loss(preds['expected_value'].squeeze(), targets['target_expected_value'])
+                loss_bars = huber_loss(preds['bars_before_tp'].squeeze(), targets['bars_before_tp'])
                 
-                total_loss = (W_SL * loss_sl) + (W_TP * loss_tp) + (W_SIZE * loss_size) + \
-                             (W_PROB * loss_prob) + (W_EXEC * loss_exec) + (W_EV * loss_ev)
+                total_loss = (W_SL * loss_sl) + (W_TP * loss_tp) + (W_SIZE * loss_size) + (W_BARS * loss_bars)
             
             scaler_amp.scale(total_loss).backward()
             scaler_amp.step(optimizer)
@@ -175,13 +168,9 @@ def train():
                     
                     v_tp = huber_loss(preds['tp_mult'].squeeze(), targets['target_tp_mult'])
                     v_size = mse_loss(preds['size'].squeeze(), targets['target_size'])
-                    # Fix: Use logits output and BCEWithLogitsLoss
-                    v_prob = bce_logits_loss(preds['prob_tp_first_logits'].squeeze(), targets['target_tp_first'])
-                    v_exec = huber_loss(preds['execution_buffer'].squeeze(), targets['target_execution_buffer_mult'])
-                    v_ev = mse_loss(preds['expected_value'].squeeze(), targets['target_expected_value'])
+                    v_bars = huber_loss(preds['bars_before_tp'].squeeze(), targets['bars_before_tp'])
                     
-                    v_total = (W_SL * v_sl) + (W_TP * v_tp) + (W_SIZE * v_size) + \
-                              (W_PROB * v_prob) + (W_EXEC * v_exec) + (W_EV * v_ev)
+                    v_total = (W_SL * v_sl) + (W_TP * v_tp) + (W_SIZE * v_size) + (W_BARS * v_bars)
                     val_loss += v_total.item()
         
         avg_train_loss = train_loss / len(train_loader)

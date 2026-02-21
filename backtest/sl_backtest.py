@@ -143,7 +143,7 @@ def run_sl_backtest():
         sl_mults_list = []
         tp_mults_list = []
         sizes_list = []
-        probs_tp_list = []
+        bars_to_tp_list = []
 
         with torch.no_grad():
             for i in tqdm(range(0, len(risk_obs_scaled), args.batch_size), desc="Risk Inference"):
@@ -153,13 +153,12 @@ def run_sl_backtest():
                 sl_mults_list.append(preds['sl_mult'].cpu().numpy())
                 tp_mults_list.append(preds['tp_mult'].cpu().numpy())
                 sizes_list.append(preds['size'].cpu().numpy())
-                # Using prob_head (which is prob_tp_first_logits in RiskModelSL)
-                probs_tp_list.append(torch.sigmoid(preds['prob_tp_first_logits']).cpu().numpy())
+                bars_to_tp_list.append(preds['bars_before_tp'].cpu().numpy())
 
         sl_mults_all = np.concatenate(sl_mults_list, axis=0).reshape(num_assets, N).T
         tp_mults_all = np.concatenate(tp_mults_list, axis=0).reshape(num_assets, N).T
         sizes_all = np.concatenate(sizes_list, axis=0).reshape(num_assets, N).T
-        probs_tp_all = np.concatenate(probs_tp_list, axis=0).reshape(num_assets, N).T
+        bars_to_tp_all = np.concatenate(bars_to_tp_list, axis=0).reshape(num_assets, N).T
     
     # 4. Metrics Tracker
     metrics = BacktestMetrics()
@@ -195,14 +194,10 @@ def run_sl_backtest():
                     sl_mult = float(sl_mults_all[step_idx, i])
                     tp_mult = float(tp_mults_all[step_idx, i])
                     size = float(sizes_all[step_idx, i])
-                    prob_tp = float(probs_tp_all[step_idx, i])
+                    bars_to_tp = float(bars_to_tp_all[step_idx, i])
                     
-                    # Calculate Expected Value (in ATR units)
-                    # EV = (Prob_TP * TP_Mult) - ((1 - Prob_TP) * SL_Mult)
-                    expected_value = (prob_tp * tp_mult) - ((1.0 - prob_tp) * sl_mult)
-
-                    # Risk Model Filter: Only trade if TP probability and EV meet thresholds
-                    if prob_tp >= args.risk_thresh and expected_value >= args.risk_ev_thresh:
+                    # NEW FILTER: Only trade if all risk outputs are non-zero
+                    if all(v > 1e-6 for v in [sl_mult, tp_mult, size, bars_to_tp]):
                         actions[asset] = {
                             'direction': direction,
                             'size': size,
@@ -210,6 +205,7 @@ def run_sl_backtest():
                             'tp_mult': tp_mult
                         }
                     else:
+                        # If any risk output is zero, it's a no-trade signal
                         actions[asset] = {'direction': 0}
                 else:
                     # Fallback to hardcoded values
@@ -259,7 +255,7 @@ def run_sl_backtest():
         logger.error("No equity data collected. Backtest failed.")
         return
 
-    results = metrics.calculate_metrics()
+    results = metrics.calculate_metrics(initial_equity=env.start_equity, final_equity=env.equity)
     for k, v in results.items():
         if isinstance(v, float):
             logger.info(f"{k:<25}: {v:.4f}")
@@ -272,11 +268,25 @@ def run_sl_backtest():
     for asset, a_metrics in per_asset.items():
         logger.info(f"  {asset:<10}: Trades: {a_metrics['trades']:<5}, WinRate: {a_metrics['win_rate']:.2%}, PnL: ${a_metrics['pnl']:.2f}")
     
-    # Generate Charts
+    # Save Results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = PROJECT_ROOT / "backtest" / "results"
     os.makedirs(output_dir, exist_ok=True)
     
+    # Export full trade history to CSV
+    if metrics.trades:
+        df_trades = pd.DataFrame(metrics.trades)
+        csv_path = output_dir / f"trades_history_{timestamp}.csv"
+        df_trades.to_csv(csv_path, index=False)
+        logger.info(f"Full trade history saved to {csv_path}")
+
+    # Export summary metrics to JSON
+    import json
+    json_path = output_dir / f"summary_metrics_{timestamp}.json"
+    with open(json_path, 'w') as f:
+        json.dump(results, f, indent=4)
+    logger.info(f"Summary metrics saved to {json_path}")
+
     try:
         generate_all_charts(metrics, per_asset, "SL_Final", output_dir, timestamp)
         logger.info(f"Charts saved to {output_dir}")

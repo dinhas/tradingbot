@@ -62,26 +62,12 @@ class RiskModelSL(nn.Module):
             nn.Sigmoid() 
         )
         
-        # 4. Prob TP First Head: Binary prediction (logits)
-        self.prob_head = nn.Sequential(
-            nn.Linear(hidden_dim, 128),
-            nn.LeakyReLU(0.1),
-            nn.Linear(128, 1)
-        )
-        
-        # 5. Execution Buffer Head: Predicts (spread + slippage) / ATR
-        self.exec_buffer_head = nn.Sequential(
+        # 4. Bars Before TP Head: Predicts number of 5m bars
+        self.bars_before_tp_head = nn.Sequential(
             nn.Linear(hidden_dim, 128),
             nn.LeakyReLU(0.1),
             nn.Linear(128, 1),
             nn.Softplus()
-        )
-        
-        # 6. Expected Value Head: Predicts net ATR-normalized EV
-        self.ev_head = nn.Sequential(
-            nn.Linear(hidden_dim, 128),
-            nn.LeakyReLU(0.1),
-            nn.Linear(128, 1)
         )
 
     def forward(self, x):
@@ -92,7 +78,5 @@ class RiskModelSL(nn.Module):
             'sl_mult': self.sl_head(features),
             'tp_mult': self.tp_head(features),
             'size': self.size_head(features),
-            'prob_tp_first_logits': self.prob_head(features),
-            'execution_buffer': self.exec_buffer_head(features),
-            'expected_value': self.ev_head(features)
+            'bars_before_tp': self.bars_before_tp_head(features)
         }
