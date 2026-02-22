@@ -312,6 +312,14 @@ class TradingEnv(gym.Env):
             asset: self.atr_arrays[asset][self.current_step] for asset in self.assets
         }
 
+    def _check_global_exposure(self, new_position_size):
+        """Check if adding position would exceed the exposure limit."""
+        current_exposure = sum(
+            pos["size"] for pos in self.positions.values() if pos is not None
+        )
+        total_allocated = current_exposure + new_position_size
+        return total_allocated <= (self.equity * self.MAX_TOTAL_EXPOSURE)
+
     def _update_positions(self):
         """Check SL/TP with spread-adjusted exit prices."""
         current_prices = self._get_current_prices()
