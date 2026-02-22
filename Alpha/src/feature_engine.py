@@ -104,12 +104,32 @@ class FeatureEngine:
         
         # 5. Normalize Features (Robust Scaling)
         logger.info("Normalizing features (this may take a minute)...")
-        normalized_df = aligned_df.copy()
-        normalized_df = self._normalize_features(normalized_df)
+        # Optimization: Normalize in-place to save memory
+        normalized_df = aligned_df.copy() # We still need one copy for normalized version
+        self._normalize_features(normalized_df)
         
-        # 6. Handle Missing Values
-        normalized_df = normalized_df.ffill().fillna(0).astype(np.float32)
-        aligned_df = aligned_df.ffill().fillna(0).astype(np.float32)
+        # 6. Handle Missing Values column by column to avoid massive copies
+        logger.info("Cleaning missing values...")
+        import gc
+        for col in normalized_df.columns:
+            normalized_df[col] = normalized_df[col].ffill().fillna(0).astype(np.float32)
+        
+        # Keep only necessary price columns for aligned_df (raw_data) to save RAM
+        price_cols = []
+        for asset in self.assets:
+            # Add basic OHLC if they exist
+            for suffix in ['close', 'low', 'high', 'open', 'atr_14']:
+                c = f"{asset}_{suffix}"
+                if c in aligned_df.columns:
+                    price_cols.append(c)
+        
+        # Subset aligned_df to save memory
+        aligned_df = aligned_df[price_cols].copy()
+        
+        for col in aligned_df.columns:
+            aligned_df[col] = aligned_df[col].ffill().fillna(0).astype(np.float32)
+        
+        gc.collect()
         
         logger.info(f"Preprocessing complete. Total features: {len(normalized_df.columns)}")
         return aligned_df, normalized_df
@@ -359,20 +379,27 @@ class FeatureEngine:
         # Add Global Features to normalization
         cols_to_normalize.extend(['risk_on_score', 'asset_dispersion', 'market_volatility'])
             
+        import gc
         for col in cols_to_normalize:
             if col in df.columns:
-                rolling_median = df[col].rolling(window=50).median()
-                rolling_q75 = df[col].rolling(window=50).quantile(0.75)
-                rolling_q25 = df[col].rolling(window=50).quantile(0.25)
-                iqr = rolling_q75 - rolling_q25
-                
-                # Avoid division by zero
+                # Rolling median
+                median = df[col].rolling(window=50).median()
+                # Interquartile range (IQR)
+                q75 = df[col].rolling(window=50).quantile(0.75)
+                q25 = df[col].rolling(window=50).quantile(0.25)
+                iqr = q75 - q25
                 iqr = iqr.replace(0, 1e-6)
                 
-                df[col] = (df[col] - rolling_median) / iqr
+                # Apply transformation
+                df[col] = (df[col] - median) / iqr
                 
                 # Clip outliers
                 df[col] = df[col].clip(-5, 5)
+                
+                # Explicitly delete intermediates and collect garbage occasionally
+                del median, q75, q25, iqr
+                if cols_to_normalize.index(col) % 10 == 0:
+                    gc.collect()
                 
         # Bounded features (0-1 or similar) don't need robust scaling, 
         # but we can center them or scale them to [-1, 1] if needed.
