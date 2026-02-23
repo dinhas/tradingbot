@@ -15,6 +15,7 @@ from Risklayer.sac_agent import SACAgent
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 class ReplayBuffer:
     def __init__(self, capacity: int):
         self.buffer = deque(maxlen=capacity)
@@ -30,23 +31,28 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
+
 def generate_synthetic_data(assets: list) -> dict:
     """Generates synthetic OHLCV data for testing/sanity purposes."""
     logger.info("Generating synthetic data since real data was not found...")
     data_dict = {}
-    dates = pd.date_range(start='2016-01-01', periods=5000, freq='5min')
+    dates = pd.date_range(start="2016-01-01", periods=5000, freq="5min")
     for asset in assets:
         # Simple random walk
         close = 1.1 + np.cumsum(np.random.normal(0, 0.0005, len(dates)))
-        df = pd.DataFrame({
-            'open': close,
-            'high': close + 0.0005,
-            'low': close - 0.0005,
-            'close': close,
-            'volume': np.random.randint(10, 100, len(dates))
-        }, index=dates)
+        df = pd.DataFrame(
+            {
+                "open": close,
+                "high": close + 0.0005,
+                "low": close - 0.0005,
+                "close": close,
+                "volume": np.random.randint(10, 100, len(dates)),
+            },
+            index=dates,
+        )
         data_dict[asset] = df
     return data_dict
+
 
 def train():
     # 1. Load Data
@@ -74,7 +80,7 @@ def train():
     final_df = pd.concat([aligned_df, feature_df], axis=1)
 
     # 4. Initialize Environment & Agent
-    env = TradingEnv(final_df, asset='EURUSD')
+    env = TradingEnv(final_df, asset="EURUSD")
     agent = SACAgent()
     memory = ReplayBuffer(config.BUFFER_SIZE)
 
@@ -90,7 +96,7 @@ def train():
         done = False
 
         while not done:
-            if total_steps < 1000: # Warmup
+            if total_steps < 1000:  # Warmup
                 action = env.action_space.sample()
             else:
                 action = agent.select_action(state)
@@ -111,14 +117,19 @@ def train():
                 updates += 1
 
             if total_steps % 1000 == 0:
-                logger.info(f"Step: {total_steps}, Equity: {info['equity']:.2f}, DD: {info['drawdown']:.2%}")
+                logger.info(
+                    f"Step: {total_steps}, Equity: {info['equity']:.2f}, DD: {info['drawdown']:.2%}"
+                )
                 # Print a sample trade if it just closed
                 if not env.position:
                     logger.info(f"Sample Trade Result - Equity: {info['equity']:.2f}")
 
-        logger.info(f"Episode Finished. Reward: {episode_reward:.2f}, Steps: {episode_steps}, Avg Reward: {episode_reward/episode_steps:.4f}")
+        logger.info(
+            f"Episode Finished. Reward: {episode_reward:.2f}, Steps: {episode_steps}, Avg Reward: {episode_reward / episode_steps:.4f}"
+        )
 
     logger.info("Training Complete.")
+
 
 if __name__ == "__main__":
     train()
