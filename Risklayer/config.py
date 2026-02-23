@@ -1,6 +1,10 @@
 import os
 from dataclasses import dataclass, field
 from typing import List
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared_config import NORMALIZATION_WINDOW, MIN_HISTORY_CANDLES, MAX_HISTORY_BUFFER
 
 
 @dataclass
@@ -39,6 +43,13 @@ class Config:
     # Labeling Parameters
     ATR_REVERSAL_MULTIPLIER: float = 3.0  # X * ATR for structural reversal
 
+    # Feature Engineering (must match live execution)
+    NORMALIZATION_WINDOW: int = (
+        NORMALIZATION_WINDOW  # Rolling window for robust scaling
+    )
+    MIN_HISTORY_CANDLES: int = MIN_HISTORY_CANDLES  # Min candles needed for features
+    MAX_HISTORY_BUFFER: int = MAX_HISTORY_BUFFER  # Max candles to keep in buffer
+
     # RL Hyperparameters
     STATE_DIM: int = (
         36  # 30 features + ATR + Vol % + Equity % + DD % + Margin + PosState
@@ -68,12 +79,15 @@ class Config:
     TERMINATION_PENALTY: float = -100.0
 
     # Entry Filter Thresholds
-    META_SCORE_THRESHOLD: float = 0.55
+    META_SCORE_THRESHOLD: float = 0.78
     QUALITY_SCORE_THRESHOLD: float = 0.30
 
     # Training Parameters
     TOTAL_STEPS: int = 2_000_000
     SEED: int = 42
+    NUM_ENVS: int = 16
+    USE_GPU: bool = True
+    UPDATES_PER_STEP: int = 4
 
 
 config = Config()
