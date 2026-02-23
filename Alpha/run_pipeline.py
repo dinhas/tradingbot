@@ -160,7 +160,7 @@ def train_model(features_path, labels_path, model_save_path):
     )
     
     # 2. Initialize Model and Multi-GPU
-    model = AlphaSLModel(input_dim=40, hidden_dim=256, num_res_blocks=4).to(DEVICE)
+    model = AlphaSLModel(input_dim=X_train.shape[1], hidden_dim=256, num_res_blocks=4).to(DEVICE)
     if NUM_GPUS > 1:
         logger.info(f"Using {NUM_GPUS} GPUs for training.")
         model = torch.nn.DataParallel(model)

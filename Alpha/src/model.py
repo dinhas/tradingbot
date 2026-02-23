@@ -41,7 +41,7 @@ class ResidualBlock(nn.Module):
         return residual + out
 
 class AlphaSLModel(nn.Module):
-    def __init__(self, input_dim: int = 40, hidden_dim: int = 256, num_res_blocks: int = 4):
+    def __init__(self, input_dim: int = 30, hidden_dim: int = 256, num_res_blocks: int = 4):
         super(AlphaSLModel, self).__init__()
 
         # Initial Projection
@@ -107,8 +107,8 @@ def multi_head_loss(outputs, targets, weights=(2.0, 0.5, 1.0), alpha_dir=None):
     return total_loss, (loss_dir, loss_qual, loss_meta)
 
 if __name__ == "__main__":
-    model = AlphaSLModel(input_dim=40)
-    x = torch.randn(16, 40)
+    model = AlphaSLModel(input_dim=30)
+    x = torch.randn(16, 30)
     dir_logits, qual, meta = model(x)
     print(f"Direction logits shape: {dir_logits.shape}")
     print(f"Quality shape: {qual.shape}")

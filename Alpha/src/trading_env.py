@@ -71,7 +71,7 @@ class TradingEnv(gym.Env):
             low=-1, high=1, shape=(self.action_dim,), dtype=np.float32
         )
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(40,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(self.feature_engine.observation_dim,), dtype=np.float32
         )
 
         # State Variables
@@ -89,7 +89,7 @@ class TradingEnv(gym.Env):
         """Creates a single matrix containing all asset observations for batch inference."""
         n_steps = len(self.processed_data)
         self.master_obs_matrix = np.zeros(
-            (n_steps, len(self.assets) * 40), dtype=np.float32
+            (n_steps, len(self.assets) * self.feature_engine.observation_dim), dtype=np.float32
         )
 
         # Use vectorized extraction for each asset
@@ -97,7 +97,9 @@ class TradingEnv(gym.Env):
             obs_matrix = self.feature_engine.get_observation_vectorized(
                 self.processed_data, asset
             )
-            self.master_obs_matrix[:, i * 40 : (i + 1) * 40] = obs_matrix
+            start = i * self.feature_engine.observation_dim
+            end = (i + 1) * self.feature_engine.observation_dim
+            self.master_obs_matrix[:, start:end] = obs_matrix
 
     def _cache_data_arrays(self):
         self.close_arrays = {

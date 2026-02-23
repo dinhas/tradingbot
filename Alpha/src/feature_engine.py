@@ -12,56 +12,42 @@ class FeatureEngine:
         self._define_feature_names()
 
     def _define_feature_names(self):
-        """Defines the list of 40 features (25 asset-specific + 15 global/market)."""
-        # 1. Per-Asset Features (29 -> 25 kept + 11 new = 36? No, wait.)
-        # Let's count properly based on the plan.
-        # EXISTING KEPT (25? No, let's look at previous list)
-        # Previous list had 25 per asset + 15 global = 40 total? No, that's not right.
-        # standard obs was 40 dims.
-        # Let's align with the user request: "TOTAL FEATURES REMAINS AT 40"
-        
-        # New Feature Set:
-        # A. Multi-Timeframe (3)
-        # B. Volume & Order Flow (3)
-        # C. Price Action Structure (3)
-        # D. Momentum Edge (2)
-        # Total New = 11
-        
-        # Existing to Keep (29)
-        # Price: close, return_1, return_12 (3)
-        # Volatility: atr_14, atr_ratio, bb_position (3)
-        # Trend: ema_9, ema_21, price_vs_ema9, ema9_vs_ema21 (4)
-        # Momentum: rsi_14, macd_hist (2)
-        # Volume: volume_ratio (1)
-        # Cross-Asset: corr_basket, rel_strength, corr_xauusd, corr_eurusd, rank (5)
-        # Global/Time: risk_on_score, asset_dispersion, market_volatility (3)
-        # Time: hour_sin, hour_cos, day_sin, day_cos (4)
-        # Session: session_asian, session_london, session_ny, session_overlap (4)
-        
-        # Total = 11 (new) + 29 (kept) = 40. Perfect.
-        
+        """Defines the curated observation feature set after pruning redundant/noisy signals."""
         self.feature_names = [
-            # --- EXISTING (13) ---
+            # Core price/volatility/trend/momentum/liquidity
             "close", "return_1", "return_12",
-            "atr_14", "atr_ratio", "bb_position",
-            "ema_9", "ema_21", "price_vs_ema9", "ema9_vs_ema21",
-            "rsi_14", "macd_hist",
-            "volume_ratio",
-            
-            # --- NEW PRO FEATURES (11) ---
-            "htf_ema_alignment", "htf_rsi_divergence", "swing_structure_proximity", # HTF (3)
-            "vwap_deviation", "delta_pressure", "volume_shock",                     # Volume (3)
-            "volatility_squeeze", "wick_rejection_strength", "breakout_velocity",   # PA (3)
-            "rsi_slope_divergence", "macd_momentum_quality",                        # Momentum (2)
-            
-            # --- CROSS-ASSET (5) ---
-            "corr_basket", "rel_strength", "corr_xauusd", "corr_eurusd", "rank",
-            
-            # --- GLOBAL / TIME (11) ---
+            "atr_ratio", "bb_position",
+            "price_vs_ema9", "ema9_vs_ema21",
+            "rsi_14", "macd_hist", "volume_ratio",
+            # Alpha structure / confidence
+            "htf_ema_alignment", "htf_rsi_divergence", "swing_structure_proximity",
+            "vwap_deviation", "delta_pressure", "volume_shock",
+            "volatility_squeeze", "breakout_velocity", "macd_momentum_quality",
+            # Cross-asset / regime
+            "corr_basket", "rel_strength", "rank",
+            # Global regime + session state
             "risk_on_score", "asset_dispersion", "market_volatility",
-            "hour_sin", "hour_cos", "day_sin", "day_cos",
-            "session_asian", "session_london", "session_ny", "session_overlap"
+            "hour_sin", "hour_cos",
+            "session_asian", "session_london", "session_ny"
         ]
+
+
+    @property
+    def observation_dim(self):
+        return len(self.feature_names)
+
+    def _asset_feature_columns(self, asset):
+        global_cols = {
+            'risk_on_score', 'asset_dispersion', 'market_volatility',
+            'hour_sin', 'hour_cos', 'session_asian', 'session_london', 'session_ny'
+        }
+        cols = []
+        for feature in self.feature_names:
+            if feature in global_cols:
+                cols.append(feature)
+            else:
+                cols.append(f"{asset}_{feature}")
+        return cols
 
     def preprocess_data(self, data_dict):
         """
@@ -409,138 +395,24 @@ class FeatureEngine:
 
     def get_observation_vectorized(self, df, asset):
         """
-        Efficiently extracts the 40-feature observation matrix for all rows.
-        Returns: np.array of shape (len(df), 40)
+        Efficiently extracts the observation matrix for all rows.
+        Returns: np.array of shape (len(df), observation_dim)
         """
-        obs_cols = []
-        
-        # --- 1. EXISTING FEATURES (13) ---
-        obs_cols.extend([f"{asset}_close", f"{asset}_return_1", f"{asset}_return_12"])
-        obs_cols.extend([f"{asset}_atr_14", f"{asset}_atr_ratio", f"{asset}_bb_position"])
-        obs_cols.extend([f"{asset}_ema_9", f"{asset}_ema_21", f"{asset}_price_vs_ema9", f"{asset}_ema9_vs_ema21"])
-        obs_cols.extend([f"{asset}_rsi_14", f"{asset}_macd_hist"])
-        obs_cols.append(f"{asset}_volume_ratio")
-        
-        # --- 2. NEW PRO FEATURES (11) ---
-        obs_cols.extend([
-            f"{asset}_htf_ema_alignment", f"{asset}_htf_rsi_divergence", f"{asset}_swing_structure_proximity",
-            f"{asset}_vwap_deviation", f"{asset}_delta_pressure", f"{asset}_volume_shock",
-            f"{asset}_volatility_squeeze", f"{asset}_wick_rejection_strength", f"{asset}_breakout_velocity",
-            f"{asset}_rsi_slope_divergence", f"{asset}_macd_momentum_quality"
-        ])
-
-        # --- 3. CROSS-ASSET (5) ---
-        obs_cols.extend([f"{asset}_corr_basket", f"{asset}_rel_strength", f"{asset}_corr_xauusd", f"{asset}_corr_eurusd", f"{asset}_rank"])
-
-        # --- 4. GLOBAL / TIME (11) ---
-        # Note: These columns are directly in the DF, not asset-prefixed
-        obs_cols.extend([
-            'risk_on_score', 'asset_dispersion', 'market_volatility',
-            'hour_sin', 'hour_cos', 'day_sin', 'day_cos',
-            'session_asian', 'session_london', 'session_ny', 'session_overlap'
-        ])
-        
-        # Extract and handle missing columns with zeros
-        existing_cols = [c for c in obs_cols if c in df.columns]
-        missing_cols = [c for c in obs_cols if c not in df.columns]
-        
-        data = df[existing_cols].values
-        if missing_cols:
-            zeros = np.zeros((len(df), len(missing_cols)))
-            # We need to ensure the order matches obs_cols
-            # This is a bit more complex, let's just reindex the df
-            data = df.reindex(columns=obs_cols, fill_value=0).values
-            
+        obs_cols = self._asset_feature_columns(asset)
+        data = df.reindex(columns=obs_cols, fill_value=0).values
         return data.astype(np.float32)
 
     def get_observation(self, current_step_data, portfolio_state, asset):
         """
-        Constructs the 40-feature observation vector for a single asset.
+        Constructs the observation vector for a single asset.
         Args:
             current_step_data: Row of preprocessed DataFrame for current timestamp.
-            portfolio_state: Dictionary containing portfolio metrics (UNUSED NOW - kept for API compat).
+            portfolio_state: Dictionary containing portfolio metrics (unused, kept for API compat).
             asset: The specific asset to get features for.
         Returns:
-            np.array: 40-dimensional vector.
+            np.array: feature vector.
         """
         obs = []
-        
-        # --- 1. EXISTING FEATURES (13) ---
-        # Price (3)
-        obs.extend([
-            current_step_data.get(f"{asset}_close", 0),
-            current_step_data.get(f"{asset}_return_1", 0),
-            current_step_data.get(f"{asset}_return_12", 0)
-        ])
-        # Volatility (3)
-        obs.extend([
-            current_step_data.get(f"{asset}_atr_14", 0),
-            current_step_data.get(f"{asset}_atr_ratio", 0),
-            current_step_data.get(f"{asset}_bb_position", 0)
-        ])
-        # Trend (4)
-        obs.extend([
-            current_step_data.get(f"{asset}_ema_9", 0),
-            current_step_data.get(f"{asset}_ema_21", 0),
-            current_step_data.get(f"{asset}_price_vs_ema9", 0),
-            current_step_data.get(f"{asset}_ema9_vs_ema21", 0)
-        ])
-        # Momentum (2)
-        obs.extend([
-            current_step_data.get(f"{asset}_rsi_14", 0),
-            current_step_data.get(f"{asset}_macd_hist", 0)
-        ])
-        # Volume (1)
-        obs.append(current_step_data.get(f"{asset}_volume_ratio", 0))
-        
-        # --- 2. NEW PRO FEATURES (11) ---
-        obs.extend([
-            current_step_data.get(f"{asset}_htf_ema_alignment", 0),
-            current_step_data.get(f"{asset}_htf_rsi_divergence", 0),
-            current_step_data.get(f"{asset}_swing_structure_proximity", 0),
-            current_step_data.get(f"{asset}_vwap_deviation", 0),
-            current_step_data.get(f"{asset}_delta_pressure", 0),
-            current_step_data.get(f"{asset}_volume_shock", 0),
-            current_step_data.get(f"{asset}_volatility_squeeze", 0),
-            current_step_data.get(f"{asset}_wick_rejection_strength", 0),
-            current_step_data.get(f"{asset}_breakout_velocity", 0),
-            current_step_data.get(f"{asset}_rsi_slope_divergence", 0),
-            current_step_data.get(f"{asset}_macd_momentum_quality", 0)
-        ])
-
-        # --- 3. CROSS-ASSET (5) ---
-        obs.extend([
-            current_step_data.get(f"{asset}_corr_basket", 0),
-            current_step_data.get(f"{asset}_rel_strength", 0),
-            current_step_data.get(f"{asset}_corr_xauusd", 0),
-            current_step_data.get(f"{asset}_corr_eurusd", 0),
-            current_step_data.get(f"{asset}_rank", 0)
-        ])
-
-        # --- 4. GLOBAL / TIME (11) ---
-        # Market Regime (3)
-        gbp_ret = current_step_data.get("GBPUSD_return_1", 0)
-        xau_ret = current_step_data.get("XAUUSD_return_1", 0)
-        risk_on = (gbp_ret + xau_ret) / 2
-        
-        returns = [current_step_data.get(f"{a}_return_1", 0) for a in self.assets]
-        dispersion = np.std(returns) if returns else 0
-        
-        atrs = [current_step_data.get(f"{a}_atr_ratio", 0) for a in self.assets]
-        mkt_vol = np.mean(atrs) if atrs else 0
-        
-        obs.extend([risk_on, dispersion, mkt_vol])
-        
-        # Session (8)
-        obs.extend([
-            current_step_data.get('hour_sin', 0),
-            current_step_data.get('hour_cos', 0),
-            current_step_data.get('day_sin', 0),
-            current_step_data.get('day_cos', 0),
-            current_step_data.get('session_asian', 0),
-            current_step_data.get('session_london', 0),
-            current_step_data.get('session_ny', 0),
-            current_step_data.get('session_overlap', 0)
-        ])
-        
+        for col in self._asset_feature_columns(asset):
+            obs.append(current_step_data.get(col, 0))
         return np.array(obs, dtype=np.float32)
