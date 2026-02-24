@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
+from torch.cuda.amp import autocast, GradScaler
 import numpy as np
 from typing import Tuple
 import logging
@@ -112,6 +113,8 @@ class SACAgent:
         self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=config.LR)
 
+        self.scaler = GradScaler(enabled=self.device.type == "cuda")
+
     def select_action(self, state, evaluate=False):
         if isinstance(state, np.ndarray) and len(state.shape) > 1:
             state = torch.FloatTensor(state).to(self.device)
@@ -133,58 +136,79 @@ class SACAgent:
             memory.sample(batch_size=batch_size)
         )
 
-        state_batch = torch.FloatTensor(state_batch).to(self.device)
-        next_state_batch = torch.FloatTensor(next_state_batch).to(self.device)
-        action_batch = torch.FloatTensor(action_batch).to(self.device)
-        reward_batch = torch.FloatTensor(reward_batch).to(self.device).unsqueeze(1)
-        mask_batch = torch.FloatTensor(mask_batch).to(self.device).unsqueeze(1)
+        state_batch = torch.as_tensor(
+            state_batch, device=self.device, dtype=torch.float32
+        )
+        next_state_batch = torch.as_tensor(
+            next_state_batch, device=self.device, dtype=torch.float32
+        )
+        action_batch = torch.as_tensor(
+            action_batch, device=self.device, dtype=torch.float32
+        )
+        reward_batch = torch.as_tensor(
+            reward_batch, device=self.device, dtype=torch.float32
+        ).unsqueeze(1)
+        mask_batch = torch.as_tensor(
+            mask_batch, device=self.device, dtype=torch.float32
+        ).unsqueeze(1)
 
-        with torch.no_grad():
-            next_state_action, next_state_log_pi, _ = self.actor.sample(
-                next_state_batch
-            )
-            qf1_next_target = self.critic1_target(next_state_batch, next_state_action)
-            qf2_next_target = self.critic2_target(next_state_batch, next_state_action)
-            min_qf_next_target = (
-                torch.min(qf1_next_target, qf2_next_target)
-                - self.alpha * next_state_log_pi
-            )
-            next_q_value = reward_batch + mask_batch * config.GAMMA * (
-                min_qf_next_target
-            )
+        with autocast(enabled=self.device.type == "cuda"):
+            with torch.no_grad():
+                next_state_action, next_state_log_pi, _ = self.actor.sample(
+                    next_state_batch
+                )
+                qf1_next_target = self.critic1_target(
+                    next_state_batch, next_state_action
+                )
+                qf2_next_target = self.critic2_target(
+                    next_state_batch, next_state_action
+                )
+                min_qf_next_target = (
+                    torch.min(qf1_next_target, qf2_next_target)
+                    - self.alpha * next_state_log_pi
+                )
+                next_q_value = reward_batch + mask_batch * config.GAMMA * (
+                    min_qf_next_target
+                )
 
-        qf1 = self.critic1(state_batch, action_batch)
-        qf2 = self.critic2(state_batch, action_batch)
-        qf1_loss = F.mse_loss(qf1, next_q_value)
-        qf2_loss = F.mse_loss(qf2, next_q_value)
-        q_loss = qf1_loss + qf2_loss
+            qf1 = self.critic1(state_batch, action_batch)
+            qf2 = self.critic2(state_batch, action_batch)
+            qf1_loss = F.mse_loss(qf1, next_q_value)
+            qf2_loss = F.mse_loss(qf2, next_q_value)
+            q_loss = qf1_loss + qf2_loss
 
         self.critic_optimizer.zero_grad()
-        q_loss.backward()
+        self.scaler.scale(q_loss).backward()
+        self.scaler.unscale_(self.critic_optimizer)
         torch.nn.utils.clip_grad_norm_(
             list(self.critic1.parameters()) + list(self.critic2.parameters()), 1.0
         )
-        self.critic_optimizer.step()
+        self.scaler.step(self.critic_optimizer)
 
-        # Actor Update
-        pi, log_pi, _ = self.actor.sample(state_batch)
-        qf1_pi = self.critic1(state_batch, pi)
-        qf2_pi = self.critic2(state_batch, pi)
-        min_qf_pi = torch.min(qf1_pi, qf2_pi)
+        with autocast(enabled=self.device.type == "cuda"):
+            pi, log_pi, _ = self.actor.sample(state_batch)
+            qf1_pi = self.critic1(state_batch, pi)
+            qf2_pi = self.critic2(state_batch, pi)
+            min_qf_pi = torch.min(qf1_pi, qf2_pi)
 
-        policy_loss = ((self.alpha * log_pi) - min_qf_pi).mean()
+            policy_loss = ((self.alpha * log_pi) - min_qf_pi).mean()
 
         self.actor_optimizer.zero_grad()
-        policy_loss.backward()
+        self.scaler.scale(policy_loss).backward()
+        self.scaler.unscale_(self.actor_optimizer)
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
-        self.actor_optimizer.step()
+        self.scaler.step(self.actor_optimizer)
 
-        # Alpha Update
-        alpha_loss = -(self.log_alpha * (log_pi + self.target_entropy).detach()).mean()
+        with autocast(enabled=self.device.type == "cuda"):
+            alpha_loss = -(
+                self.log_alpha * (log_pi + self.target_entropy).detach()
+            ).mean()
 
         self.alpha_optimizer.zero_grad()
-        alpha_loss.backward()
-        self.alpha_optimizer.step()
+        self.scaler.scale(alpha_loss).backward()
+        self.scaler.step(self.alpha_optimizer)
+
+        self.scaler.update()
 
         self.alpha = self.log_alpha.exp()
 
@@ -192,13 +216,11 @@ class SACAgent:
             self._soft_update(self.critic1_target, self.critic1, config.TAU)
             self._soft_update(self.critic2_target, self.critic2, config.TAU)
 
-        # Calculate Explained Variance
-        y_true = next_q_value.detach().cpu().numpy().flatten()
-        y_pred = qf1.detach().cpu().numpy().flatten()
-        var_y = np.var(y_true)
-        explained_var = (
-            1.0 - np.var(y_true - y_pred) / (var_y + 1e-8) if var_y > 0 else 0.0
-        )
+        with torch.no_grad():
+            explained_var = 1.0 - torch.var(next_q_value - qf1) / (
+                torch.var(next_q_value) + 1e-8
+            )
+            explained_var = explained_var.item() if torch.var(next_q_value) > 0 else 0.0
 
         metrics = {
             "q1_loss": qf1_loss.item(),

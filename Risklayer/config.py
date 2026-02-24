@@ -83,11 +83,13 @@ class Config:
     QUALITY_SCORE_THRESHOLD: float = 0.30
 
     # Training Parameters
-    TOTAL_STEPS: int = 2_000_000
+    TOTAL_STEPS: int = 1_000_000
     SEED: int = 42
-    NUM_ENVS: int = 16
+    NUM_ENVS: int = 8
     USE_GPU: bool = True
-    UPDATES_PER_STEP: int = 4
+    UPDATES_PER_STEP: int = 2
+    LOG_INTERVAL: int = 10000
+    METRICS_LOG_INTERVAL: int = 100
 
 
 config = Config()

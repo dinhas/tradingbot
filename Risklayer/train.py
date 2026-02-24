@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import random
 import torch
 import logging
 import os
@@ -32,19 +31,37 @@ logger = setup_logging()
 
 
 class ReplayBuffer:
-    def __init__(self, capacity: int):
-        self.buffer = deque(maxlen=capacity)
+    def __init__(self, capacity: int, state_dim: int, action_dim: int):
+        self.capacity = capacity
+        self.state_buf = np.zeros((capacity, state_dim), dtype=np.float32)
+        self.action_buf = np.zeros((capacity, action_dim), dtype=np.float32)
+        self.reward_buf = np.zeros((capacity, 1), dtype=np.float32)
+        self.next_state_buf = np.zeros((capacity, state_dim), dtype=np.float32)
+        self.mask_buf = np.zeros((capacity, 1), dtype=np.float32)
+        self.ptr = 0
+        self.size = 0
 
-    def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
+    def push(self, state, action, reward, next_state, mask):
+        self.state_buf[self.ptr] = state
+        self.action_buf[self.ptr] = action
+        self.reward_buf[self.ptr, 0] = reward
+        self.next_state_buf[self.ptr] = next_state
+        self.mask_buf[self.ptr, 0] = mask
+        self.ptr = (self.ptr + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch_size: int):
-        batch = random.sample(self.buffer, batch_size)
-        state, action, reward, next_state, done = map(np.stack, zip(*batch))
-        return state, action, reward, next_state, done
+        idx = np.random.randint(0, self.size, batch_size)
+        return (
+            self.state_buf[idx],
+            self.action_buf[idx],
+            self.reward_buf[idx],
+            self.next_state_buf[idx],
+            self.mask_buf[idx],
+        )
 
     def __len__(self):
-        return len(self.buffer)
+        return self.size
 
 
 class MetricsLogger:
@@ -105,6 +122,8 @@ class MetricsLogger:
             )
 
     def log_training_step(self, step: int, metrics: dict):
+        if step % config.METRICS_LOG_INTERVAL != 0:
+            return
         with open(self.metrics_file, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(
@@ -264,7 +283,7 @@ def train():
     states = [env.reset()[0] for env in envs]
 
     agent = SACAgent()
-    memory = ReplayBuffer(config.BUFFER_SIZE)
+    memory = ReplayBuffer(config.BUFFER_SIZE, config.STATE_DIM, config.ACTION_DIM)
     metrics_logger = MetricsLogger()
 
     logger.info("Configuration:")
@@ -278,7 +297,7 @@ def train():
 
     total_steps = 0
     updates = 0
-    log_interval = 5000
+    log_interval = config.LOG_INTERVAL
     start_time = datetime.now()
     last_metrics = {}
 
@@ -286,18 +305,32 @@ def train():
         states_ready = np.array(states)
         actions = agent.select_action(states_ready)
 
+        next_states = []
+        rewards = []
+        masks = []
+        infos = []
+        terminated_mask = []
+
         for i, env in enumerate(envs):
-            action = actions[i]
-            next_state, reward, terminated, truncated, info = env.step(action)
+            next_state, reward, terminated, truncated, info = env.step(actions[i])
+            next_states.append(next_state)
+            rewards.append(reward)
+            masks.append(0 if terminated else 1)
+            infos.append(info)
+            terminated_mask.append(terminated or truncated)
 
-            mask = 1 if not terminated else 0
-            memory.push(states[i], action, reward, next_state, mask)
+        for i in range(len(envs)):
+            memory.push(states[i], actions[i], rewards[i], next_states[i], masks[i])
 
-            if terminated or truncated:
+            if terminated_mask[i]:
                 episode_stats = metrics_logger.log_episode(
-                    total_steps, reward, 1, info["equity"] - config.INITIAL_EQUITY, info
+                    total_steps,
+                    rewards[i],
+                    1,
+                    infos[i]["equity"] - config.INITIAL_EQUITY,
+                    infos[i],
                 )
-                state, _ = env.reset()
+                state, _ = envs[i].reset()
                 states[i] = state
 
                 if metrics_logger.total_episodes % 100 == 0:
@@ -305,15 +338,15 @@ def train():
                         "Episode %d | Steps: %d | Reward: %.2f | Win Rate: %.2f%% | Profit Factor: %.2f | Sharpe: %.2f",
                         metrics_logger.total_episodes,
                         total_steps,
-                        reward,
+                        rewards[i],
                         episode_stats["win_rate"] * 100,
                         episode_stats["profit_factor"],
                         episode_stats["sharpe"],
                     )
             else:
-                states[i] = next_state
+                states[i] = next_states[i]
 
-            total_steps += 1
+        total_steps += num_envs
 
         if len(memory) > config.BATCH_SIZE:
             for _ in range(config.UPDATES_PER_STEP):
