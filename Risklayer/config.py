@@ -55,13 +55,13 @@ class Config:
         36  # 30 features + ATR + Vol % + Equity % + DD % + Margin + PosState
     )
     ACTION_DIM: int = 3
-    HIDDEN_DIM: int = 512
-    LR: float = 1e-4
+    HIDDEN_DIM: int = 1024
+    LR: float = 3e-4
     GAMMA: float = 0.995
-    TAU: float = 0.001
+    TAU: float = 0.005
     ALPHA: float = 0.2  # Entropy coefficient
-    BATCH_SIZE: int = 1024
-    BUFFER_SIZE: int = 1_000_000
+    BATCH_SIZE: int = 4096
+    BUFFER_SIZE: int = 500_000
 
     # Action Ranges
     SL_MULTIPLIER_MIN: float = 0.5
@@ -85,11 +85,11 @@ class Config:
     # Training Parameters
     TOTAL_STEPS: int = 1_000_000
     SEED: int = 42
-    NUM_ENVS: int = 8
+    NUM_ENVS: int = 16
     USE_GPU: bool = True
-    UPDATES_PER_STEP: int = 2
-    LOG_INTERVAL: int = 10000
-    METRICS_LOG_INTERVAL: int = 100
+    UPDATES_PER_STEP: int = 1
+    LOG_INTERVAL: int = 5000
+    METRICS_LOG_INTERVAL: int = 500
 
 
 config = Config()

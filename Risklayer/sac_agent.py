@@ -120,21 +120,28 @@ class SACAgent:
 
         self.scaler = GradScaler("cuda", enabled=self.device.type == "cuda")
 
+        if hasattr(torch, "compile") and self.device.type == "cuda":
+            self.actor = torch.compile(self.actor, mode="reduce-overhead")
+            self.critic1 = torch.compile(self.critic1, mode="reduce-overhead")
+            self.critic2 = torch.compile(self.critic2, mode="reduce-overhead")
+            logger.info("Models compiled with torch.compile")
+
     def select_action(self, state, evaluate=False):
-        if isinstance(state, np.ndarray) and len(state.shape) > 1:
-            state = torch.FloatTensor(state).to(self.device)
-            if evaluate is False:
-                action, _, _ = self.actor.sample(state)
+        with torch.no_grad():
+            if isinstance(state, np.ndarray) and len(state.shape) > 1:
+                state = torch.from_numpy(state).float().to(self.device)
+                if evaluate is False:
+                    action, _, _ = self.actor.sample(state)
+                else:
+                    _, _, action = self.actor.sample(state)
+                return action.cpu().numpy()
             else:
-                _, _, action = self.actor.sample(state)
-            return action.detach().cpu().numpy()
-        else:
-            state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
-            if evaluate is False:
-                action, _, _ = self.actor.sample(state)
-            else:
-                _, _, action = self.actor.sample(state)
-            return action.detach().cpu().numpy()[0]
+                state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
+                if evaluate is False:
+                    action, _, _ = self.actor.sample(state)
+                else:
+                    _, _, action = self.actor.sample(state)
+                return action.cpu().numpy()[0]
 
     def update_parameters(self, memory, batch_size, updates):
         state_batch, action_batch, reward_batch, next_state_batch, mask_batch = (

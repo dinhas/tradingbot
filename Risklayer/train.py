@@ -298,26 +298,28 @@ def train():
     total_steps = 0
     updates = 0
     log_interval = config.LOG_INTERVAL
+    checkpoint_interval = 50000
     start_time = datetime.now()
     last_metrics = {}
+    best_sharpe = -float("inf")
 
     while total_steps < config.TOTAL_STEPS:
-        states_ready = np.array(states)
+        states_ready = np.array(states, dtype=np.float32)
         actions = agent.select_action(states_ready)
 
-        next_states = []
-        rewards = []
-        masks = []
+        next_states = np.zeros((num_envs, config.STATE_DIM), dtype=np.float32)
+        rewards = np.zeros(num_envs, dtype=np.float32)
+        masks = np.zeros(num_envs, dtype=np.float32)
+        terminated_mask = np.zeros(num_envs, dtype=bool)
         infos = []
-        terminated_mask = []
 
         for i, env in enumerate(envs):
             next_state, reward, terminated, truncated, info = env.step(actions[i])
-            next_states.append(next_state)
-            rewards.append(reward)
-            masks.append(0 if terminated else 1)
+            next_states[i] = next_state
+            rewards[i] = reward
+            masks[i] = 0 if terminated else 1
+            terminated_mask[i] = terminated or truncated
             infos.append(info)
-            terminated_mask.append(terminated or truncated)
 
         for i in range(len(envs)):
             memory.push(states[i], actions[i], rewards[i], next_states[i], masks[i])
@@ -353,7 +355,8 @@ def train():
                 last_metrics = agent.update_parameters(
                     memory, config.BATCH_SIZE, updates
                 )
-                metrics_logger.log_training_step(total_steps, last_metrics)
+                if updates % 10 == 0:
+                    metrics_logger.log_training_step(total_steps, last_metrics)
                 updates += 1
 
         if total_steps % log_interval == 0:
@@ -389,6 +392,58 @@ def train():
                 )
             logger.info("-" * 60)
 
+        if total_steps % checkpoint_interval == 0 and total_steps > 0:
+            model_dir = os.path.join("Risklayer", "models")
+            os.makedirs(model_dir, exist_ok=True)
+            checkpoint_path = os.path.join(
+                model_dir, f"risk_model_rl_step{total_steps}.pth"
+            )
+
+            current_summary = metrics_logger.get_summary()
+            current_sharpe = current_summary.get("sharpe", 0) if current_summary else 0
+            torch.save(
+                {
+                    "actor": agent.actor.state_dict(),
+                    "critic1": agent.critic1.state_dict(),
+                    "critic2": agent.critic2.state_dict(),
+                    "shared_encoder": agent.shared_encoder.state_dict(),
+                    "log_alpha": agent.log_alpha.detach().cpu(),
+                    "total_steps": total_steps,
+                    "sharpe": current_sharpe,
+                    "config": {
+                        "state_dim": config.STATE_DIM,
+                        "action_dim": config.ACTION_DIM,
+                        "hidden_dim": config.HIDDEN_DIM,
+                    },
+                },
+                checkpoint_path,
+            )
+            logger.info(
+                "Checkpoint saved: %s (Sharpe: %.2f)", checkpoint_path, current_sharpe
+            )
+
+            if current_sharpe > best_sharpe:
+                best_sharpe = current_sharpe
+                best_path = os.path.join(model_dir, "risk_model_rl_best.pth")
+                torch.save(
+                    {
+                        "actor": agent.actor.state_dict(),
+                        "critic1": agent.critic1.state_dict(),
+                        "critic2": agent.critic2.state_dict(),
+                        "shared_encoder": agent.shared_encoder.state_dict(),
+                        "log_alpha": agent.log_alpha.detach().cpu(),
+                        "total_steps": total_steps,
+                        "sharpe": current_sharpe,
+                        "config": {
+                            "state_dim": config.STATE_DIM,
+                            "action_dim": config.ACTION_DIM,
+                            "hidden_dim": config.HIDDEN_DIM,
+                        },
+                    },
+                    best_path,
+                )
+                logger.info("New best model saved! Sharpe: %.2f", current_sharpe)
+
     logger.info("=" * 60)
     logger.info("Training Complete")
     logger.info(
@@ -405,6 +460,28 @@ def train():
         final_summary["sharpe"],
         final_summary["max_drawdown"] * 100,
     )
+
+    model_dir = os.path.join("Risklayer", "models")
+    os.makedirs(model_dir, exist_ok=True)
+    model_path = os.path.join(model_dir, "risk_model_rl_final.pth")
+
+    torch.save(
+        {
+            "actor": agent.actor.state_dict(),
+            "critic1": agent.critic1.state_dict(),
+            "critic2": agent.critic2.state_dict(),
+            "shared_encoder": agent.shared_encoder.state_dict(),
+            "log_alpha": agent.log_alpha.detach().cpu(),
+            "total_steps": total_steps,
+            "config": {
+                "state_dim": config.STATE_DIM,
+                "action_dim": config.ACTION_DIM,
+                "hidden_dim": config.HIDDEN_DIM,
+            },
+        },
+        model_path,
+    )
+    logger.info("Model saved to: %s", model_path)
     logger.info("Logs saved to: %s", metrics_logger.log_dir)
     logger.info("=" * 60)
 
