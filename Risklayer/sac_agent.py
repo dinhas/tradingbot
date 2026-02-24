@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 import numpy as np
 from typing import Tuple
 import logging
@@ -102,8 +102,13 @@ class SACAgent:
         self.critic1_target.load_state_dict(self.critic1.state_dict())
         self.critic2_target.load_state_dict(self.critic2.state_dict())
 
+        critic_params = list(self.critic1.parameters())
+        for p in self.critic2.parameters():
+            if id(p) not in [id(param) for param in critic_params]:
+                critic_params.append(p)
+
         self.critic_optimizer = torch.optim.Adam(
-            list(self.critic1.parameters()) + list(self.critic2.parameters()),
+            critic_params,
             lr=config.LR,
         )
 
@@ -113,7 +118,7 @@ class SACAgent:
         self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=config.LR)
 
-        self.scaler = GradScaler(enabled=self.device.type == "cuda")
+        self.scaler = GradScaler("cuda", enabled=self.device.type == "cuda")
 
     def select_action(self, state, evaluate=False):
         if isinstance(state, np.ndarray) and len(state.shape) > 1:
@@ -147,12 +152,12 @@ class SACAgent:
         )
         reward_batch = torch.as_tensor(
             reward_batch, device=self.device, dtype=torch.float32
-        ).unsqueeze(1)
+        )
         mask_batch = torch.as_tensor(
             mask_batch, device=self.device, dtype=torch.float32
-        ).unsqueeze(1)
+        )
 
-        with autocast(enabled=self.device.type == "cuda"):
+        with autocast("cuda", enabled=self.device.type == "cuda"):
             with torch.no_grad():
                 next_state_action, next_state_log_pi, _ = self.actor.sample(
                     next_state_batch
@@ -181,11 +186,11 @@ class SACAgent:
         self.scaler.scale(q_loss).backward()
         self.scaler.unscale_(self.critic_optimizer)
         torch.nn.utils.clip_grad_norm_(
-            list(self.critic1.parameters()) + list(self.critic2.parameters()), 1.0
+            self.critic_optimizer.param_groups[0]["params"], 1.0
         )
         self.scaler.step(self.critic_optimizer)
 
-        with autocast(enabled=self.device.type == "cuda"):
+        with autocast("cuda", enabled=self.device.type == "cuda"):
             pi, log_pi, _ = self.actor.sample(state_batch)
             qf1_pi = self.critic1(state_batch, pi)
             qf2_pi = self.critic2(state_batch, pi)
@@ -199,7 +204,7 @@ class SACAgent:
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
         self.scaler.step(self.actor_optimizer)
 
-        with autocast(enabled=self.device.type == "cuda"):
+        with autocast("cuda", enabled=self.device.type == "cuda"):
             alpha_loss = -(
                 self.log_alpha * (log_pi + self.target_entropy).detach()
             ).mean()
