@@ -55,13 +55,12 @@ class Config:
         36  # 30 features + ATR + Vol % + Equity % + DD % + Margin + PosState
     )
     ACTION_DIM: int = 3
-    HIDDEN_DIM: int = 512
     LR: float = 3e-4
     WEIGHT_DECAY: float = 1e-4
     GAMMA: float = 0.99
     TAU: float = 0.005
     ALPHA: float = 0.2  # Entropy coefficient
-    BATCH_SIZE: int = 4096
+    BATCH_SIZE: int = 512
     BUFFER_SIZE: int = 500_000
 
     # Action Ranges

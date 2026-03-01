@@ -13,25 +13,30 @@ logger = logging.getLogger(__name__)
 
 
 class SharedEncoder(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int):
+    def __init__(self, input_dim: int):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.Linear(input_dim, 256),
+            nn.LayerNorm(256),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
             nn.ReLU(),
         )
+        self.output_dim = 64
 
     def forward(self, x):
         return self.net(x)
 
 
 class Actor(nn.Module):
-    def __init__(self, encoder: SharedEncoder, hidden_dim: int, action_dim: int):
+    def __init__(self, input_dim: int, action_dim: int):
         super().__init__()
-        self.encoder = encoder
+        self.encoder = SharedEncoder(input_dim)
+        hidden_dim = self.encoder.output_dim
         self.mean_linear = nn.Linear(hidden_dim, action_dim)
         self.log_std_linear = nn.Linear(hidden_dim, action_dim)
 
@@ -57,9 +62,10 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-    def __init__(self, encoder: SharedEncoder, hidden_dim: int, action_dim: int):
+    def __init__(self, input_dim: int, action_dim: int):
         super().__init__()
-        self.encoder = encoder
+        self.encoder = SharedEncoder(input_dim)
+        hidden_dim = self.encoder.output_dim
         self.q_linear = nn.Linear(hidden_dim + action_dim, 1)
 
     def forward(self, state, action):
@@ -73,38 +79,20 @@ class SACAgent:
         self.device = torch.device("cpu")
         logger.info("Using CPU (hardcoded)")
 
-        self.shared_encoder = SharedEncoder(config.STATE_DIM, config.HIDDEN_DIM).to(
-            self.device
-        )
-
-        self.actor = Actor(
-            self.shared_encoder, config.HIDDEN_DIM, config.ACTION_DIM
-        ).to(self.device)
+        self.actor = Actor(config.STATE_DIM, config.ACTION_DIM).to(self.device)
         self.actor_optimizer = torch.optim.Adam(
             self.actor.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY
         )
 
-        self.critic1 = Critic(
-            self.shared_encoder, config.HIDDEN_DIM, config.ACTION_DIM
-        ).to(self.device)
-        self.critic2 = Critic(
-            self.shared_encoder, config.HIDDEN_DIM, config.ACTION_DIM
-        ).to(self.device)
-        self.critic1_target = Critic(
-            self.shared_encoder, config.HIDDEN_DIM, config.ACTION_DIM
-        ).to(self.device)
-        self.critic2_target = Critic(
-            self.shared_encoder, config.HIDDEN_DIM, config.ACTION_DIM
-        ).to(self.device)
+        self.critic1 = Critic(config.STATE_DIM, config.ACTION_DIM).to(self.device)
+        self.critic2 = Critic(config.STATE_DIM, config.ACTION_DIM).to(self.device)
+        self.critic1_target = Critic(config.STATE_DIM, config.ACTION_DIM).to(self.device)
+        self.critic2_target = Critic(config.STATE_DIM, config.ACTION_DIM).to(self.device)
 
         self.critic1_target.load_state_dict(self.critic1.state_dict())
         self.critic2_target.load_state_dict(self.critic2.state_dict())
 
-        critic_params = list(self.critic1.parameters())
-        for p in self.critic2.parameters():
-            if id(p) not in [id(param) for param in critic_params]:
-                critic_params.append(p)
-
+        critic_params = list(self.critic1.parameters()) + list(self.critic2.parameters())
         self.critic_optimizer = torch.optim.Adam(
             critic_params, lr=config.LR, weight_decay=config.WEIGHT_DECAY
         )
