@@ -70,12 +70,8 @@ class Critic(nn.Module):
 
 class SACAgent:
     def __init__(self):
-        if config.USE_GPU and torch.cuda.is_available():
-            self.device = torch.device("cuda")
-            logger.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
-        else:
-            self.device = torch.device("cpu")
-            logger.info("Using CPU")
+        self.device = torch.device("cpu")
+        logger.info("Using CPU (hardcoded)")
 
         self.shared_encoder = SharedEncoder(config.STATE_DIM, config.HIDDEN_DIM).to(
             self.device
@@ -84,7 +80,9 @@ class SACAgent:
         self.actor = Actor(
             self.shared_encoder, config.HIDDEN_DIM, config.ACTION_DIM
         ).to(self.device)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.LR)
+        self.actor_optimizer = torch.optim.Adam(
+            self.actor.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY
+        )
 
         self.critic1 = Critic(
             self.shared_encoder, config.HIDDEN_DIM, config.ACTION_DIM
@@ -108,8 +106,7 @@ class SACAgent:
                 critic_params.append(p)
 
         self.critic_optimizer = torch.optim.Adam(
-            critic_params,
-            lr=config.LR,
+            critic_params, lr=config.LR, weight_decay=config.WEIGHT_DECAY
         )
 
         self.target_entropy = -torch.prod(

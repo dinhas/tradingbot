@@ -55,9 +55,10 @@ class Config:
         36  # 30 features + ATR + Vol % + Equity % + DD % + Margin + PosState
     )
     ACTION_DIM: int = 3
-    HIDDEN_DIM: int = 1024
+    HIDDEN_DIM: int = 512
     LR: float = 3e-4
-    GAMMA: float = 0.995
+    WEIGHT_DECAY: float = 1e-4
+    GAMMA: float = 0.99
     TAU: float = 0.005
     ALPHA: float = 0.2  # Entropy coefficient
     BATCH_SIZE: int = 4096
@@ -86,7 +87,7 @@ class Config:
     TOTAL_STEPS: int = 1_000_000
     SEED: int = 42
     NUM_ENVS: int = 16
-    USE_GPU: bool = True
+    USE_GPU: bool = False
     UPDATES_PER_STEP: int = 1
     LOG_INTERVAL: int = 5000
     METRICS_LOG_INTERVAL: int = 500

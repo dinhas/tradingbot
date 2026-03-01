@@ -226,7 +226,7 @@ class MetricsLogger:
 
 def generate_synthetic_data(assets: list) -> dict:
     data_dict = {}
-    dates = pd.date_range(start="2016-01-01", periods=5000, freq="5min")
+    dates = pd.date_range(start="2016-01-01", periods=20000, freq="5min")
     for asset in assets:
         close = 1.1 + np.cumsum(np.random.normal(0, 0.0005, len(dates)))
         df = pd.DataFrame(
@@ -274,7 +274,6 @@ def train():
     logger.info("Structural labels applied")
 
     final_df = pd.concat([aligned_df, feature_df], axis=1)
-    final_df = final_df.iloc[-5000:]
     logger.info("Final dataset: %d rows", len(final_df))
 
     num_envs = config.NUM_ENVS
@@ -302,6 +301,11 @@ def train():
     start_time = datetime.now()
     last_metrics = {}
     best_sharpe = -float("inf")
+
+    # Define model saving paths relative to this script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    model_dir = os.path.join(script_dir, "models")
+    os.makedirs(model_dir, exist_ok=True)
 
     while total_steps < config.TOTAL_STEPS:
         states_ready = np.array(states, dtype=np.float32)
@@ -393,8 +397,6 @@ def train():
             logger.info("-" * 60)
 
         if total_steps % checkpoint_interval == 0 and total_steps > 0:
-            model_dir = os.path.join("Risklayer", "models")
-            os.makedirs(model_dir, exist_ok=True)
             checkpoint_path = os.path.join(
                 model_dir, f"risk_model_rl_step{total_steps}.pth"
             )
@@ -461,8 +463,6 @@ def train():
         final_summary["max_drawdown"] * 100,
     )
 
-    model_dir = os.path.join("Risklayer", "models")
-    os.makedirs(model_dir, exist_ok=True)
     model_path = os.path.join(model_dir, "risk_model_rl_final.pth")
 
     torch.save(
