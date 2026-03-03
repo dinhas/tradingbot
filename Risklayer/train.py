@@ -12,6 +12,7 @@ from Risklayer.feature_engineering import FeatureEngine
 from Risklayer.peak_labeling import StructuralLabeler
 from Risklayer.trading_env import TradingEnv
 from Risklayer.sac_agent import SACAgent
+from Risklayer.generate_alpha_signals import generate_signals
 
 
 def setup_logging(log_dir: str = "logs"):
@@ -249,36 +250,51 @@ def train():
     logger.info("SAC Training Started")
     logger.info("=" * 60)
 
-    loader = DataLoader()
-    if not os.path.exists(config.DATA_DIR) or not os.listdir(config.DATA_DIR):
-        logger.warning("Data directory not found, generating synthetic data")
-        data_dict = generate_synthetic_data(config.ASSETS)
-    else:
+    # Path to pre-calculated alpha signals
+    signals_path = os.path.join("data", "alpha_signals_2016_2025.parquet")
+    
+    if not os.path.exists(signals_path):
+        logger.info("Signals file not found. Running automatic dataset generation...")
+        try:
+            generate_signals()
+        except Exception as e:
+            logger.error(f"Failed to generate signals: {e}")
+    
+    if os.path.exists(signals_path):
+        logger.info(f"Loading REAL alpha signals from {signals_path}...")
+        signals_df = pd.read_parquet(signals_path)
+        
+        # We also need the full data to simulate trades
+        loader = DataLoader()
         data_dict = loader.load_all_data()
-        logger.info("Loaded data from %s", config.DATA_DIR)
+        full_df = loader.align_data(data_dict)
+        
+        # Pre-calculate features for full_df (needed for observation vector)
+        fe = FeatureEngine()
+        feature_df = fe.calculate_features(full_df)
+        full_df = pd.concat([full_df, feature_df], axis=1)
+        
+        # Now full_df has everything. We tell the Env to only pick entries from signals_df.
+        signal_indices = signals_df.index.unique()
+        final_df = full_df # Use full_df but tell env to only start on signal indices
+    else:
+        logger.warning(f"Signals file {signals_path} not found. Using fallback logic.")
+        # ... (rest of old logic)
+        loader = DataLoader()
+        data_dict = loader.load_all_data()
+        full_df = loader.align_data(data_dict)
+        fe = FeatureEngine()
+        feature_df = fe.calculate_features(full_df)
+        final_df = pd.concat([full_df, feature_df], axis=1)
+        signal_indices = None # Synthetic mode
 
-    if not data_dict:
-        logger.warning("No data found, generating synthetic data")
-        data_dict = generate_synthetic_data(config.ASSETS)
-
-    aligned_df = loader.align_data(data_dict)
-    logger.info("Aligned data shape: %s", aligned_df.shape)
-
-    fe = FeatureEngine()
-    feature_df = fe.calculate_features(aligned_df)
-    logger.info("Features calculated: %d columns", len(feature_df.columns))
-
-    labeler = StructuralLabeler(reversal_multiplier=config.ATR_REVERSAL_MULTIPLIER)
-    for asset in config.ASSETS:
-        aligned_df = labeler.label_data(aligned_df, asset)
-    logger.info("Structural labels applied")
-
-    final_df = pd.concat([aligned_df, feature_df], axis=1)
     logger.info("Final dataset: %d rows", len(final_df))
 
     num_envs = config.NUM_ENVS
     logger.info("Initializing %d parallel environments", num_envs)
-    envs = [TradingEnv(final_df.copy(), asset="EURUSD") for _ in range(num_envs)]
+    
+    # Pass signals_df to TradingEnv if available to use real meta/quality scores
+    envs = [TradingEnv(final_df.copy(), asset=None, signals_df=signals_df if 'signals_df' in locals() else None) for _ in range(num_envs)]
     states = [env.reset()[0] for env in envs]
 
     agent = SACAgent()
@@ -408,7 +424,6 @@ def train():
                     "actor": agent.actor.state_dict(),
                     "critic1": agent.critic1.state_dict(),
                     "critic2": agent.critic2.state_dict(),
-                    "shared_encoder": agent.shared_encoder.state_dict(),
                     "log_alpha": agent.log_alpha.detach().cpu(),
                     "total_steps": total_steps,
                     "sharpe": current_sharpe,
@@ -432,7 +447,6 @@ def train():
                         "actor": agent.actor.state_dict(),
                         "critic1": agent.critic1.state_dict(),
                         "critic2": agent.critic2.state_dict(),
-                        "shared_encoder": agent.shared_encoder.state_dict(),
                         "log_alpha": agent.log_alpha.detach().cpu(),
                         "total_steps": total_steps,
                         "sharpe": current_sharpe,
@@ -470,7 +484,6 @@ def train():
             "actor": agent.actor.state_dict(),
             "critic1": agent.critic1.state_dict(),
             "critic2": agent.critic2.state_dict(),
-            "shared_encoder": agent.shared_encoder.state_dict(),
             "log_alpha": agent.log_alpha.detach().cpu(),
             "total_steps": total_steps,
             "config": {
