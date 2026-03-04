@@ -104,7 +104,7 @@ class RLRiskDatasetGenerator:
         self.atr_ma_arrays = {}
 
         for asset in self.assets:
-            hour_idx = self.env.raw_data[asset].index.hour.values
+            hour_idx = self.env.raw_data[f"{asset}_close"].index.hour.values
             self.hour_arrays[asset] = hour_idx.astype(np.float32)
 
             atr = self.atr_arrays[asset]

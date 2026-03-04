@@ -1,23 +1,31 @@
-remote: Enumerating objects: 4, done.
-remote: Counting objects: 100% (4/4), done.
-remote: Total 4 (delta 3), reused 4 (delta 3), pack-reused 0 (from 0)
-Unpacking objects: 100% (4/4), 390 bytes | 390.00 KiB/s, done.
-From https://github.com/dinhas/TradingBot
-   0a4d472..abac117  V2.9       -> origin/V2.9
-Updating 0a4d472..abac117
-Fast-forward
- RiskLayer/src/__init__.py | 0
- 1 file changed, 0 insertions(+), 0 deletions(-)
- create mode 100644 RiskLayer/src/__init__.py
-2026-03-04 08:03:49,969 - INFO - --- Starting: RL Data Generation ---
-2026-03-04 08:03:49,970 - INFO - Running: /usr/bin/python3 /kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py --data ../data --output /kaggle/working/TradingBot/RiskLayer/data/rl_risk_dataset.parquet
+2026-03-04 08:10:07,290 - INFO - Preprocessing complete. Total features: 176
 Traceback (most recent call last):
-  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 18, in <module>
-    from Risklayer.src.frozen_alpha_env import TradingEnv
-ModuleNotFoundError: No module named 'Risklayer'
-2026-03-04 08:03:52,974 - ERROR - Command failed with exit code 1
+  File "/usr/local/lib/python3.12/dist-packages/pandas/core/indexes/base.py", line 3805, in get_loc
+    return self._engine.get_loc(casted_key)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "index.pyx", line 167, in pandas._libs.index.IndexEngine.get_loc
+  File "index.pyx", line 196, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7081, in pandas._libs.hashtable.PyObjectHashTable.get_item
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7089, in pandas._libs.hashtable.PyObjectHashTable.get_item
+KeyError: 'EURUSD'
 
+The above exception was the direct cause of the following exception:
 
-same thing. the command I use in the cell is 
-
-"!cd TradingBot && git pull && python RiskLayer/run_pipeline_rl.py"
+Traceback (most recent call last):
+  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 374, in <module>
+    main()
+  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 368, in main
+    generator = RLRiskDatasetGenerator(args.model, args.data)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 100, in __init__
+    self._compute_hour_and_atr_ma()
+  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 107, in _compute_hour_and_atr_ma
+    hour_idx = self.env.raw_data[asset].index.hour.values
+               ~~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/pandas/core/frame.py", line 4102, in __getitem__
+    indexer = self.columns.get_loc(key)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/pandas/core/indexes/base.py", line 3812, in get_loc
+    raise KeyError(key) from err
+KeyError: 'EURUSD'
+2026-03-04 08:10:08,119 - ERROR - Command failed with exit code 1
