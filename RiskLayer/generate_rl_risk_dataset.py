@@ -15,7 +15,7 @@ sys.path.append(PROJECT_ROOT)
 
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.feature_engine import FeatureEngine as AlphaFeatureEngine
-from Risklayer.src.frozen_alpha_env import TradingEnv
+from RiskLayer.src.frozen_alpha_env import TradingEnv
 
 if not hasattr(np, "_core"):
     sys.modules["numpy._core"] = np.core
