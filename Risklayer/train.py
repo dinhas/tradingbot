@@ -4,16 +4,15 @@ import torch
 import logging
 import os
 import csv
+import time
 from datetime import datetime
 from collections import deque
 from Risklayer.config import config
 from Risklayer.data_loader import DataLoader
 from Risklayer.feature_engineering import FeatureEngine
-from Risklayer.peak_labeling import StructuralLabeler
-from Risklayer.trading_env import TradingEnv
 from Risklayer.sac_agent import SACAgent
 from Risklayer.generate_alpha_signals import generate_signals
-
+from Risklayer.vectorized_env import VectorizedTradingEnv
 
 def setup_logging(log_dir: str = "logs"):
     os.makedirs(log_dir, exist_ok=True)
@@ -27,9 +26,7 @@ def setup_logging(log_dir: str = "logs"):
     )
     return logging.getLogger(__name__)
 
-
 logger = setup_logging()
-
 
 class ReplayBuffer:
     def __init__(self, capacity: int, state_dim: int, action_dim: int):
@@ -42,14 +39,32 @@ class ReplayBuffer:
         self.ptr = 0
         self.size = 0
 
-    def push(self, state, action, reward, next_state, mask):
-        self.state_buf[self.ptr] = state
-        self.action_buf[self.ptr] = action
-        self.reward_buf[self.ptr, 0] = reward
-        self.next_state_buf[self.ptr] = next_state
-        self.mask_buf[self.ptr, 0] = mask
-        self.ptr = (self.ptr + 1) % self.capacity
-        self.size = min(self.size + 1, self.capacity)
+    def push_batch(self, states, actions, rewards, next_states, masks):
+        num = states.shape[0]
+        if self.ptr + num <= self.capacity:
+            self.state_buf[self.ptr : self.ptr + num] = states
+            self.action_buf[self.ptr : self.ptr + num] = actions
+            self.reward_buf[self.ptr : self.ptr + num, 0] = rewards
+            self.next_state_buf[self.ptr : self.ptr + num] = next_states
+            self.mask_buf[self.ptr : self.ptr + num, 0] = masks
+            self.ptr = (self.ptr + num) % self.capacity
+        else:
+            # Wrap around logic (split into two parts)
+            part1 = self.capacity - self.ptr
+            self.state_buf[self.ptr : self.capacity] = states[:part1]
+            self.action_buf[self.ptr : self.capacity] = actions[:part1]
+            self.reward_buf[self.ptr : self.capacity, 0] = rewards[:part1]
+            self.next_state_buf[self.ptr : self.capacity] = next_states[:part1]
+            self.mask_buf[self.ptr : self.capacity, 0] = masks[:part1]
+
+            part2 = num - part1
+            self.state_buf[0 : part2] = states[part1:]
+            self.action_buf[0 : part2] = actions[part1:]
+            self.reward_buf[0 : part2, 0] = rewards[part1:]
+            self.next_state_buf[0 : part2] = next_states[part1:]
+            self.mask_buf[0 : part2, 0] = masks[part1:]
+            self.ptr = part2
+        self.size = min(self.size + num, self.capacity)
 
     def sample(self, batch_size: int):
         idx = np.random.randint(0, self.size, batch_size)
@@ -64,24 +79,18 @@ class ReplayBuffer:
     def __len__(self):
         return self.size
 
-
 class MetricsLogger:
     def __init__(self, log_dir: str = "logs", window_size: int = 100):
         self.log_dir = log_dir
         os.makedirs(log_dir, exist_ok=True)
-
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.metrics_file = os.path.join(log_dir, f"metrics_{timestamp}.csv")
         self.episodes_file = os.path.join(log_dir, f"episodes_{timestamp}.csv")
-
         self._init_csv_files()
-
         self.episode_rewards = deque(maxlen=window_size)
-        self.episode_lengths = deque(maxlen=window_size)
         self.episode_pnls = deque(maxlen=window_size)
         self.win_history = deque(maxlen=window_size)
         self.drawdowns = deque(maxlen=window_size)
-
         self.total_episodes = 0
         self.total_trades = 0
         self.wins = 0
@@ -89,415 +98,118 @@ class MetricsLogger:
     def _init_csv_files(self):
         with open(self.metrics_file, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "step",
-                    "q1_loss",
-                    "q2_loss",
-                    "q1_mean",
-                    "q2_mean",
-                    "target_q_mean",
-                    "actor_loss",
-                    "policy_entropy",
-                    "alpha",
-                    "explained_variance",
-                    "mean_action",
-                    "action_std",
-                ]
-            )
+            writer.writerow(["step", "q1_loss", "q2_loss", "actor_loss", "alpha", "sharpe"])
 
-        with open(self.episodes_file, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "episode",
-                    "total_steps",
-                    "reward",
-                    "length",
-                    "pnl",
-                    "win_rate",
-                    "max_dd",
-                    "sharpe",
-                    "profit_factor",
-                ]
-            )
-
-    def log_training_step(self, step: int, metrics: dict):
-        if step % config.METRICS_LOG_INTERVAL != 0:
-            return
+    def log_training_step(self, step: int, metrics: dict, sharpe: float):
+        if step % config.METRICS_LOG_INTERVAL != 0: return
         with open(self.metrics_file, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(
-                [
-                    step,
-                    f"{metrics.get('q1_loss', 0):.6f}",
-                    f"{metrics.get('q2_loss', 0):.6f}",
-                    f"{metrics.get('q1_mean', 0):.4f}",
-                    f"{metrics.get('q2_mean', 0):.4f}",
-                    f"{metrics.get('target_q_mean', 0):.4f}",
-                    f"{metrics.get('actor_loss', 0):.6f}",
-                    f"{metrics.get('policy_entropy', 0):.4f}",
-                    f"{metrics.get('alpha', 0):.4f}",
-                    f"{metrics.get('explained_variance', 0):.4f}",
-                    f"{metrics.get('mean_action', 0):.4f}",
-                    f"{metrics.get('action_std', 0):.4f}",
-                ]
-            )
+            writer.writerow([step, f"{metrics.get('q1_loss', 0):.6f}", f"{metrics.get('q2_loss', 0):.6f}", f"{metrics.get('actor_loss', 0):.6f}", f"{metrics.get('alpha', 0):.4f}", f"{sharpe:.4f}"])
 
-    def log_episode(
-        self,
-        total_steps: int,
-        reward: float,
-        length: int,
-        equity_delta: float,
-        info: dict,
-    ):
+    def log_episode(self, reward: float, equity_delta: float, drawdown: float):
         self.episode_rewards.append(reward)
-        self.episode_lengths.append(length)
         self.episode_pnls.append(equity_delta)
         self.win_history.append(1 if equity_delta > 0 else 0)
-        self.drawdowns.append(info.get("drawdown", 0))
-
+        self.drawdowns.append(drawdown)
         self.total_episodes += 1
-        if equity_delta > 0:
-            self.wins += 1
-
-        win_rate = self.wins / self.total_episodes
-        sharpe = self._calc_sharpe()
-        profit_factor = self._calc_profit_factor()
-        max_dd = max(self.drawdowns) if self.drawdowns else 0
-
-        with open(self.episodes_file, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [
-                    self.total_episodes,
-                    total_steps,
-                    f"{reward:.4f}",
-                    length,
-                    f"{equity_delta:.4f}",
-                    f"{win_rate:.4f}",
-                    f"{max_dd:.4f}",
-                    f"{sharpe:.4f}",
-                    f"{profit_factor:.4f}",
-                ]
-            )
-
-        return {
-            "win_rate": win_rate,
-            "sharpe": sharpe,
-            "profit_factor": profit_factor,
-            "max_dd": max_dd,
-        }
+        if equity_delta > 0: self.wins += 1
 
     def _calc_sharpe(self) -> float:
-        if len(self.episode_pnls) < 2:
-            return 0.0
+        if len(self.episode_pnls) < 2: return 0.0
         returns = np.array(self.episode_pnls)
         avg = np.mean(returns)
         std = np.std(returns)
-        if std < 1e-9:
-            return 0.0
+        if std < 1e-9: return 0.0
         return (avg / std) * np.sqrt(252)
 
-    def _calc_profit_factor(self) -> float:
-        if not self.episode_pnls:
-            return 0.0
-        pnls = np.array(self.episode_pnls)
-        pos = pnls[pnls > 0].sum()
-        neg = abs(pnls[pnls < 0].sum())
-        if neg < 1e-9:
-            return float("inf") if pos > 0 else 0.0
-        return pos / neg
-
     def get_summary(self) -> dict:
-        if not self.episode_rewards:
-            return {}
+        if not self.episode_rewards: return {"episodes": 0, "avg_reward": 0.0, "win_rate": 0.0, "sharpe": 0.0, "max_drawdown": 0.0}
+        return {"episodes": self.total_episodes, "avg_reward": np.mean(self.episode_rewards), "win_rate": np.mean(self.win_history), "sharpe": self._calc_sharpe(), "max_drawdown": max(self.drawdowns) if self.drawdowns else 0}
 
-        return {
-            "episodes": self.total_episodes,
-            "avg_reward": np.mean(self.episode_rewards),
-            "avg_length": np.mean(self.episode_lengths),
-            "win_rate": np.mean(self.win_history),
-            "sharpe": self._calc_sharpe(),
-            "profit_factor": self._calc_profit_factor(),
-            "max_drawdown": max(self.drawdowns) if self.drawdowns else 0,
-        }
-
-
-def generate_synthetic_data(assets: list) -> dict:
-    data_dict = {}
-    dates = pd.date_range(start="2016-01-01", periods=20000, freq="5min")
+def prepare_optimized_data(full_df, signals_df):
+    logger.info("Preparing optimized Numpy data structures...")
+    price_data = {}
+    assets = config.ASSETS
     for asset in assets:
-        close = 1.1 + np.cumsum(np.random.normal(0, 0.0005, len(dates)))
-        df = pd.DataFrame(
-            {
-                "open": close,
-                "high": close + 0.0005,
-                "low": close - 0.0005,
-                "close": close,
-                "volume": np.random.randint(10, 100, len(dates)),
-            },
-            index=dates,
-        )
-        data_dict[asset] = df
-    logger.info("Generated synthetic data for %d assets", len(assets))
-    return data_dict
+        atr_vals = full_df[f"{asset}_atr_14"] if f"{asset}_atr_14" in full_df else full_df.get(f"{asset}_atr", 0.0001)
+        vol_vals = full_df[f"{asset}_vol_percentile"] if f"{asset}_vol_percentile" in full_df else 0.5 * np.ones(len(full_df))
+        peak_vals = full_df[f"{asset}_peak_dist"] if f"{asset}_peak_dist" in full_df else np.zeros(len(full_df))
+        valley_vals = full_df[f"{asset}_valley_dist"] if f"{asset}_valley_dist" in full_df else np.zeros(len(full_df))
 
+        price_data[asset] = {
+            'high': full_df[f"{asset}_high"].values.astype(np.float32),
+            'low': full_df[f"{asset}_low"].values.astype(np.float32),
+            'close': full_df[f"{asset}_close"].values.astype(np.float32),
+            'atr': atr_vals.values.astype(np.float32) if hasattr(atr_vals, 'values') else atr_vals.astype(np.float32),
+            'vol': vol_vals.values.astype(np.float32) if hasattr(vol_vals, 'values') else vol_vals.astype(np.float32),
+            'peak': peak_vals.values.astype(np.float32) if hasattr(peak_vals, 'values') else peak_vals.astype(np.float32),
+            'valley': valley_vals.values.astype(np.float32) if hasattr(valley_vals, 'values') else valley_vals.astype(np.float32)
+        }
+    fe = FeatureEngine()
+    # Only keep signals that are present in full_df
+    valid_signals_mask = signals_df.index.isin(full_df.index)
+    valid_signals = signals_df[valid_signals_mask]
+
+    signal_assets = valid_signals['asset_name'].values
+    signal_indices = np.array([full_df.index.get_loc(idx) for idx in valid_signals.index])
+    signal_obs_static = np.zeros((len(valid_signals), 32), dtype=np.float32)
+    for asset in assets:
+        asset_mask = (signal_assets == asset)
+        if not asset_mask.any(): continue
+        asset_signal_indices = signal_indices[asset_mask]
+        cols = fe.get_observation_cols(asset)
+        existing_cols = [c for c in cols if c in full_df.columns]
+        signal_obs_static[asset_mask, :len(existing_cols)] = full_df[existing_cols].values[asset_signal_indices].astype(np.float32)
+        signal_obs_static[asset_mask, 30] = price_data[asset]['atr'][asset_signal_indices]
+        signal_obs_static[asset_mask, 31] = price_data[asset]['vol'][asset_signal_indices]
+    signal_data = {'assets': signal_assets, 'indices': signal_indices, 'obs_static': signal_obs_static, 'meta': valid_signals['meta_score'].values.astype(np.float32), 'qual': valid_signals['quality_score'].values.astype(np.float32), 'dir': valid_signals['pred_direction'].values.astype(np.int8)}
+    return price_data, signal_data
 
 def train():
     logger.info("=" * 60)
-    logger.info("SAC Training Started")
+    logger.info("SAC Training Started (Vectorized)")
     logger.info("=" * 60)
-
-    # Path to pre-calculated alpha signals
     signals_path = os.path.join("data", "alpha_signals_2016_2025.parquet")
+    if not os.path.exists(signals_path): generate_signals()
+    signals_df = pd.read_parquet(signals_path)
+    loader = DataLoader()
+    full_df = loader.align_data(loader.load_all_data())
+    price_data, signal_data = prepare_optimized_data(full_df, signals_df)
     
-    if not os.path.exists(signals_path):
-        logger.info("Signals file not found. Running automatic dataset generation...")
-        try:
-            generate_signals()
-        except Exception as e:
-            logger.error(f"Failed to generate signals: {e}")
-    
-    if os.path.exists(signals_path):
-        logger.info(f"Loading REAL alpha signals from {signals_path}...")
-        signals_df = pd.read_parquet(signals_path)
-        
-        # We also need the full data to simulate trades
-        loader = DataLoader()
-        data_dict = loader.load_all_data()
-        full_df = loader.align_data(data_dict)
-        
-        # Pre-calculate features for full_df (needed for observation vector)
-        fe = FeatureEngine()
-        feature_df = fe.calculate_features(full_df)
-        full_df = pd.concat([full_df, feature_df], axis=1)
-        
-        # Now full_df has everything. We tell the Env to only pick entries from signals_df.
-        signal_indices = signals_df.index.unique()
-        final_df = full_df # Use full_df but tell env to only start on signal indices
-    else:
-        logger.warning(f"Signals file {signals_path} not found. Using fallback logic.")
-        # ... (rest of old logic)
-        loader = DataLoader()
-        data_dict = loader.load_all_data()
-        full_df = loader.align_data(data_dict)
-        fe = FeatureEngine()
-        feature_df = fe.calculate_features(full_df)
-        final_df = pd.concat([full_df, feature_df], axis=1)
-        signal_indices = None # Synthetic mode
-
-    logger.info("Final dataset: %d rows", len(final_df))
-
     num_envs = config.NUM_ENVS
-    logger.info("Initializing %d parallel environments", num_envs)
-    
-    # Pass signals_df to TradingEnv if available to use real meta/quality scores
-    envs = [TradingEnv(final_df.copy(), asset=None, signals_df=signals_df if 'signals_df' in locals() else None) for _ in range(num_envs)]
-    states = [env.reset()[0] for env in envs]
-
+    v_env = VectorizedTradingEnv(num_envs, price_data, signal_data)
     agent = SACAgent()
     memory = ReplayBuffer(config.BUFFER_SIZE, config.STATE_DIM, config.ACTION_DIM)
     metrics_logger = MetricsLogger()
 
-    logger.info("Configuration:")
-    logger.info("  Total steps: %d", config.TOTAL_STEPS)
-    logger.info("  Batch size: %d", config.BATCH_SIZE)
-    logger.info("  Buffer size: %d", config.BUFFER_SIZE)
-    logger.info("  Updates per step: %d", config.UPDATES_PER_STEP)
-    logger.info("  Learning rate: %.2e", config.LR)
-    logger.info("  Gamma: %.4f", config.GAMMA)
-    logger.info("=" * 60)
-
-    total_steps = 0
-    updates = 0
-    log_interval = config.LOG_INTERVAL
-    checkpoint_interval = 50000
-    start_time = datetime.now()
+    total_steps, updates, start_time = 0, 0, time.time()
     last_metrics = {}
-    best_sharpe = -float("inf")
-
-    # Define model saving paths relative to this script
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    model_dir = os.path.join(script_dir, "models")
-    os.makedirs(model_dir, exist_ok=True)
 
     while total_steps < config.TOTAL_STEPS:
-        states_ready = np.array(states, dtype=np.float32)
-        actions = agent.select_action(states_ready)
+        states = v_env.get_observations()
+        actions = agent.select_action(states)
+        next_states, rewards, terminated, old_states, pnls, current_dds = v_env.step(actions)
 
-        next_states = np.zeros((num_envs, config.STATE_DIM), dtype=np.float32)
-        rewards = np.zeros(num_envs, dtype=np.float32)
-        masks = np.zeros(num_envs, dtype=np.float32)
-        terminated_mask = np.zeros(num_envs, dtype=bool)
-        infos = []
-
-        for i, env in enumerate(envs):
-            next_state, reward, terminated, truncated, info = env.step(actions[i])
-            next_states[i] = next_state
-            rewards[i] = reward
-            masks[i] = 0 if terminated else 1
-            terminated_mask[i] = terminated or truncated
-            infos.append(info)
-
-        for i in range(len(envs)):
-            memory.push(states[i], actions[i], rewards[i], next_states[i], masks[i])
-
-            if terminated_mask[i]:
-                episode_stats = metrics_logger.log_episode(
-                    total_steps,
-                    rewards[i],
-                    1,
-                    infos[i]["equity"] - config.INITIAL_EQUITY,
-                    infos[i],
-                )
-                state, _ = envs[i].reset()
-                states[i] = state
-
-                if metrics_logger.total_episodes % 100 == 0:
-                    logger.info(
-                        "Episode %d | Steps: %d | Reward: %.2f | Win Rate: %.2f%% | Profit Factor: %.2f | Sharpe: %.2f",
-                        metrics_logger.total_episodes,
-                        total_steps,
-                        rewards[i],
-                        episode_stats["win_rate"] * 100,
-                        episode_stats["profit_factor"],
-                        episode_stats["sharpe"],
-                    )
-            else:
-                states[i] = next_states[i]
+        memory.push_batch(old_states, actions, rewards, next_states, 1 - terminated.astype(np.float32))
+        for i in range(num_envs):
+            metrics_logger.log_episode(rewards[i], pnls[i], current_dds[i])
 
         total_steps += num_envs
-
         if len(memory) > config.BATCH_SIZE:
             for _ in range(config.UPDATES_PER_STEP):
-                last_metrics = agent.update_parameters(
-                    memory, config.BATCH_SIZE, updates
-                )
-                if updates % 10 == 0:
-                    metrics_logger.log_training_step(total_steps, last_metrics)
+                last_metrics = agent.update_parameters(memory, config.BATCH_SIZE, updates)
                 updates += 1
 
-        if total_steps % log_interval == 0:
-            elapsed = (datetime.now() - start_time).total_seconds()
+        if total_steps % config.LOG_INTERVAL == 0:
+            elapsed = time.time() - start_time
             steps_per_sec = total_steps / elapsed if elapsed > 0 else 0
             summary = metrics_logger.get_summary()
-
-            logger.info("-" * 60)
-            logger.info(
-                "Step: %d / %d (%.1f%%)",
-                total_steps,
-                config.TOTAL_STEPS,
-                total_steps / config.TOTAL_STEPS * 100,
-            )
-            logger.info(
-                "Speed: %.0f steps/sec | Elapsed: %.1f min", steps_per_sec, elapsed / 60
-            )
-            if summary:
-                logger.info(
-                    "Episodes: %d | Win Rate: %.2f%% | Profit Factor: %.2f | Sharpe: %.2f | Max DD: %.2f%%",
-                    summary["episodes"],
-                    summary["win_rate"] * 100,
-                    summary["profit_factor"],
-                    summary["sharpe"],
-                    summary["max_drawdown"] * 100,
-                )
-            if last_metrics:
-                logger.info(
-                    "Q1 Loss: %.4f | Q2 Loss: %.4f | Actor Loss: %.4f",
-                    last_metrics.get("q1_loss", 0),
-                    last_metrics.get("q2_loss", 0),
-                    last_metrics.get("actor_loss", 0),
-                )
-            logger.info("-" * 60)
-
-        if total_steps % checkpoint_interval == 0 and total_steps > 0:
-            checkpoint_path = os.path.join(
-                model_dir, f"risk_model_rl_step{total_steps}.pth"
-            )
-
-            current_summary = metrics_logger.get_summary()
-            current_sharpe = current_summary.get("sharpe", 0) if current_summary else 0
-            torch.save(
-                {
-                    "actor": agent.actor.state_dict(),
-                    "critic1": agent.critic1.state_dict(),
-                    "critic2": agent.critic2.state_dict(),
-                    "log_alpha": agent.log_alpha.detach().cpu(),
-                    "total_steps": total_steps,
-                    "sharpe": current_sharpe,
-                    "config": {
-                        "state_dim": config.STATE_DIM,
-                        "action_dim": config.ACTION_DIM,
-                        "hidden_dim": config.HIDDEN_DIM,
-                    },
-                },
-                checkpoint_path,
-            )
-            logger.info(
-                "Checkpoint saved: %s (Sharpe: %.2f)", checkpoint_path, current_sharpe
-            )
-
-            if current_sharpe > best_sharpe:
-                best_sharpe = current_sharpe
-                best_path = os.path.join(model_dir, "risk_model_rl_best.pth")
-                torch.save(
-                    {
-                        "actor": agent.actor.state_dict(),
-                        "critic1": agent.critic1.state_dict(),
-                        "critic2": agent.critic2.state_dict(),
-                        "log_alpha": agent.log_alpha.detach().cpu(),
-                        "total_steps": total_steps,
-                        "sharpe": current_sharpe,
-                        "config": {
-                            "state_dim": config.STATE_DIM,
-                            "action_dim": config.ACTION_DIM,
-                            "hidden_dim": config.HIDDEN_DIM,
-                        },
-                    },
-                    best_path,
-                )
-                logger.info("New best model saved! Sharpe: %.2f", current_sharpe)
+            logger.info(f"Step: {total_steps} | Speed: {steps_per_sec:.0f} steps/s | Win Rate: {summary['win_rate']*100:.1f}% | Sharpe: {summary['sharpe']:.2f}")
+            metrics_logger.log_training_step(total_steps, last_metrics, summary['sharpe'])
 
     logger.info("=" * 60)
-    logger.info("Training Complete")
-    logger.info(
-        "Total steps: %d | Total episodes: %d",
-        total_steps,
-        metrics_logger.total_episodes,
-    )
-
-    final_summary = metrics_logger.get_summary()
-    logger.info(
-        "Final Win Rate: %.2f%% | Final Profit Factor: %.2f | Final Sharpe: %.2f | Final Max DD: %.2f%%",
-        final_summary["win_rate"] * 100,
-        final_summary["profit_factor"],
-        final_summary["sharpe"],
-        final_summary["max_drawdown"] * 100,
-    )
-
-    model_path = os.path.join(model_dir, "risk_model_rl_final.pth")
-
-    torch.save(
-        {
-            "actor": agent.actor.state_dict(),
-            "critic1": agent.critic1.state_dict(),
-            "critic2": agent.critic2.state_dict(),
-            "log_alpha": agent.log_alpha.detach().cpu(),
-            "total_steps": total_steps,
-            "config": {
-                "state_dim": config.STATE_DIM,
-                "action_dim": config.ACTION_DIM,
-                "hidden_dim": config.HIDDEN_DIM,
-            },
-        },
-        model_path,
-    )
-    logger.info("Model saved to: %s", model_path)
-    logger.info("Logs saved to: %s", metrics_logger.log_dir)
+    logger.info(f"Training Complete. Total Time: {(time.time() - start_time)/60:.1f} min")
     logger.info("=" * 60)
-
 
 if __name__ == "__main__":
     train()
