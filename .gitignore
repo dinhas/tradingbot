@@ -101,3 +101,5 @@ coverage.xml
 
 *png
 *.json
+.gemini/
+gha-creds-*.json

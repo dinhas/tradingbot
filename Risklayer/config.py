@@ -85,7 +85,7 @@ class Config:
     # Training Parameters
     TOTAL_STEPS: int = 1_000_000
     SEED: int = 42
-    NUM_ENVS: int = 16
+    NUM_ENVS: int = 4
     USE_GPU: bool = False
     UPDATES_PER_STEP: int = 1
     LOG_INTERVAL: int = 5000

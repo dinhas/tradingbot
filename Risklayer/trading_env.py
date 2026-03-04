@@ -156,26 +156,46 @@ class TradingEnv(gym.Env):
         if peak_col in row:
             reward = self.reward_engine.calculate_structural_reward(row[peak_col], row[valley_col], tp_dist, sl_dist)
 
-        # 3. Simulation
-        trade_closed = False
-        while not trade_closed and self.current_index < len(self.df) - 1:
-            self.current_index += 1
-            row = self.df.iloc[self.current_index]
-            exit_price, _ = self.execution_engine.check_exit(
-                self.current_asset, self.position['side'], self.position['entry_price'],
-                self.position['sl'], self.position['tp'],
-                row[f"{self.current_asset}_high"], row[f"{self.current_asset}_low"], row[f"{self.current_asset}_close"],
-                row[atr_col] if atr_col in row else 0.0001
-            )
-            if exit_price:
-                pnl = self.execution_engine.calculate_pnl(self.current_asset, self.position['side'], self.position['entry_price'], exit_price, self.position['volume'])
-                self.equity += pnl
-                self.max_equity = max(self.max_equity, self.equity)
-                self.drawdown = (self.max_equity - self.equity) / (self.max_equity + 1e-8)
-                margin_usage = (self.position['volume'] * config.CONTRACT_SIZES.get(self.current_asset, 100000) * exit_price / 100) / (self.equity + 1e-8)
-                reward += self.reward_engine.calculate_trade_close_reward(pnl, self.initial_equity, self.drawdown, margin_usage)
-                self.position = None
-                trade_closed = True
+        # 3. Vectorized Simulation (Optimization)
+        lookahead_window = 2000
+        start_idx = self.current_index + 1
+        end_idx = min(start_idx + lookahead_window, len(self.df))
+        
+        future_df = self.df.iloc[start_idx:end_idx]
+        f_high = future_df[f"{self.current_asset}_high"].values
+        f_low = future_df[f"{self.current_asset}_low"].values
+        f_close = future_df[f"{self.current_asset}_close"].values
+        
+        if side == 'long':
+            sl_hits = np.where(f_low <= self.position['sl'])[0]
+            tp_hits = np.where(f_high >= self.position['tp'])[0]
+        else:
+            sl_hits = np.where(f_high >= self.position['sl'])[0]
+            tp_hits = np.where(f_low <= self.position['tp'])[0]
+            
+        first_sl = sl_hits[0] if len(sl_hits) > 0 else float('inf')
+        first_tp = tp_hits[0] if len(tp_hits) > 0 else float('inf')
+        
+        if first_sl == float('inf') and first_tp == float('inf'):
+            exit_idx_relative = len(future_df) - 1
+            exit_price = f_close[exit_idx_relative]
+        elif first_sl <= first_tp:
+            exit_idx_relative = int(first_sl)
+            exit_price = self.position['sl']
+        else:
+            exit_idx_relative = int(first_tp)
+            exit_price = self.position['tp']
+            
+        self.current_index = start_idx + exit_idx_relative
+        pnl = self.execution_engine.calculate_pnl(self.current_asset, self.position['side'], self.position['entry_price'], exit_price, self.position['volume'])
+        
+        self.equity += pnl
+        self.max_equity = max(self.max_equity, self.equity)
+        self.drawdown = (self.max_equity - self.equity) / (self.max_equity + 1e-8)
+        
+        margin_usage = (self.position['volume'] * config.CONTRACT_SIZES.get(self.current_asset, 100000) * exit_price / 100) / (self.equity + 1e-8)
+        reward += self.reward_engine.calculate_trade_close_reward(pnl, self.initial_equity, self.drawdown, margin_usage)
+        self.position = None
 
         terminated = self.equity <= 0.02 * self.initial_equity or self.current_index >= len(self.df) - 50
         if terminated and self.equity <= 0.02 * self.initial_equity:
