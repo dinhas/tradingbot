@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_command(command, description, cwd=None):
+def run_command(command, description, cwd=None, env=None):
     """Utility to run shell commands and log output."""
     logger.info(f"--- Starting: {description} ---")
     logger.info(f"Running: {' '.join(command)}")
@@ -32,6 +32,7 @@ def run_command(command, description, cwd=None):
             bufsize=1,
             universal_newlines=True,
             cwd=cwd,
+            env=env,
         )
 
         for line in process.stdout:
@@ -72,6 +73,11 @@ def main():
     args = parser.parse_args()
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(base_dir)
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = project_root
+
     data_dir = os.path.join(base_dir, "data")
     os.makedirs(data_dir, exist_ok=True)
 
@@ -97,7 +103,7 @@ def main():
         elif args.max_samples:
             gen_cmd.extend(["--max-samples", str(args.max_samples)])
 
-        run_command(gen_cmd, "RL Data Generation", cwd=base_dir)
+        run_command(gen_cmd, "RL Data Generation", cwd=base_dir, env=env)
     else:
         logger.info("Skipping Data Generation as requested.")
 
@@ -106,7 +112,7 @@ def main():
     train_script = os.path.join(base_dir, "train_risk_rl.py")
     train_cmd = [sys.executable, train_script]
 
-    run_command(train_cmd, "RL Model Training", cwd=base_dir)
+    run_command(train_cmd, "RL Model Training", cwd=base_dir, env=env)
 
     logger.info("==========================================")
     logger.info("Pipeline Execution Finished Successfully!")
