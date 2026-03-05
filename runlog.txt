@@ -1,37 +1,26 @@
-Already up to date.
-2026-03-05 01:46:13,538 - INFO - --- Starting: RL Data Generation ---
-2026-03-05 01:46:13,538 - INFO - Running: /usr/bin/python3 /kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py --data ../data --output /kaggle/working/TradingBot/RiskLayer/data/rl_risk_dataset.parquet
-Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
-Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
-See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
-2026-03-05 01:46:21,560 - INFO - Loading Alpha model...
-2026-03-05 01:46:21,650 - INFO - Loading data via TradingEnv...
-2026-03-05 01:46:21,938 - INFO - Loaded EURUSD from ../data/EURUSD_5m.parquet
-2026-03-05 01:46:21,982 - INFO - Loaded GBPUSD from ../data/GBPUSD_5m.parquet
-2026-03-05 01:46:22,028 - INFO - Loaded USDJPY from ../data/USDJPY_5m.parquet
-2026-03-05 01:46:22,067 - INFO - Loaded USDCHF from ../data/USDCHF_5m.parquet
-2026-03-05 01:46:22,120 - INFO - Loaded XAUUSD from ../data/XAUUSD_5m.parquet
-2026-03-05 01:48:41,918 - INFO - Aligning data for all assets...
-2026-03-05 01:48:42,352 - INFO - Calculating technical indicators for EURUSD...
-2026-03-05 01:48:44,774 - INFO - Calculating technical indicators for GBPUSD...
-2026-03-05 01:48:47,232 - INFO - Calculating technical indicators for USDJPY...
-2026-03-05 01:48:49,657 - INFO - Calculating technical indicators for USDCHF...
-2026-03-05 01:48:52,058 - INFO - Calculating technical indicators for XAUUSD...
-2026-03-05 01:48:54,509 - INFO - Calculating cross-asset features...
-2026-03-05 01:48:55,501 - INFO - Adding session and global features...
-2026-03-05 01:48:56,464 - INFO - Normalizing features (this may take a minute)...
-2026-03-05 01:49:59,745 - INFO - Preprocessing complete. Total features: 176
-2026-03-05 01:50:16,068 - INFO - Processing from 500 to 372754 (372254 rows)
+026-03-05 02:02:06,256 - INFO - Starting RL Risk Model Training on cpu with 1 GPUs
+2026-03-05 02:02:06,256 - INFO - Loading dataset from /kaggle/working/TradingBot/RiskLayer/data/rl_risk_dataset.parquet...
+2026-03-05 02:02:08,662 - INFO - Dataset loaded: 804174 samples
+2026-03-05 02:02:10,219 - INFO - Scaler saved to /kaggle/working/TradingBot/RiskLayer/models/rl_risk_scaler.pkl
 
-Generating dataset:   0%|          | 0/75 [00:00<?, ?it/s]
-Generating dataset:   0%|          | 0/75 [00:00<?, ?it/s]
+Epoch 1/100:   0%|          | 0/354 [00:00<?, ?it/s]/usr/local/lib/python3.12/dist-packages/torch/utils/data/dataloader.py:666: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.
+  warnings.warn(warn_msg)
+
+Epoch 1/100:   0%|          | 0/354 [00:00<?, ?it/s]
 Traceback (most recent call last):
-  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 374, in <module>
-    main()
-  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 370, in main
-    generator.generate_dataset(args.output, args.max_samples)
-  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 250, in generate_dataset
-    obs_batch = self.feature_engine.get_observation_vectorized(
-                ^^^^^^^^^^^^^^^^^^^
-AttributeError: 'RLRiskDatasetGenerator' object has no attribute 'feature_engine'
-2026-03-05 01:50:18,150 - ERROR - Command failed with exit code 1
+  File "/kaggle/working/TradingBot/RiskLayer/train_risk_rl.py", line 254, in <module>
+    train()
+  File "/kaggle/working/TradingBot/RiskLayer/train_risk_rl.py", line 195, in train
+    loss_sl = sl_loss_fn(preds["sl_logits"], sl_target)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/kaggle/working/TradingBot/RiskLayer/train_risk_rl.py", line 143, in forward
+    ce_loss = F.cross_entropy(
+              ^
+NameError: name 'F' is not defined
+2026-03-05 02:02:16,799 - ERROR - Command failed with exit code 1
