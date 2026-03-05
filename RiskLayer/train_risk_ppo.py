@@ -20,7 +20,8 @@ MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
 # Kaggle/Local robustness: Prioritize MARKET_DATA_DIR env var from pipeline
-MARKET_DATA_DIR = os.environ.get("MARKET_DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
+# Default fallback to root data folder (../data from RiskLayer)
+MARKET_DATA_DIR = os.environ.get("MARKET_DATA_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data")))
 PPO_DATASET_PATH = os.environ.get("PPO_DATASET_PATH")
 
 os.makedirs(MODELS_DIR, exist_ok=True)

@@ -82,15 +82,30 @@ class RiskPPOEnv(gym.Env):
     def _load_data(self):
         data = {}
         for asset in self.assets:
+            # 1. Try provided data_dir
             file_path = f"{self.data_dir}/{asset}_5m.parquet"
+            
+            # 2. Try Fallbacks
             if not os.path.exists(file_path):
-                # Fallback to current directory data folder if not found
-                file_path = os.path.join(os.path.dirname(__file__), "..", "data", f"{asset}_5m.parquet")
+                fallbacks = [
+                    # Root data folder (ProjectRoot/data)
+                    os.path.join(os.path.dirname(__file__), "..", "..", "data", f"{asset}_5m.parquet"),
+                    # Local data folder (RiskLayer/data)
+                    os.path.join(os.path.dirname(__file__), "..", "data", f"{asset}_5m.parquet"),
+                    # Kaggle absolute path
+                    f"/kaggle/working/TradingBot/data/{asset}_5m.parquet"
+                ]
+                
+                for fb in fallbacks:
+                    if os.path.exists(fb):
+                        file_path = fb
+                        break
             
             try:
                 df = pd.read_parquet(file_path)
+                logging.info(f"Successfully loaded {asset} from {file_path}")
             except Exception as e:
-                logging.error(f"Failed to load {asset}: {e}")
+                logging.error(f"Failed to load {asset} at {file_path}: {e}")
                 # Create dummy if everything fails
                 dates = pd.date_range(start='2024-01-01', periods=2000, freq='5min')
                 df = pd.DataFrame(index=dates)
