@@ -49,6 +49,14 @@ class RiskFeatureExtractor(nn.Module):
         shared_latent = self.backbone(shared_latent)
         return shared_latent, shared_latent
 
+    def forward_actor(self, features: torch.Tensor) -> torch.Tensor:
+        shared_latent = self.input_proj(features)
+        return self.backbone(shared_latent)
+
+    def forward_critic(self, features: torch.Tensor) -> torch.Tensor:
+        shared_latent = self.input_proj(features)
+        return self.backbone(shared_latent)
+
 class RiskActorCriticPolicy(ActorCriticPolicy):
     """
     Custom PPO Policy for the Risk Layer.
