@@ -87,7 +87,7 @@ def main():
 
     dataset_path = os.path.join(data_dir, dataset_name)
 
-    if not args.skip_gen:
+    if not args.skip_gen and not os.path.exists(dataset_path):
         gen_script = os.path.join(base_dir, "generate_rl_risk_dataset.py")
         gen_cmd = [
             sys.executable,
@@ -104,8 +104,10 @@ def main():
             gen_cmd.extend(["--max-samples", str(args.max_samples)])
 
         run_command(gen_cmd, "RL Data Generation", cwd=base_dir, env=env)
-    else:
+    elif args.skip_gen:
         logger.info("Skipping Data Generation as requested.")
+    else:
+        logger.info(f"Dataset already exists at {dataset_path}, skipping generation.")
 
     os.environ["RL_DATASET_PATH"] = dataset_path
 
