@@ -51,7 +51,10 @@ def run_command(command, description, cwd=None, env=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Unified RiskLayer RL Pipeline")
+    parser = argparse.ArgumentParser(description="Unified RiskLayer RL/PPO Pipeline")
+    parser.add_argument(
+        "--ppo", action="store_true", help="Run the PPO pipeline instead of the basic RL"
+    )
     parser.add_argument(
         "--smoke-test", action="store_true", help="Run a quick test with 5000 samples"
     )
@@ -87,7 +90,9 @@ def main():
 
     dataset_path = os.path.join(data_dir, dataset_name)
 
-    if not args.skip_gen and not os.path.exists(dataset_path):
+    # 1. Data Generation
+    if not args.skip_gen:
+        # PPO and basic RL use the same generator, but we ensure output path is correct
         gen_script = os.path.join(base_dir, "generate_rl_risk_dataset.py")
         gen_cmd = [
             sys.executable,
@@ -104,21 +109,27 @@ def main():
             gen_cmd.extend(["--max-samples", str(args.max_samples)])
 
         run_command(gen_cmd, "RL Data Generation", cwd=base_dir, env=env)
-    elif args.skip_gen:
-        logger.info("Skipping Data Generation as requested.")
     else:
-        logger.info(f"Dataset already exists at {dataset_path}, skipping generation.")
+        logger.info("Skipping Data Generation as requested.")
 
-    os.environ["RL_DATASET_PATH"] = dataset_path
+    # 2. Training
+    if args.ppo:
+        train_script = os.path.join(base_dir, "train_risk_ppo.py")
+        description = "PPO Model Training"
+    else:
+        os.environ["RL_DATASET_PATH"] = dataset_path
+        train_script = os.path.join(base_dir, "train_risk_rl.py")
+        description = "Basic RL Model Training"
 
-    train_script = os.path.join(base_dir, "train_risk_rl.py")
     train_cmd = [sys.executable, train_script]
-
-    run_command(train_cmd, "RL Model Training", cwd=base_dir, env=env)
+    run_command(train_cmd, description, cwd=base_dir, env=env)
 
     logger.info("==========================================")
     logger.info("Pipeline Execution Finished Successfully!")
-    logger.info(f"Model and Scaler are in {os.path.join(base_dir, 'models')}")
+    if args.ppo:
+        logger.info(f"Model and Normalization stats are in {os.path.join(base_dir, 'models')}")
+    else:
+        logger.info(f"Model and Scaler are in {os.path.join(base_dir, 'models')}")
     logger.info("==========================================")
 
 
