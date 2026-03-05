@@ -84,9 +84,10 @@ class RLRiskDatasetGenerator:
 
         logger.info("Loading data via TradingEnv...")
         self.env = TradingEnv(data_dir=data_dir, stage=3, is_training=False)
-        self.env.feature_engine = AlphaFeatureEngine()
+        self.feature_engine = AlphaFeatureEngine()
+        self.env.feature_engine = self.feature_engine
         self.env.raw_data, self.env.processed_data = (
-            self.env.feature_engine.preprocess_data(self.env.data)
+            self.feature_engine.preprocess_data(self.env.data)
         )
         self.env._cache_data_arrays()
 

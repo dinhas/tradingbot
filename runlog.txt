@@ -1,31 +1,37 @@
-2026-03-04 08:10:07,290 - INFO - Preprocessing complete. Total features: 176
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.12/dist-packages/pandas/core/indexes/base.py", line 3805, in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "index.pyx", line 167, in pandas._libs.index.IndexEngine.get_loc
-  File "index.pyx", line 196, in pandas._libs.index.IndexEngine.get_loc
-  File "pandas/_libs/hashtable_class_helper.pxi", line 7081, in pandas._libs.hashtable.PyObjectHashTable.get_item
-  File "pandas/_libs/hashtable_class_helper.pxi", line 7089, in pandas._libs.hashtable.PyObjectHashTable.get_item
-KeyError: 'EURUSD'
+Already up to date.
+2026-03-05 01:46:13,538 - INFO - --- Starting: RL Data Generation ---
+2026-03-05 01:46:13,538 - INFO - Running: /usr/bin/python3 /kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py --data ../data --output /kaggle/working/TradingBot/RiskLayer/data/rl_risk_dataset.parquet
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+2026-03-05 01:46:21,560 - INFO - Loading Alpha model...
+2026-03-05 01:46:21,650 - INFO - Loading data via TradingEnv...
+2026-03-05 01:46:21,938 - INFO - Loaded EURUSD from ../data/EURUSD_5m.parquet
+2026-03-05 01:46:21,982 - INFO - Loaded GBPUSD from ../data/GBPUSD_5m.parquet
+2026-03-05 01:46:22,028 - INFO - Loaded USDJPY from ../data/USDJPY_5m.parquet
+2026-03-05 01:46:22,067 - INFO - Loaded USDCHF from ../data/USDCHF_5m.parquet
+2026-03-05 01:46:22,120 - INFO - Loaded XAUUSD from ../data/XAUUSD_5m.parquet
+2026-03-05 01:48:41,918 - INFO - Aligning data for all assets...
+2026-03-05 01:48:42,352 - INFO - Calculating technical indicators for EURUSD...
+2026-03-05 01:48:44,774 - INFO - Calculating technical indicators for GBPUSD...
+2026-03-05 01:48:47,232 - INFO - Calculating technical indicators for USDJPY...
+2026-03-05 01:48:49,657 - INFO - Calculating technical indicators for USDCHF...
+2026-03-05 01:48:52,058 - INFO - Calculating technical indicators for XAUUSD...
+2026-03-05 01:48:54,509 - INFO - Calculating cross-asset features...
+2026-03-05 01:48:55,501 - INFO - Adding session and global features...
+2026-03-05 01:48:56,464 - INFO - Normalizing features (this may take a minute)...
+2026-03-05 01:49:59,745 - INFO - Preprocessing complete. Total features: 176
+2026-03-05 01:50:16,068 - INFO - Processing from 500 to 372754 (372254 rows)
 
-The above exception was the direct cause of the following exception:
-
+Generating dataset:   0%|          | 0/75 [00:00<?, ?it/s]
+Generating dataset:   0%|          | 0/75 [00:00<?, ?it/s]
 Traceback (most recent call last):
   File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 374, in <module>
     main()
-  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 368, in main
-    generator = RLRiskDatasetGenerator(args.model, args.data)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 100, in __init__
-    self._compute_hour_and_atr_ma()
-  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 107, in _compute_hour_and_atr_ma
-    hour_idx = self.env.raw_data[asset].index.hour.values
-               ~~~~~~~~~~~~~~~~~^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/pandas/core/frame.py", line 4102, in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/pandas/core/indexes/base.py", line 3812, in get_loc
-    raise KeyError(key) from err
-KeyError: 'EURUSD'
-2026-03-04 08:10:08,119 - ERROR - Command failed with exit code 1
+  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 370, in main
+    generator.generate_dataset(args.output, args.max_samples)
+  File "/kaggle/working/TradingBot/RiskLayer/generate_rl_risk_dataset.py", line 250, in generate_dataset
+    obs_batch = self.feature_engine.get_observation_vectorized(
+                ^^^^^^^^^^^^^^^^^^^
+AttributeError: 'RLRiskDatasetGenerator' object has no attribute 'feature_engine'
+2026-03-05 01:50:18,150 - ERROR - Command failed with exit code 1
