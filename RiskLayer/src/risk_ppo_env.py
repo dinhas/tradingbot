@@ -45,8 +45,6 @@ class RiskPPOEnv(gym.Env):
             self._cache_data_arrays(self.raw_data)
             self.data_index = self.raw_data.index
         else:
-            # In Fast Mode, we only need raw price arrays for PEEK & LABEL
-            # We create a combined view just to cache the numpy arrays
             combined_prices = pd.concat([self.data[a].add_prefix(f"{a}_") for a in self.assets], axis=1)
             self._cache_data_arrays(combined_prices)
             self.data_index = combined_prices.index
@@ -73,7 +71,7 @@ class RiskPPOEnv(gym.Env):
         self.current_asset_idx = 0
         self.current_signal_idx = 0 
         self.LEVERAGE = 100
-        self.EQUITY = 10000.0
+        # self.EQUITY is removed to prevent numerical overflow issues during training rewards
 
     def _load_data(self):
         data = {}
@@ -162,17 +160,23 @@ class RiskPPOEnv(gym.Env):
         return self.feature_engine.get_observation(current_row, asset=asset)
 
     def step(self, action):
+        # 1. Parse and Clip Actions
+        action = np.nan_to_num(action, nan=0.0)
         sl_mult = np.clip((action[0] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
         tp_mult = np.clip((action[1] + 1) / 2 * 7.0 + 1.0, 1.0, 8.0)
         size_pct = np.clip((action[2] + 1) / 2 * 0.49 + 0.01, 0.01, 0.5)
         
+        # 2. Simulate Outcome
         reward = self._simulate_outcome(sl_mult, tp_mult, size_pct, self.current_direction)
         
+        # 3. Advance state
         self.current_step += 1
         if self.current_step >= len(self.data_index) - 1001: self.current_step = 500
              
         self._find_next_signal()
-        return self._get_observation(), reward, False, False, {}
+        obs = self._get_observation()
+        
+        return obs, reward, False, False, {}
 
     def _simulate_outcome(self, sl_mult, tp_mult, size_pct, direction):
         asset = self.assets[self.current_asset_idx]
@@ -205,10 +209,26 @@ class RiskPPOEnv(gym.Env):
         elif tp_hit: exit_price = tp_price
         else: exit_price = self.close_arrays[asset][end_idx - 1]
             
+        # --- NUMERICAL STABILITY FIXES ---
+        # 1. Use a constant baseline for reward calculation to prevent exponential growth/overflow
+        BASE_EQUITY = 10000.0
+        
         price_change_pct = (exit_price - price) / price * direction
-        pnl = price_change_pct * (size_pct * self.EQUITY * self.LEVERAGE)
-        reward = (pnl / self.EQUITY) * 10.0
-        self.EQUITY += pnl
-        if self.EQUITY <= 0: self.EQUITY = 100.0
-        if tp_mult < sl_mult: reward -= 0.1
+        # Clip price change to 20% max to prevent extreme outliers
+        price_change_pct = np.clip(price_change_pct, -0.2, 0.2)
+        
+        # Calculate P&L based on the baseline
+        pnl = price_change_pct * (size_pct * BASE_EQUITY * self.LEVERAGE)
+        
+        # Reward: 1% gain on baseline = +0.1 reward
+        reward = (pnl / BASE_EQUITY) * 10.0
+        
+        # Final numerical safety check
+        if not np.isfinite(reward):
+            reward = -1.0
+            
+        # 3. Penalize bad R:R
+        if tp_mult < sl_mult:
+            reward -= 0.1
+            
         return float(reward)
