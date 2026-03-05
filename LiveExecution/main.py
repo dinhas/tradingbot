@@ -104,6 +104,7 @@ def main():
         # 4.5 Start Dashboard
         dashboard = DashboardServer(orchestrator)
         dashboard.start()
+        orchestrator.set_dashboard(dashboard)
 
         # 5. Wiring
         # Connect Client Events to Orchestrator

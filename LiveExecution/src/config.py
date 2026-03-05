@@ -49,5 +49,11 @@ def load_config(override_env=None):
 
     # DB Path defaults
     config["DB_PATH"] = env.get("DB_PATH", "LiveExecution/data/live_trading.db")
+
+    # Telegram Alert Thresholds
+    config["TELEGRAM_DRAWDOWN_ALERT"] = float(env.get("TELEGRAM_DRAWDOWN_ALERT", "5.0"))
+    config["TELEGRAM_PNL_MILESTONE"] = float(env.get("TELEGRAM_PNL_MILESTONE", "1.0"))
+    config["TELEGRAM_PULSE_INTERVAL"] = int(env.get("TELEGRAM_PULSE_INTERVAL", "7200"))
+    config["TELEGRAM_ERROR_ALERTS"] = env.get("TELEGRAM_ERROR_ALERTS", "true").lower() == "true"
         
     return config

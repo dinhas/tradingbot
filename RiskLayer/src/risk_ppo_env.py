@@ -4,16 +4,129 @@ import numpy as np
 import pandas as pd
 import logging
 import os
+from collections import deque
 from frozen_feature_engine import FeatureEngine
 
+# ──────────────────────────────────────────────
+# SPREAD TABLE (in pips, 1 pip = 0.0001 for FX)
+# ──────────────────────────────────────────────
+SPREAD_PIPS = {
+    "EURUSD": 1.2,
+    "GBPUSD": 1.5,
+    "USDJPY": 1.0,
+    "USDCHF": 1.8,
+    "XAUUSD": 45.0,   # Updated conservative Gold spread
+}
+
+PIP_SIZE = {
+    "EURUSD": 0.0001,
+    "GBPUSD": 0.0001,
+    "USDJPY": 0.01,
+    "USDCHF": 0.0001,
+    "XAUUSD": 0.1,    # 1 pip = $0.10 on Gold
+}
+
+EXECUTION_NOISE_ATR = 0.15   # ±0.15x ATR noise on trigger prices
+
+def add_execution_noise(sl_atr_mult, tp_atr_mult):
+    """
+    Shift SL inward (closer to entry) and TP inward (harder to reach).
+    """
+    rng = np.random.default_rng()
+    sl_noise = rng.uniform(0, EXECUTION_NOISE_ATR)
+    effective_sl = max(0.3, sl_atr_mult - sl_noise)
+    tp_noise = rng.uniform(0, EXECUTION_NOISE_ATR * 0.5)
+    effective_tp = tp_atr_mult + tp_noise
+    return effective_sl, effective_tp
+
+def compute_spread_cost_in_r(asset, atr_price, sl_atr_mult):
+    """
+    Convert the bid-ask spread into R units.
+    """
+    spread_price = SPREAD_PIPS.get(asset, 2.0) * PIP_SIZE.get(asset, 0.0001)
+    sl_distance = atr_price * sl_atr_mult
+    if sl_distance < 1e-10: return 1.0
+    spread_r = (spread_price * 1.5) / sl_distance
+    return spread_r
+
+class RiskModelLogger:
+    """
+    Tracks trading metrics per environment instance.
+    """
+    def __init__(self, window=500):
+        self.w = window
+        self.reset_window()
+
+    def reset_window(self):
+        self.outcomes         = deque(maxlen=self.w)
+        self.rewards          = deque(maxlen=self.w)
+        self.r_multiples      = deque(maxlen=self.w)
+        self.sl_mults         = deque(maxlen=self.w)
+        self.tp_mults         = deque(maxlen=self.w)
+        self.rr_ratios        = deque(maxlen=self.w)
+        self.sl_below_1x      = deque(maxlen=self.w)
+        self.sl_below_08x     = deque(maxlen=self.w)
+        self.sizes            = deque(maxlen=self.w)
+        self.oversize_flags   = deque(maxlen=self.w)
+        self.spread_costs_r   = deque(maxlen=self.w)
+        self.asset_wins       = {}
+        self.timeout_rs       = deque(maxlen=self.w)
+
+    def log_step(self, outcome, reward, reward_info, asset, size_pct):
+        self.outcomes.append(outcome)
+        self.rewards.append(reward)
+        self.sl_mults.append(reward_info["eff_sl"])
+        self.tp_mults.append(reward_info["eff_tp"])
+        self.rr_ratios.append(reward_info["rr_ratio"])
+        self.spread_costs_r.append(reward_info["spread_cost_r"])
+        self.sizes.append(size_pct)
+
+        self.sl_below_1x.append(1 if reward_info["eff_sl"] < 1.0 else 0)
+        self.sl_below_08x.append(1 if reward_info["eff_sl"] < 0.8 else 0)
+        self.oversize_flags.append(1 if size_pct > 0.25 else 0)
+
+        r_earned = reward_info["base_r"]
+        self.r_multiples.append(r_earned)
+        if outcome == "timeout":
+            self.timeout_rs.append(r_earned)
+
+        if asset not in self.asset_wins:
+            self.asset_wins[asset] = deque(maxlen=200)
+        self.asset_wins[asset].append(1 if outcome == "tp_hit" else 0)
+
+    def get_summary(self):
+        outcomes = list(self.outcomes)
+        n = len(outcomes)
+        if n == 0: return {}
+
+        wins = outcomes.count("tp_hit")
+        losses = outcomes.count("sl_hit")
+        win_rewards = [r for r, o in zip(self.rewards, outcomes) if o == "tp_hit"]
+        loss_rewards = [abs(r) for r, o in zip(self.rewards, outcomes) if o == "sl_hit"]
+        profit_factor = sum(win_rewards) / sum(loss_rewards) if sum(loss_rewards) > 0 else 99.0
+
+        metrics = {
+            "trade/win_rate": wins / n,
+            "trade/timeout_rate": outcomes.count("timeout") / n,
+            "trade/profit_factor": profit_factor,
+            "trade/avg_reward": np.mean(self.rewards),
+            "trade/avg_r_multiple": np.mean(self.r_multiples),
+            "placement/avg_sl_mult": np.mean(self.sl_mults),
+            "placement/avg_tp_mult": np.mean(self.tp_mults),
+            "placement/avg_rr_ratio": np.mean(self.rr_ratios),
+            "placement/pct_sl_below_1x_atr": np.mean(self.sl_below_1x),
+            "placement/pct_sl_below_08x_atr": np.mean(self.sl_below_08x),
+            "sizing/avg_size_pct": np.mean(self.sizes),
+            "cost/avg_spread_r": np.mean(self.spread_costs_r),
+            "timeout/avg_r_on_timeout": np.mean(self.timeout_rs) if self.timeout_rs else 0,
+        }
+        # Asset win rates
+        for a, v in self.asset_wins.items():
+            metrics[f"asset/{a}/win_rate"] = np.mean(list(v))
+        
+        return metrics
+
 class RiskPPOEnv(gym.Env):
-    """
-    Specialized environment for PPO-based risk model training.
-    
-    Optimizes SL, TP, and Size based on market conditions (40 features).
-    Only trains on signals generated by the Alpha model (Qual > 0.30, Meta > 0.78).
-    Uses PEEK & LABEL (simulated future outcome) to provide immediate rewards.
-    """
     metadata = {'render_modes': ['human']}
 
     def __init__(self, data_dir='data', is_training=True, alpha_model_path=None, dataset_path=None):
@@ -22,23 +135,22 @@ class RiskPPOEnv(gym.Env):
         self.data_dir = data_dir
         self.is_training = is_training
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+        self.logger_util = RiskModelLogger(window=500)
         
-        # 1. Load Pre-filtered Dataset (FAST MODE)
+        # 1. Load Pre-filtered Dataset
         self.signal_data = None
         if dataset_path and os.path.exists(dataset_path):
             try:
                 self.signal_data = pd.read_parquet(dataset_path)
-                logging.info(f"Fast Mode: Loaded {len(self.signal_data)} signals from dataset.")
-                # Ensure features are numpy arrays for speed
+                logging.info(f"Fast Mode: Loaded {len(self.signal_data)} signals.")
                 if isinstance(self.signal_data['features'].iloc[0], (list, np.ndarray)):
                     self.signal_data['features'] = self.signal_data['features'].apply(np.array)
             except Exception as e:
                 logging.error(f"Failed to load dataset: {e}")
 
-        # 2. Load Raw Data for P&L Simulation
+        # 2. Load Raw Data
         self.data = self._load_data()
         
-        # Only run FeatureEngine if we don't have pre-calculated features
         if self.signal_data is None:
             self.feature_engine = FeatureEngine()
             self.raw_data, self.processed_data = self.feature_engine.preprocess_data(self.data)
@@ -49,14 +161,12 @@ class RiskPPOEnv(gym.Env):
             self._cache_data_arrays(combined_prices)
             self.data_index = combined_prices.index
 
-        # 3. Real-time Search Mode Setup (Fallback only)
         if self.signal_data is None:
             from Alpha.src.model import AlphaSLModel
             import torch
             self.alpha_model = AlphaSLModel(input_dim=40)
             if alpha_model_path is None:
                 alpha_model_path = os.path.join(os.path.dirname(__file__), "../../Alpha/models/alpha_model.pth")
-            
             if os.path.exists(alpha_model_path):
                 self.alpha_model.load_state_dict(torch.load(alpha_model_path, map_location="cpu"))
             self.alpha_model.eval()
@@ -68,10 +178,10 @@ class RiskPPOEnv(gym.Env):
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
         
         self.current_step = 0
+        self.total_steps_counter = 0
         self.current_asset_idx = 0
         self.current_signal_idx = 0 
         self.LEVERAGE = 100
-        # self.EQUITY is removed to prevent numerical overflow issues during training rewards
 
     def _load_data(self):
         data = {}
@@ -87,7 +197,6 @@ class RiskPPOEnv(gym.Env):
                     if os.path.exists(fb):
                         file_path = fb
                         break
-            
             try:
                 df = pd.read_parquet(file_path)
             except Exception as e:
@@ -159,76 +268,135 @@ class RiskPPOEnv(gym.Env):
         current_row = self.processed_data.iloc[self.current_step]
         return self.feature_engine.get_observation(current_row, asset=asset)
 
+    def _get_curriculum_size_range(self, current_step, phase2_start=500_000, warmup_steps=100_000):
+        if current_step < phase2_start:
+            return 0.10, 0.10
+        progress = min(1.0, (current_step - phase2_start) / warmup_steps)
+        size_min = 0.01
+        size_max = 0.10 + progress * (0.30 - 0.10)
+        return size_min, size_max
+
     def step(self, action):
-        # 1. Parse and Clip Actions
+        self.total_steps_counter += 1
         action = np.nan_to_num(action, nan=0.0)
-        sl_mult = np.clip((action[0] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
-        tp_mult = np.clip((action[1] + 1) / 2 * 7.0 + 1.0, 1.0, 8.0)
-        size_pct = np.clip((action[2] + 1) / 2 * 0.49 + 0.01, 0.01, 0.5)
+        sl_raw, tp_raw, size_raw = action[0], action[1], action[2]
         
-        # 2. Simulate Outcome
-        reward = self._simulate_outcome(sl_mult, tp_mult, size_pct, self.current_direction)
+        sl_mult = 0.8 + (sl_raw + 1) / 2 * (3.5 - 0.8)
+        tp_mult = 1.2 + (tp_raw + 1) / 2 * (8.0 - 1.2)
+        size_min, size_max = self._get_curriculum_size_range(self.total_steps_counter)
+        size_pct = size_min + (size_raw + 1) / 2 * (size_max - size_min)
         
-        # 3. Advance state
+        reward, reward_info, outcome = self._simulate_outcome_v3(sl_mult, tp_mult, size_pct, self.current_direction)
+        
+        # Log to internal logger
+        asset = self.assets[self.current_asset_idx]
+        self.logger_util.log_step(outcome, reward, reward_info, asset, size_pct)
+        
         self.current_step += 1
         if self.current_step >= len(self.data_index) - 1001: self.current_step = 500
-             
         self._find_next_signal()
         obs = self._get_observation()
         
-        return obs, reward, False, False, {}
-
-    def _simulate_outcome(self, sl_mult, tp_mult, size_pct, direction):
-        asset = self.assets[self.current_asset_idx]
-        price = self.close_arrays[asset][self.current_step]
-        atr = self.atr_arrays[asset][self.current_step]
-        if atr <= 0: atr = price * 0.001
+        # Return summary in info for callback logging
+        info = self.logger_util.get_summary()
+        info['is_success'] = (outcome == "tp_hit")
         
-        sl_dist = sl_mult * atr
-        tp_dist = tp_mult * atr
-        sl_price = price - (direction * sl_dist)
-        tp_price = price + (direction * tp_dist)
+        return obs, float(reward), False, False, info
+
+    def _simulate_outcome_v3(self, sl_mult, tp_mult, size_pct, direction):
+        asset = self.assets[self.current_asset_idx]
+        entry_price = self.close_arrays[asset][self.current_step]
+        atr_price = self.atr_arrays[asset][self.current_step]
+        if atr_price <= 0: atr_price = entry_price * 0.001
+        
+        eff_sl_mult, eff_tp_mult = add_execution_noise(sl_mult, tp_mult)
+        sl_price = entry_price - (direction * eff_sl_mult * atr_price)
+        tp_price = entry_price + (direction * eff_tp_mult * atr_price)
         
         start_idx = self.current_step + 1
         end_idx = min(start_idx + 1000, len(self.data_index))
-        lows = self.low_arrays[asset][start_idx:end_idx]
-        highs = self.high_arrays[asset][start_idx:end_idx]
+        future_highs = self.high_arrays[asset][start_idx:end_idx]
+        future_lows = self.low_arrays[asset][start_idx:end_idx]
+        future_closes = self.close_arrays[asset][start_idx:end_idx]
         
-        if direction == 1:
-            sl_hit_mask = lows <= sl_price
-            tp_hit_mask = highs >= tp_price
+        outcome, timeout_r, hold_time = self._resolve_trade_v2(
+            future_highs, future_lows, future_closes,
+            entry_price, sl_price, tp_price, direction, asset
+        )
+        
+        reward, reward_info = self._compute_reward_v3(
+            outcome, sl_mult, tp_mult, size_pct, timeout_r, asset, atr_price
+        )
+        
+        return reward, reward_info, outcome
+
+    def _resolve_trade_v2(self, future_highs, future_lows, future_closes, entry_price, sl_price, tp_price, direction, asset):
+        spread_price = SPREAD_PIPS.get(asset, 2.0) * PIP_SIZE.get(asset, 0.0001)
+        sl_distance = abs(entry_price - sl_price)
+
+        if direction == 1:  # Long
+            actual_entry = entry_price + spread_price
+            sl_check_price = sl_price
+            tp_check_price = tp_price
+        else:               # Short
+            actual_entry = entry_price - spread_price
+            sl_check_price = sl_price
+            tp_check_price = tp_price
+
+        for i, (high, low, close) in enumerate(zip(future_highs, future_lows, future_closes)):
+            sl_hit = (direction == 1 and low <= sl_check_price) or (direction == -1 and high >= sl_check_price)
+            tp_hit = (direction == 1 and high >= tp_check_price) or (direction == -1 and low <= tp_check_price)
+
+            if sl_hit and tp_hit: return "sl_hit", -1.0, i + 1
+            if sl_hit: return "sl_hit", -1.0, i + 1
+            if tp_hit:
+                tp_dist = abs(tp_price - entry_price)
+                return "tp_hit", (tp_dist / sl_distance if sl_distance > 1e-10 else 0), i + 1
+
+        exit_price = future_closes[-1]
+        if direction == 1: exit_price -= spread_price
+        else: exit_price += spread_price
+        
+        pnl = (exit_price - actual_entry) * direction
+        timeout_r = pnl / sl_distance if sl_distance > 1e-10 else 0.0
+        return "timeout", timeout_r, len(future_closes)
+
+    def _compute_reward_v3(self, outcome, sl_mult, tp_mult, size_pct, timeout_r, asset, atr_price):
+        eff_sl, eff_tp = add_execution_noise(sl_mult, tp_mult)
+        rr_ratio = eff_tp / eff_sl
+
+        if outcome == "tp_hit":
+            base_r = rr_ratio
+        elif outcome == "sl_hit":
+            base_r = -1.0
+        elif outcome == "timeout":
+            base_r = np.clip(timeout_r, -1.5, rr_ratio * 0.85)
         else:
-            sl_hit_mask = highs >= sl_price
-            tp_hit_mask = lows <= tp_price
+            base_r = 0.0
+
+        spread_cost = compute_spread_cost_in_r(asset, atr_price, eff_sl)
+        reward = base_r - spread_cost
+
+        shape = 0.0
+        if rr_ratio >= 1.5: shape += min(0.3, (rr_ratio - 1.5) * 0.1)
+        if 1.0 <= eff_sl <= 2.5: shape += 0.05
         
-        sl_hit = sl_hit_mask.any()
-        tp_hit = tp_hit_mask.any()
-        if sl_hit and tp_hit:
-            exit_price = sl_price if np.argmax(sl_hit_mask) <= np.argmax(tp_hit_mask) else tp_price
-        elif sl_hit: exit_price = sl_price
-        elif tp_hit: exit_price = tp_price
-        else: exit_price = self.close_arrays[asset][end_idx - 1]
-            
-        # --- NUMERICAL STABILITY FIXES ---
-        # 1. Use a constant baseline for reward calculation to prevent exponential growth/overflow
-        BASE_EQUITY = 10000.0
+        penalty = 0.0
+        if eff_sl < 0.8: penalty -= (0.4 + (0.8 - eff_sl) * 0.5)
+        if rr_ratio < 1.0: penalty -= 0.5
+        if eff_sl > 3.0 and rr_ratio < 1.5: penalty -= 0.2
         
-        price_change_pct = (exit_price - price) / price * direction
-        # Clip price change to 20% max to prevent extreme outliers
-        price_change_pct = np.clip(price_change_pct, -0.2, 0.2)
+        reward = reward + shape + penalty
+        size_scalar = np.clip(size_pct / 0.10, 0.1, 5.0)
+        final_reward = np.clip(reward * size_scalar, -10.0, 10.0)
         
-        # Calculate P&L based on the baseline
-        pnl = price_change_pct * (size_pct * BASE_EQUITY * self.LEVERAGE)
+        info = {
+            "base_r": base_r,
+            "eff_sl": eff_sl,
+            "eff_tp": eff_tp,
+            "rr_ratio": rr_ratio,
+            "spread_cost_r": spread_cost,
+            "final": final_reward
+        }
         
-        # Reward: 1% gain on baseline = +0.1 reward
-        reward = (pnl / BASE_EQUITY) * 10.0
-        
-        # Final numerical safety check
-        if not np.isfinite(reward):
-            reward = -1.0
-            
-        # 3. Penalize bad R:R
-        if tp_mult < sl_mult:
-            reward -= 0.1
-            
-        return float(reward)
+        return final_reward, info

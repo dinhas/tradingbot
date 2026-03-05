@@ -2,9 +2,10 @@ import threading
 import uvicorn
 import logging
 from pathlib import Path
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.templating import Jinja2Templates
 from twisted.internet import reactor
+import json
 
 class DashboardServer:
     """
@@ -15,6 +16,7 @@ class DashboardServer:
         self.orchestrator = orchestrator
         self.logger = logging.getLogger("LiveExecution")
         self.app = FastAPI(title="TradeGuard Dashboard")
+        self.active_connections = set()
         
         # Use absolute path for templates
         base_path = Path(__file__).resolve().parent
@@ -25,6 +27,7 @@ class DashboardServer:
     def _setup_routes(self):
         @self.app.get("/")
         async def index(request: Request):
+            # ... (no changes to index)
             try:
                 # Use data from orchestrator
                 recent_trades = self.orchestrator.db.get_recent_trades(limit=10)
@@ -47,9 +50,7 @@ class DashboardServer:
                     if symbol in self.orchestrator.fm.history and not self.orchestrator.fm.history[symbol].empty:
                         current_price = self.orchestrator.fm.history[symbol].iloc[-1]['close']
                     
-                    # Rough PnL estimation (ignoring fees/swap for display)
-                    # Forex: (Price Diff) * Contract Size * Lots
-                    # Gold: (Price Diff) * Contract Size * Lots
+                    # Rough PnL estimation
                     contract_size = 100 if symbol == 'XAUUSD' else 100000
                     pnl = (current_price - entry_price) * direction * contract_size * size
                     
@@ -70,9 +71,38 @@ class DashboardServer:
                 self.logger.error(f"Dashboard error: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
+        @self.app.websocket("/ws")
+        async def websocket_endpoint(websocket: WebSocket):
+            await websocket.accept()
+            self.active_connections.add(websocket)
+            try:
+                while True:
+                    # Keep connection alive
+                    await websocket.receive_text()
+            except WebSocketDisconnect:
+                self.active_connections.remove(websocket)
+            except Exception as e:
+                self.logger.error(f"WebSocket error: {e}")
+                self.active_connections.remove(websocket)
+
         @self.app.get("/api/equity_history")
         async def equity_history():
             return self.orchestrator.db.get_equity_history(limit=200)
+
+        @self.app.get("/api/system_health")
+        async def system_health():
+            import time
+            uptime = time.time() - self.orchestrator.start_time
+            last_inference = "Never"
+            if self.orchestrator.last_inference_time > 0:
+                last_inference = f"{int(time.time() - self.orchestrator.last_inference_time)}s ago"
+            
+            return {
+                "uptime": uptime,
+                "last_inference": last_inference,
+                "connection_status": "Connected" if self.orchestrator.client.is_connected else "Disconnected",
+                "active_assets": len(self.orchestrator.fm.assets)
+            }
 
         @self.app.post("/api/close/{pos_id}")
         async def close_position(pos_id: int):
@@ -94,6 +124,22 @@ class DashboardServer:
             # Schedule kill switch in Twisted thread
             reactor.callFromThread(self.orchestrator.kill_switch)
             return {"status": "kill switch activated"}
+
+    async def broadcast_update(self, event_type, data):
+        """Broadcasts an update to all connected WebSocket clients."""
+        if not self.active_connections:
+            return
+            
+        message = json.dumps({"type": event_type, "data": data})
+        disconnected = []
+        for websocket in self.active_connections:
+            try:
+                await websocket.send_text(message)
+            except Exception:
+                disconnected.append(websocket)
+        
+        for ws in disconnected:
+            self.active_connections.remove(ws)
 
     def start(self):
         """Starts the Uvicorn server in a background thread."""

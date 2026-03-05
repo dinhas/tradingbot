@@ -66,11 +66,12 @@
             <div class="bg-dark-900 rounded-lg p-3">
                 <div class="flex items-center justify-between mb-2">
                     <span class="text-xs uppercase text-gray-500 font-bold">System Status</span>
-                    <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                    <span id="status-pulse" class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
                 </div>
-                <div class="text-xs text-gray-400">
-                    <p>Uptime: <span class="text-gray-200">Running</span></p>
-                    <p>Latency: <span class="text-green-400">24ms</span></p>
+                <div class="text-xs text-gray-400 space-y-1">
+                    <p>Uptime: <span id="uptime-sidebar" class="text-gray-200">--</span></p>
+                    <p>Connection: <span id="conn-sidebar" class="text-green-400">--</span></p>
+                    <p>Last Inf: <span id="last-inf-sidebar" class="text-gray-200">--</span></p>
                 </div>
             </div>
             <button onclick="killSwitch()" class="mt-4 w-full bg-red-600/20 hover:bg-red-600/90 text-red-500 hover:text-white border border-red-600/50 py-2 rounded-lg font-bold text-sm transition flex items-center justify-center gap-2 group">
@@ -386,6 +387,62 @@
 
         // Initialize
         loadChart();
+
+        // WebSocket Setup
+        function setupWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            const socket = new WebSocket(wsUrl);
+
+            socket.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                console.log("WS Update:", data);
+                
+                if (data.type === 'trade_closed' || data.type === 'trade_opened') {
+                    // For structural changes, simplest is reload
+                    window.location.reload();
+                } else if (data.type === 'equity_update') {
+                    // Partial update could go here
+                    loadChart();
+                }
+            };
+
+            socket.onclose = function() {
+                console.log("WS Closed. Retrying in 5s...");
+                setTimeout(setupWebSocket, 5000);
+            };
+        }
+
+        setupWebSocket();
+
+        async function updateSystemHealth() {
+            try {
+                const res = await fetch('/api/system_health');
+                const data = await res.json();
+                
+                // Update sidebar
+                const uptime = data.uptime;
+                const h = Math.floor(uptime / 3600);
+                const m = Math.floor((uptime % 3600) / 60);
+                document.getElementById('uptime-sidebar').textContent = `${h}h ${m}m`;
+                
+                const connElem = document.getElementById('conn-sidebar');
+                connElem.textContent = data.connection_status;
+                connElem.className = data.connection_status === 'Connected' ? 'text-green-400' : 'text-red-400';
+                
+                document.getElementById('last-inf-sidebar').textContent = data.last_inference;
+                
+                const pulse = document.getElementById('status-pulse');
+                pulse.className = `w-2 h-2 rounded-full animate-pulse ${data.connection_status === 'Connected' ? 'bg-green-500' : 'bg-red-500'}`;
+                
+            } catch (e) {
+                console.error("Health poll failed", e);
+            }
+        }
+
+        // Poll health every 10 seconds
+        setInterval(updateSystemHealth, 10000);
+        updateSystemHealth();
 
         // Auto-refresh logic (every 30s)
         setTimeout(() => window.location.reload(), 30000);
