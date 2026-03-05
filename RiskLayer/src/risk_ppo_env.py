@@ -16,7 +16,7 @@ class RiskPPOEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, data_dir='data', is_training=True, alpha_model_path=None):
+    def __init__(self, data_dir='data', is_training=True, alpha_model_path=None, dataset_path=None):
         super(RiskPPOEnv, self).__init__()
         
         self.data_dir = data_dir
@@ -31,24 +31,36 @@ class RiskPPOEnv(gym.Env):
         # Cache for performance
         self._cache_data_arrays()
         
-        # Load Alpha Model for Signal Filtering
-        from Alpha.src.model import AlphaSLModel
-        import torch
-        self.alpha_model = AlphaSLModel(input_dim=40)
-        if alpha_model_path is None:
-            alpha_model_path = os.path.join(os.path.dirname(__file__), "../../Alpha/models/alpha_model.pth")
-        
-        if os.path.exists(alpha_model_path):
-            self.alpha_model.load_state_dict(torch.load(alpha_model_path, map_location="cpu"))
-            logging.info(f"Loaded Alpha model from {alpha_model_path}")
-        else:
-            logging.warning(f"Alpha model not found at {alpha_model_path}. Training will use random signals!")
-        self.alpha_model.eval()
-        self.device = torch.device("cpu")
-        
-        # Thresholds
-        self.QUAL_THRESHOLD = 0.30
-        self.META_THRESHOLD = 0.78
+        # 1. Pre-filtered Dataset Mode
+        self.signal_data = None
+        if dataset_path and os.path.exists(dataset_path):
+            try:
+                self.signal_data = pd.read_parquet(dataset_path)
+                logging.info(f"Loaded {len(self.signal_data)} pre-filtered signals from {dataset_path}")
+                # Filter out any that might be too close to the end
+                self.signal_data = self.signal_data[self.signal_data['timestamp'] < self.processed_data.index[-1001]]
+            except Exception as e:
+                logging.error(f"Failed to load dataset: {e}")
+
+        # 2. Real-time Search Mode (Fallback)
+        if self.signal_data is None:
+            from Alpha.src.model import AlphaSLModel
+            import torch
+            self.alpha_model = AlphaSLModel(input_dim=40)
+            if alpha_model_path is None:
+                alpha_model_path = os.path.join(os.path.dirname(__file__), "../../Alpha/models/alpha_model.pth")
+            
+            if os.path.exists(alpha_model_path):
+                self.alpha_model.load_state_dict(torch.load(alpha_model_path, map_location="cpu"))
+                logging.info(f"Loaded Alpha model from {alpha_model_path}")
+            else:
+                logging.warning(f"Alpha model not found at {alpha_model_path}. Training will use random signals!")
+            self.alpha_model.eval()
+            self.device = torch.device("cpu")
+            
+            # Thresholds
+            self.QUAL_THRESHOLD = 0.30
+            self.META_THRESHOLD = 0.78
         
         # Observation Space: 40 features
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(40,), dtype=np.float32)
@@ -61,6 +73,7 @@ class RiskPPOEnv(gym.Env):
         self.current_step = 0
         self.max_steps = len(self.processed_data) - 1001 # Leave room for PEEK
         self.current_asset_idx = 0
+        self.current_signal_idx = 0 
         
         # Configuration
         self.LEVERAGE = 100
@@ -95,15 +108,35 @@ class RiskPPOEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
-        # Find next valid signal from Alpha model
-        self.current_step = np.random.randint(500, self.max_steps - 500)
-        self._find_next_signal()
+        if self.signal_data is not None:
+            self.current_signal_idx = np.random.randint(0, len(self.signal_data))
+            self._apply_current_signal()
+        else:
+            self.current_step = np.random.randint(500, self.max_steps - 500)
+            self._find_next_signal()
         
         obs = self._get_observation()
         return obs, {}
 
+    def _apply_current_signal(self):
+        """Sets environment state based on current pre-filtered signal row."""
+        row = self.signal_data.iloc[self.current_signal_idx]
+        ts = row['timestamp']
+        self.current_asset_idx = self.assets.index(row['asset'])
+        self.current_direction = int(row['direction'])
+        
+        try:
+            self.current_step = self.processed_data.index.get_loc(ts)
+        except Exception:
+            self.current_step = np.random.randint(500, self.max_steps - 500)
+
     def _find_next_signal(self):
-        """Searches for the next valid signal where Alpha model thresholds are met."""
+        """Searches for the next valid signal."""
+        if self.signal_data is not None:
+            self.current_signal_idx = (self.current_signal_idx + 1) % len(self.signal_data)
+            self._apply_current_signal()
+            return
+
         import torch
         max_search = 5000
         found = False
@@ -117,7 +150,7 @@ class RiskPPOEnv(gym.Env):
                 obs_t = torch.from_numpy(obs).unsqueeze(0).to(self.device)
                 dir_logits, quality, meta_logits = self.alpha_model(obs_t)
                 
-                direction = torch.argmax(dir_logits, dim=1).item() - 1 # -1, 0, 1
+                direction = torch.argmax(dir_logits, dim=1).item() - 1 
                 qual_val = torch.sigmoid(quality).item()
                 meta_val = torch.sigmoid(meta_logits).item()
                 
@@ -136,28 +169,20 @@ class RiskPPOEnv(gym.Env):
         return self.feature_engine.get_observation(current_row, asset=asset)
 
     def step(self, action):
-        # 1. Parse Actions
-        sl_mult = np.clip((action[0] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0) # 0.5 to 4.0
-        tp_mult = np.clip((action[1] + 1) / 2 * 7.0 + 1.0, 1.0, 8.0) # 1.0 to 8.0
-        size_pct = np.clip((action[2] + 1) / 2 * 0.49 + 0.01, 0.01, 0.5) # 1% to 50%
+        sl_mult = np.clip((action[0] + 1) / 2 * 3.5 + 0.5, 0.5, 4.0)
+        tp_mult = np.clip((action[1] + 1) / 2 * 7.0 + 1.0, 1.0, 8.0)
+        size_pct = np.clip((action[2] + 1) / 2 * 0.49 + 0.01, 0.01, 0.5)
         
-        # 2. Simulate Outcome (PEEK & LABEL)
-        # Use current equity for reward calculation
         reward = self._simulate_outcome(sl_mult, tp_mult, size_pct, self.current_direction)
         
-        # 3. Advance to next signal
         self.current_step += 1
         if self.current_step >= self.max_steps:
              self.current_step = 500
              
         self._find_next_signal()
-        
         obs = self._get_observation()
         
-        terminated = False
-        truncated = False
-        
-        return obs, reward, terminated, truncated, {}
+        return obs, reward, False, False, {}
 
     def _simulate_outcome(self, sl_mult, tp_mult, size_pct, direction):
         asset = self.assets[self.current_asset_idx]
@@ -171,7 +196,6 @@ class RiskPPOEnv(gym.Env):
         sl_price = price - (direction * sl_dist)
         tp_price = price + (direction * tp_dist)
         
-        # Look ahead
         start_idx = self.current_step + 1
         end_idx = min(start_idx + 1000, len(self.raw_data))
         
@@ -199,22 +223,14 @@ class RiskPPOEnv(gym.Env):
         else:
             exit_price = self.close_arrays[asset][end_idx - 1]
             
-        # Calculate P&L using CURRENT EQUITY (EQUITY change)
-        # Reward is % change of current equity
         price_change_pct = (exit_price - price) / price * direction
-        
-        # Reward calculation: P&L / Current Equity * 10
-        # If EQUITY changes, this reflects the impact on current balance
         pos_size_notional = size_pct * self.EQUITY
         pnl = price_change_pct * (pos_size_notional * self.LEVERAGE)
-        
         reward = (pnl / self.EQUITY) * 10.0
         
-        # Update simulation equity (optional for training signal, but realistic)
         self.EQUITY += pnl
-        if self.EQUITY <= 0: self.EQUITY = 100.0 # Reset if busted in simulation
+        if self.EQUITY <= 0: self.EQUITY = 100.0
         
-        # Penalize bad R:R
         if tp_mult < sl_mult:
             reward -= 0.1
             

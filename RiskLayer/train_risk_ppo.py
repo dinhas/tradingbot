@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+PPO_DATASET_PATH = os.environ.get("PPO_DATASET_PATH")
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -32,10 +33,12 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 def train():
     logger.info(f"Starting PPO Risk Model Training on {DEVICE}")
+    if PPO_DATASET_PATH:
+        logger.info(f"Using pre-filtered dataset from {PPO_DATASET_PATH}")
     
     # 1. Create Environment
     def make_env():
-        return RiskPPOEnv(data_dir=DATA_DIR)
+        return RiskPPOEnv(data_dir=DATA_DIR, dataset_path=PPO_DATASET_PATH)
     
     env = DummyVecEnv([make_env])
     

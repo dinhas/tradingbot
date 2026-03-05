@@ -84,15 +84,14 @@ def main():
     data_dir = os.path.join(base_dir, "data")
     os.makedirs(data_dir, exist_ok=True)
 
-    dataset_name = "rl_risk_dataset.parquet"
+    dataset_name = "ppo_risk_dataset.parquet"
     if args.smoke_test:
-        dataset_name = "smoke_test_rl_risk_dataset.parquet"
+        dataset_name = "smoke_test_ppo_risk_dataset.parquet"
 
     dataset_path = os.path.join(data_dir, dataset_name)
 
     # 1. Data Generation
     if not args.skip_gen:
-        # PPO and basic RL use the same generator, but we ensure output path is correct
         gen_script = os.path.join(base_dir, "generate_rl_risk_dataset.py")
         gen_cmd = [
             sys.executable,
@@ -108,11 +107,13 @@ def main():
         elif args.max_samples:
             gen_cmd.extend(["--max-samples", str(args.max_samples)])
 
-        run_command(gen_cmd, "RL Data Generation", cwd=base_dir, env=env)
+        run_command(gen_cmd, "PPO Data Generation (Alpha Filtered)", cwd=base_dir, env=env)
     else:
         logger.info("Skipping Data Generation as requested.")
 
     # 2. Training
+    os.environ["PPO_DATASET_PATH"] = dataset_path # Pass to training script
+    
     if args.ppo:
         train_script = os.path.join(base_dir, "train_risk_ppo.py")
         description = "PPO Model Training"
