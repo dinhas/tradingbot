@@ -3,7 +3,8 @@ import sys
 import logging
 import torch
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
+from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 
 # Add src to path
@@ -20,7 +21,6 @@ MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
 # Kaggle/Local robustness: Prioritize MARKET_DATA_DIR env var from pipeline
-# Default fallback to root data folder (../data from RiskLayer)
 MARKET_DATA_DIR = os.environ.get("MARKET_DATA_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data")))
 PPO_DATASET_PATH = os.environ.get("PPO_DATASET_PATH")
 
@@ -30,7 +30,8 @@ os.makedirs(LOG_DIR, exist_ok=True)
 # Hyperparameters
 TOTAL_TIMESTEPS = 1_000_000
 BATCH_SIZE = 2048
-N_STEPS = 4096
+N_STEPS = 2048 # Reduced for more frequent updates with multiple envs
+N_ENVS = 4     # Parallel environments
 LEARNING_RATE = 3e-4
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -40,13 +41,11 @@ def train():
     if PPO_DATASET_PATH:
         logger.info(f"Using pre-filtered dataset from {PPO_DATASET_PATH}")
     
-    # 1. Create Environment
-    def make_env():
-        return RiskPPOEnv(data_dir=MARKET_DATA_DIR, dataset_path=PPO_DATASET_PATH)
+    # 1. Create Parallel Environments
+    env_kwargs = {'data_dir': MARKET_DATA_DIR, 'dataset_path': PPO_DATASET_PATH}
+    env = make_vec_env(RiskPPOEnv, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv, env_kwargs=env_kwargs)
     
-    env = DummyVecEnv([make_env])
-    
-    # Normalize observations and rewards for better RL convergence
+    # Normalize observations and rewards
     env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
     
     # 2. Initialize Model

@@ -23,26 +23,35 @@ class RiskPPOEnv(gym.Env):
         self.is_training = is_training
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         
-        # Load and Preprocess Data
-        self.feature_engine = FeatureEngine()
-        self.data = self._load_data()
-        self.raw_data, self.processed_data = self.feature_engine.preprocess_data(self.data)
-        
-        # Cache for performance
-        self._cache_data_arrays()
-        
-        # 1. Pre-filtered Dataset Mode
+        # 1. Load Pre-filtered Dataset (FAST MODE)
         self.signal_data = None
         if dataset_path and os.path.exists(dataset_path):
             try:
                 self.signal_data = pd.read_parquet(dataset_path)
-                logging.info(f"Loaded {len(self.signal_data)} pre-filtered signals from {dataset_path}")
-                # Filter out any that might be too close to the end
-                self.signal_data = self.signal_data[self.signal_data['timestamp'] < self.processed_data.index[-1001]]
+                logging.info(f"Fast Mode: Loaded {len(self.signal_data)} signals from dataset.")
+                # Ensure features are numpy arrays for speed
+                if isinstance(self.signal_data['features'].iloc[0], (list, np.ndarray)):
+                    self.signal_data['features'] = self.signal_data['features'].apply(np.array)
             except Exception as e:
                 logging.error(f"Failed to load dataset: {e}")
 
-        # 2. Real-time Search Mode (Fallback)
+        # 2. Load Raw Data for P&L Simulation
+        self.data = self._load_data()
+        
+        # Only run FeatureEngine if we don't have pre-calculated features
+        if self.signal_data is None:
+            self.feature_engine = FeatureEngine()
+            self.raw_data, self.processed_data = self.feature_engine.preprocess_data(self.data)
+            self._cache_data_arrays(self.raw_data)
+            self.data_index = self.raw_data.index
+        else:
+            # In Fast Mode, we only need raw price arrays for PEEK & LABEL
+            # We create a combined view just to cache the numpy arrays
+            combined_prices = pd.concat([self.data[a].add_prefix(f"{a}_") for a in self.assets], axis=1)
+            self._cache_data_arrays(combined_prices)
+            self.data_index = combined_prices.index
+
+        # 3. Real-time Search Mode Setup (Fallback only)
         if self.signal_data is None:
             from Alpha.src.model import AlphaSLModel
             import torch
@@ -52,50 +61,30 @@ class RiskPPOEnv(gym.Env):
             
             if os.path.exists(alpha_model_path):
                 self.alpha_model.load_state_dict(torch.load(alpha_model_path, map_location="cpu"))
-                logging.info(f"Loaded Alpha model from {alpha_model_path}")
-            else:
-                logging.warning(f"Alpha model not found at {alpha_model_path}. Training will use random signals!")
             self.alpha_model.eval()
             self.device = torch.device("cpu")
-            
-            # Thresholds
             self.QUAL_THRESHOLD = 0.30
             self.META_THRESHOLD = 0.78
         
-        # Observation Space: 40 features
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(40,), dtype=np.float32)
-        
-        # Action Space: (SL Multiplier, TP Multiplier, Position Size)
-        # All in range [-1, 1] for SB3 compatibility
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
         
-        # State
         self.current_step = 0
-        self.max_steps = len(self.processed_data) - 1001 # Leave room for PEEK
         self.current_asset_idx = 0
         self.current_signal_idx = 0 
-        
-        # Configuration
         self.LEVERAGE = 100
         self.EQUITY = 10000.0
 
     def _load_data(self):
         data = {}
         for asset in self.assets:
-            # 1. Try provided data_dir
             file_path = f"{self.data_dir}/{asset}_5m.parquet"
-            
-            # 2. Try Fallbacks
             if not os.path.exists(file_path):
                 fallbacks = [
-                    # Root data folder (ProjectRoot/data)
                     os.path.join(os.path.dirname(__file__), "..", "..", "data", f"{asset}_5m.parquet"),
-                    # Local data folder (RiskLayer/data)
                     os.path.join(os.path.dirname(__file__), "..", "data", f"{asset}_5m.parquet"),
-                    # Kaggle absolute path
                     f"/kaggle/working/TradingBot/data/{asset}_5m.parquet"
                 ]
-                
                 for fb in fallbacks:
                     if os.path.exists(fb):
                         file_path = fb
@@ -103,50 +92,42 @@ class RiskPPOEnv(gym.Env):
             
             try:
                 df = pd.read_parquet(file_path)
-                logging.info(f"Successfully loaded {asset} from {file_path}")
             except Exception as e:
-                logging.error(f"Failed to load {asset} at {file_path}: {e}")
-                # Create dummy if everything fails
+                logging.error(f"Failed to load {asset}: {e}")
                 dates = pd.date_range(start='2024-01-01', periods=2000, freq='5min')
                 df = pd.DataFrame(index=dates)
                 df[f"{asset}_open"] = 1.0; df[f"{asset}_high"] = 1.01; df[f"{asset}_low"] = 0.99; df[f"{asset}_close"] = 1.0; df[f"{asset}_volume"] = 100; df[f"{asset}_atr_14"] = 0.001
-                
             data[asset] = df
         return data
 
-    def _cache_data_arrays(self):
-        self.close_arrays = {a: self.raw_data[f"{a}_close"].values.astype(np.float32) for a in self.assets}
-        self.low_arrays = {a: self.raw_data[f"{a}_low"].values.astype(np.float32) for a in self.assets}
-        self.high_arrays = {a: self.raw_data[f"{a}_high"].values.astype(np.float32) for a in self.assets}
-        self.atr_arrays = {a: self.raw_data[f"{a}_atr_14"].values.astype(np.float32) for a in self.assets}
+    def _cache_data_arrays(self, df):
+        self.close_arrays = {a: df[f"{a}_close"].values.astype(np.float32) for a in self.assets}
+        self.low_arrays = {a: df[f"{a}_low"].values.astype(np.float32) for a in self.assets}
+        self.high_arrays = {a: df[f"{a}_high"].values.astype(np.float32) for a in self.assets}
+        self.atr_arrays = {a: df[f"{a}_atr_14"].values.astype(np.float32) for a in self.assets}
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        
         if self.signal_data is not None:
             self.current_signal_idx = np.random.randint(0, len(self.signal_data))
             self._apply_current_signal()
         else:
-            self.current_step = np.random.randint(500, self.max_steps - 500)
+            self.current_step = np.random.randint(500, len(self.data_index) - 1001)
             self._find_next_signal()
         
-        obs = self._get_observation()
-        return obs, {}
+        return self._get_observation(), {}
 
     def _apply_current_signal(self):
-        """Sets environment state based on current pre-filtered signal row."""
         row = self.signal_data.iloc[self.current_signal_idx]
-        ts = row['timestamp']
         self.current_asset_idx = self.assets.index(row['asset'])
         self.current_direction = int(row['direction'])
-        
+        self.current_obs = row['features']
         try:
-            self.current_step = self.processed_data.index.get_loc(ts)
-        except Exception:
-            self.current_step = np.random.randint(500, self.max_steps - 500)
+            self.current_step = self.data_index.get_loc(row['timestamp'])
+        except:
+            self.current_step = np.random.randint(500, len(self.data_index) - 1001)
 
     def _find_next_signal(self):
-        """Searches for the next valid signal."""
         if self.signal_data is not None:
             self.current_signal_idx = (self.current_signal_idx + 1) % len(self.signal_data)
             self._apply_current_signal()
@@ -155,30 +136,27 @@ class RiskPPOEnv(gym.Env):
         import torch
         max_search = 5000
         found = False
-        
         while not found and max_search > 0:
             self.current_asset_idx = np.random.randint(0, len(self.assets))
             asset = self.assets[self.current_asset_idx]
             obs = self._get_observation()
-            
             with torch.no_grad():
                 obs_t = torch.from_numpy(obs).unsqueeze(0).to(self.device)
                 dir_logits, quality, meta_logits = self.alpha_model(obs_t)
-                
                 direction = torch.argmax(dir_logits, dim=1).item() - 1 
                 qual_val = torch.sigmoid(quality).item()
                 meta_val = torch.sigmoid(meta_logits).item()
-                
             if direction != 0 and qual_val >= self.QUAL_THRESHOLD and meta_val >= self.META_THRESHOLD:
                 self.current_direction = direction
                 found = True
             else:
                 self.current_step += 1
-                if self.current_step >= self.max_steps:
-                    self.current_step = 500
+                if self.current_step >= len(self.data_index) - 1001: self.current_step = 500
                 max_search -= 1
 
     def _get_observation(self):
+        if self.signal_data is not None:
+            return self.current_obs
         asset = self.assets[self.current_asset_idx]
         current_row = self.processed_data.iloc[self.current_step]
         return self.feature_engine.get_observation(current_row, asset=asset)
@@ -191,19 +169,15 @@ class RiskPPOEnv(gym.Env):
         reward = self._simulate_outcome(sl_mult, tp_mult, size_pct, self.current_direction)
         
         self.current_step += 1
-        if self.current_step >= self.max_steps:
-             self.current_step = 500
+        if self.current_step >= len(self.data_index) - 1001: self.current_step = 500
              
         self._find_next_signal()
-        obs = self._get_observation()
-        
-        return obs, reward, False, False, {}
+        return self._get_observation(), reward, False, False, {}
 
     def _simulate_outcome(self, sl_mult, tp_mult, size_pct, direction):
         asset = self.assets[self.current_asset_idx]
         price = self.close_arrays[asset][self.current_step]
         atr = self.atr_arrays[asset][self.current_step]
-        
         if atr <= 0: atr = price * 0.001
         
         sl_dist = sl_mult * atr
@@ -212,8 +186,7 @@ class RiskPPOEnv(gym.Env):
         tp_price = price + (direction * tp_dist)
         
         start_idx = self.current_step + 1
-        end_idx = min(start_idx + 1000, len(self.raw_data))
-        
+        end_idx = min(start_idx + 1000, len(self.data_index))
         lows = self.low_arrays[asset][start_idx:end_idx]
         highs = self.high_arrays[asset][start_idx:end_idx]
         
@@ -226,27 +199,16 @@ class RiskPPOEnv(gym.Env):
         
         sl_hit = sl_hit_mask.any()
         tp_hit = tp_hit_mask.any()
-        
         if sl_hit and tp_hit:
-            first_sl = np.argmax(sl_hit_mask)
-            first_tp = np.argmax(tp_hit_mask)
-            exit_price = sl_price if first_sl <= first_tp else tp_price
-        elif sl_hit:
-            exit_price = sl_price
-        elif tp_hit:
-            exit_price = tp_price
-        else:
-            exit_price = self.close_arrays[asset][end_idx - 1]
+            exit_price = sl_price if np.argmax(sl_hit_mask) <= np.argmax(tp_hit_mask) else tp_price
+        elif sl_hit: exit_price = sl_price
+        elif tp_hit: exit_price = tp_price
+        else: exit_price = self.close_arrays[asset][end_idx - 1]
             
         price_change_pct = (exit_price - price) / price * direction
-        pos_size_notional = size_pct * self.EQUITY
-        pnl = price_change_pct * (pos_size_notional * self.LEVERAGE)
+        pnl = price_change_pct * (size_pct * self.EQUITY * self.LEVERAGE)
         reward = (pnl / self.EQUITY) * 10.0
-        
         self.EQUITY += pnl
         if self.EQUITY <= 0: self.EQUITY = 100.0
-        
-        if tp_mult < sl_mult:
-            reward -= 0.1
-            
+        if tp_mult < sl_mult: reward -= 0.1
         return float(reward)
