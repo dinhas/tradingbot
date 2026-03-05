@@ -96,7 +96,11 @@ def main():
     logger.info(f"Market data directory: {market_data_dir}")
 
     # 1. Data Generation
-    if not args.skip_gen:
+    if args.skip_gen:
+        logger.info("Skipping Data Generation as requested via --skip-gen.")
+    elif os.path.exists(dataset_path):
+        logger.info(f"Dataset already exists at {dataset_path}. Skipping generation.")
+    else:
         gen_script = os.path.join(base_dir, "generate_rl_risk_dataset.py")
         gen_cmd = [
             sys.executable,
@@ -113,8 +117,6 @@ def main():
             gen_cmd.extend(["--max-samples", str(args.max_samples)])
 
         run_command(gen_cmd, "PPO Data Generation (Alpha Filtered)", cwd=base_dir, env=env)
-    else:
-        logger.info("Skipping Data Generation as requested.")
 
     # 2. Training
     os.environ["PPO_DATASET_PATH"] = dataset_path # Pass to training script
