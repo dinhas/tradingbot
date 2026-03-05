@@ -90,6 +90,11 @@ def main():
 
     dataset_path = os.path.join(data_dir, dataset_name)
 
+    # 1. Setup Paths and Environment
+    market_data_dir = os.path.abspath(os.path.join(base_dir, args.data_dir))
+    os.environ["MARKET_DATA_DIR"] = market_data_dir
+    logger.info(f"Market data directory: {market_data_dir}")
+
     # 1. Data Generation
     if not args.skip_gen:
         gen_script = os.path.join(base_dir, "generate_rl_risk_dataset.py")
@@ -97,7 +102,7 @@ def main():
             sys.executable,
             gen_script,
             "--data",
-            args.data_dir,
+            market_data_dir,
             "--output",
             dataset_path,
         ]
