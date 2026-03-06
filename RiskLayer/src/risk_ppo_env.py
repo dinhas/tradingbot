@@ -5,7 +5,9 @@ import pandas as pd
 import logging
 import os
 from collections import deque
+from numba import njit, float32, int32
 from frozen_feature_engine import FeatureEngine
+from stable_baselines3.common.vec_env import VecEnv
 
 # ──────────────────────────────────────────────
 # SPREAD TABLE (in pips, 1 pip = 0.0001 for FX)
@@ -28,26 +30,151 @@ PIP_SIZE = {
 
 EXECUTION_NOISE_ATR = 0.15   # ±0.15x ATR noise on trigger prices
 
-def add_execution_noise(sl_atr_mult, tp_atr_mult):
-    """
-    Shift SL inward (closer to entry) and TP inward (harder to reach).
-    """
-    rng = np.random.default_rng()
-    sl_noise = rng.uniform(0, EXECUTION_NOISE_ATR)
-    effective_sl = max(0.3, sl_atr_mult - sl_noise)
-    tp_noise = rng.uniform(0, EXECUTION_NOISE_ATR * 0.5)
-    effective_tp = tp_atr_mult + tp_noise
-    return effective_sl, effective_tp
+@njit
+def resolve_trade_fast(highs, lows, closes, entry_price, sl_price, tp_price, direction, spread_price):
+    sl_distance = abs(entry_price - sl_price)
 
-def compute_spread_cost_in_r(asset, atr_price, sl_atr_mult):
+    if direction == 1:  # Long
+        actual_entry = entry_price + spread_price
+        sl_check_price = sl_price
+        tp_check_price = tp_price
+    else:               # Short
+        actual_entry = entry_price - spread_price
+        sl_check_price = sl_price
+        tp_check_price = tp_price
+
+    for i in range(len(highs)):
+        high = highs[i]
+        low = lows[i]
+
+        sl_hit = (direction == 1 and low <= sl_check_price) or (direction == -1 and high >= sl_check_price)
+        tp_hit = (direction == 1 and high >= tp_check_price) or (direction == -1 and low <= tp_check_price)
+
+        if sl_hit: return 0, -1.0, i + 1  # 0: sl_hit
+        if tp_hit:
+            tp_dist = abs(tp_price - entry_price)
+            return 1, (tp_dist / sl_distance if sl_distance > 1e-10 else 0.0), i + 1 # 1: tp_hit
+
+    exit_price = closes[-1]
+    if direction == 1: exit_price -= spread_price
+    else: exit_price += spread_price
+
+    pnl = (exit_price - actual_entry) * direction
+    timeout_r = pnl / sl_distance if sl_distance > 1e-10 else 0.0
+    return 2, timeout_r, len(closes) # 2: timeout
+
+class VectorizedRiskEnv(VecEnv):
     """
-    Convert the bid-ask spread into R units.
+    Simplified Vectorized Environment for Risk Model Training.
+    Focuses on speed by avoiding overhead and using NumPy.
+    Extends VecEnv to be compatible with SB3.
     """
-    spread_price = SPREAD_PIPS.get(asset, 2.0) * PIP_SIZE.get(asset, 0.0001)
-    sl_distance = atr_price * sl_atr_mult
-    if sl_distance < 1e-10: return 1.0
-    spread_r = (spread_price * 1.5) / sl_distance
-    return spread_r
+    def __init__(self, signals_df, price_data, n_envs=1):
+        self.signals = signals_df
+        self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+
+        # Cache arrays for fast access
+        self.all_features = np.stack(self.signals['features'].values).astype(np.float32)
+        self.all_assets = self.signals['asset'].values
+        self.all_directions = self.signals['direction'].values.astype(np.int32)
+
+        # Pre-calculate entry data
+        self.close_arrays = {a: price_data[a]['close'].values.astype(np.float32) for a in self.assets}
+        self.high_arrays = {a: price_data[a]['high'].values.astype(np.float32) for a in self.assets}
+        self.low_arrays = {a: price_data[a]['low'].values.astype(np.float32) for a in self.assets}
+        self.atr_arrays = {a: price_data[a]['atr_14'].values.astype(np.float32) for a in self.assets}
+
+        # Index lookup for speed
+        self.time_to_idx = {a: {t: i for i, t in enumerate(price_data[a].index)} for a in self.assets}
+        self.signal_step_indices = np.array([self.time_to_idx[row['asset']][row['timestamp']] for _, row in self.signals.iterrows()], dtype=np.int32)
+
+        self.num_signals = len(self.signals)
+        self.current_indices = np.random.randint(0, self.num_signals, size=n_envs)
+
+        observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(40,), dtype=np.float32)
+        action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
+
+        # Mocking enough for VecEnv.__init__
+        self.num_envs = n_envs
+        self.observation_space = observation_space
+        self.action_space = action_space
+        self.render_mode = None
+        self.metadata = {"render_modes": []}
+
+    def reset(self):
+        self.current_indices = np.random.randint(0, self.num_signals, size=self.num_envs)
+        return self.all_features[self.current_indices]
+
+    def step_async(self, actions):
+        self.actions = actions
+
+    def step_wait(self):
+        # actions: [n_envs, 3]
+        actions = self.actions
+        sl_mults = 0.8 + (actions[:, 0] + 1) / 2 * (3.5 - 0.8)
+        tp_mults = 1.2 + (actions[:, 1] + 1) / 2 * (8.0 - 1.2)
+        size_pcts = 0.1 + (actions[:, 2] + 1) / 2 * (0.3 - 0.1) # Simplified size curriculum
+
+        rewards = np.zeros(self.num_envs, dtype=np.float32)
+        infos = [{} for _ in range(self.num_envs)]
+
+        for i in range(self.num_envs):
+            sig_idx = self.current_indices[i]
+            asset = self.all_assets[sig_idx]
+            direction = self.all_directions[sig_idx]
+            step_idx = self.signal_step_indices[sig_idx]
+
+            entry_price = self.close_arrays[asset][step_idx]
+            atr_price = self.atr_arrays[asset][step_idx]
+
+            sl_mult = sl_mults[i]
+            tp_mult = tp_mults[i]
+
+            f_start = step_idx + 1
+            f_end = min(f_start + 1000, len(self.close_arrays[asset]))
+
+            eff_sl = max(0.3, sl_mult - np.random.uniform(0, EXECUTION_NOISE_ATR))
+            eff_tp = tp_mult + np.random.uniform(0, EXECUTION_NOISE_ATR * 0.5)
+
+            sl_price = entry_price - (direction * eff_sl * atr_price)
+            tp_price = entry_price + (direction * eff_tp * atr_price)
+            spread_price = SPREAD_PIPS.get(asset, 2.0) * PIP_SIZE.get(asset, 0.0001)
+
+            res_code, res_r, res_len = resolve_trade_fast(
+                self.high_arrays[asset][f_start:f_end],
+                self.low_arrays[asset][f_start:f_end],
+                self.close_arrays[asset][f_start:f_end],
+                entry_price, sl_price, tp_price, direction, spread_price
+            )
+
+            reward = res_r - (spread_price * 1.5 / (atr_price * eff_sl + 1e-9))
+            reward *= (size_pcts[i] / 0.1)
+            rewards[i] = np.clip(reward, -10.0, 10.0)
+
+            self.current_indices[i] = (self.current_indices[i] + 1) % self.num_signals
+
+        obs = self.all_features[self.current_indices]
+        dones = np.zeros(self.num_envs, dtype=bool)
+
+        return obs, rewards, dones, infos
+
+    def close(self):
+        pass
+
+    def get_attr(self, attr_name, indices=None):
+        return [getattr(self, attr_name) for _ in range(self.num_envs)]
+
+    def set_attr(self, attr_name, value, indices=None):
+        setattr(self, attr_name, value)
+
+    def env_method(self, method_name, *method_args, indices=None, **method_kwargs):
+        pass
+
+    def env_is_wrapped(self, wrapper_class, indices=None):
+        return [False for _ in range(self.num_envs)]
+
+    def seed(self, seed=None):
+        pass
 
 class RiskModelLogger:
     """
@@ -151,15 +278,10 @@ class RiskPPOEnv(gym.Env):
         # 2. Load Raw Data
         self.data = self._load_data()
         
-        if self.signal_data is None:
-            self.feature_engine = FeatureEngine()
-            self.raw_data, self.processed_data = self.feature_engine.preprocess_data(self.data)
-            self._cache_data_arrays(self.raw_data)
-            self.data_index = self.raw_data.index
-        else:
-            combined_prices = pd.concat([self.data[a].add_prefix(f"{a}_") for a in self.assets], axis=1)
-            self._cache_data_arrays(combined_prices)
-            self.data_index = combined_prices.index
+        self.feature_engine = FeatureEngine()
+        self.raw_data, self.processed_data = self.feature_engine.preprocess_data(self.data)
+        self._cache_data_arrays(self.raw_data)
+        self.data_index = self.raw_data.index
 
         if self.signal_data is None:
             from Alpha.src.model import AlphaSLModel
@@ -332,34 +454,14 @@ class RiskPPOEnv(gym.Env):
 
     def _resolve_trade_v2(self, future_highs, future_lows, future_closes, entry_price, sl_price, tp_price, direction, asset):
         spread_price = SPREAD_PIPS.get(asset, 2.0) * PIP_SIZE.get(asset, 0.0001)
-        sl_distance = abs(entry_price - sl_price)
-
-        if direction == 1:  # Long
-            actual_entry = entry_price + spread_price
-            sl_check_price = sl_price
-            tp_check_price = tp_price
-        else:               # Short
-            actual_entry = entry_price - spread_price
-            sl_check_price = sl_price
-            tp_check_price = tp_price
-
-        for i, (high, low, close) in enumerate(zip(future_highs, future_lows, future_closes)):
-            sl_hit = (direction == 1 and low <= sl_check_price) or (direction == -1 and high >= sl_check_price)
-            tp_hit = (direction == 1 and high >= tp_check_price) or (direction == -1 and low <= tp_check_price)
-
-            if sl_hit and tp_hit: return "sl_hit", -1.0, i + 1
-            if sl_hit: return "sl_hit", -1.0, i + 1
-            if tp_hit:
-                tp_dist = abs(tp_price - entry_price)
-                return "tp_hit", (tp_dist / sl_distance if sl_distance > 1e-10 else 0), i + 1
-
-        exit_price = future_closes[-1]
-        if direction == 1: exit_price -= spread_price
-        else: exit_price += spread_price
         
-        pnl = (exit_price - actual_entry) * direction
-        timeout_r = pnl / sl_distance if sl_distance > 1e-10 else 0.0
-        return "timeout", timeout_r, len(future_closes)
+        res_code, res_r, res_len = resolve_trade_fast(
+            future_highs, future_lows, future_closes,
+            entry_price, sl_price, tp_price, direction, spread_price
+        )
+
+        outcome = "sl_hit" if res_code == 0 else "tp_hit" if res_code == 1 else "timeout"
+        return outcome, res_r, res_len
 
     def _compute_reward_v3(self, outcome, sl_mult, tp_mult, size_pct, timeout_r, asset, atr_price):
         eff_sl, eff_tp = add_execution_noise(sl_mult, tp_mult)
