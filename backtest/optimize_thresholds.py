@@ -16,8 +16,8 @@ from stable_baselines3 import PPO
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-# Add Risklayer/src to path for custom policy loading
-_risklayer_src = PROJECT_ROOT / "Risklayer" / "src"
+# Add RiskLayer/src to path for custom policy loading
+_risklayer_src = PROJECT_ROOT / "RiskLayer" / "src"
 if str(_risklayer_src) not in sys.path:
     sys.path.insert(0, str(_risklayer_src))
 
@@ -82,13 +82,13 @@ def optimize_thresholds():
     parser.add_argument(
         "--risk-model",
         type=str,
-        default="Risklayer/models/ppo_risk_model_final_v2_opt.zip",
+        default="RiskLayer/models/ppo_risk_model_final_v2_opt.zip",
         help="Path to Risk model (RL or SL)",
     )
     parser.add_argument(
         "--risk-scaler",
         type=str,
-        default="Risklayer/models/rl_risk_scaler.pkl",
+        default="RiskLayer/models/rl_risk_scaler.pkl",
         help="Path to Risk scaler",
     )
     parser.add_argument(

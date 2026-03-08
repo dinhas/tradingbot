@@ -9,7 +9,7 @@ from pathlib import Path
 from stable_baselines3 import PPO
 
 # Add RiskLayer/src to path for custom policy loading
-_risklayer_src = Path(__file__).resolve().parent.parent.parent / "Risklayer" / "src"
+_risklayer_src = Path(__file__).resolve().parent.parent.parent / "RiskLayer" / "src"
 if str(_risklayer_src) not in sys.path:
     sys.path.insert(0, str(_risklayer_src))
 
