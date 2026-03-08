@@ -18,6 +18,22 @@
 
 ---
 
+## 📊 Combined Backtest Performance (5000 Steps)
+
+Running with **SL Alpha Model** (Meta Threshold: **0.78**, Quality Threshold: **0.30**) and starting equity of **$10**.
+
+| Metric | Value |
+|--------|-------|
+| **Total Return** | **7,573,201%** |
+| **Final Equity** | **$757,330.18** |
+| **Sharpe Ratio** | 30.84 |
+| **Profit Factor** | 2.37 |
+| **Max Drawdown** | -20.43% |
+| **Win Rate** | 55.70% |
+| **Total Trades** | 1271 |
+
+---
+
 ## 📊 2025 Backtest Performance (v2.7)
 
 Running on full 2025 data with a starting equity of **$10** and optimized **0.30 Confidence Filter**.

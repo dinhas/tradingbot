@@ -31,12 +31,12 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from tqdm import tqdm
 
-from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 # Absolute imports from project root
 from Alpha.src.trading_env import TradingEnv
-from backtest.backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
+from Alpha.src.model import AlphaSLModel
+from backtest.rl_backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
 import joblib
 import torch
 from RiskLayer.src.risk_model_sl import RiskModelSL
@@ -49,7 +49,7 @@ initial_equity=10.0
 class CombinedBacktest:
     """Combined backtest using Alpha model for direction and SL Risk model for SL/TP/sizing"""
     
-    def __init__(self, alpha_model, risk_model, risk_scaler, data_dir, initial_equity=initial_equity, alpha_norm_env=None, env=None, verify_alpha=False, challenge_mode=False):
+    def __init__(self, alpha_model, risk_model, risk_scaler, data_dir, initial_equity=initial_equity, alpha_norm_env=None, env=None, verify_alpha=False, challenge_mode=False, meta_thresh=0.78, qual_thresh=0.30):
         self.alpha_model = alpha_model
         self.risk_model = risk_model
         self.risk_scaler = risk_scaler
@@ -58,6 +58,8 @@ class CombinedBacktest:
         self.initial_equity = initial_equity
         self.verify_alpha = verify_alpha
         self.challenge_mode = challenge_mode
+        self.meta_thresh = meta_thresh
+        self.qual_thresh = qual_thresh
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Challenge Mode Tracking
@@ -153,14 +155,19 @@ class CombinedBacktest:
         else:
             obs_norm = obs_flat
             
-        alpha_actions_all = []
+        dir_probs_list, meta_probs_list, qual_scores_list = [], [], []
         batch_size = 16384
         for i in tqdm(range(0, len(obs_norm), batch_size), desc="Alpha Batch"):
-            batch = obs_norm[i : i + batch_size]
-            actions, _ = self.alpha_model.predict(batch, deterministic=True)
-            alpha_actions_all.append(actions)
+            batch = torch.from_numpy(obs_norm[i : i + batch_size]).to(self.device)
+            with torch.no_grad():
+                dir_logits, qual_pred, meta_logits = self.alpha_model(batch)
+                dir_probs_list.append(torch.softmax(dir_logits, dim=1).cpu().numpy())
+                meta_probs_list.append(torch.sigmoid(meta_logits).cpu().numpy())
+                qual_scores_list.append(qual_pred.cpu().numpy())
         
-        self.alpha_actions_matrix = np.concatenate(alpha_actions_all, axis=0).reshape(N, num_assets)
+        self.alpha_dir_probs = np.concatenate(dir_probs_list, axis=0).reshape(N, num_assets, 3)
+        self.alpha_meta_probs = np.concatenate(meta_probs_list, axis=0).reshape(N, num_assets)
+        self.alpha_qual_scores = np.concatenate(qual_scores_list, axis=0).reshape(N, num_assets)
         
         # 2. Risk Batch Inference
         if not self.verify_alpha:
@@ -241,124 +248,132 @@ class CombinedBacktest:
                         # We use the current equity which includes unrealized P&L
                         self.daily_high_water_mark = self.equity
                     
-                                    # 1. Overall Loss Check (10% of initial balance)
-                                    if self.equity < (self.initial_equity * 0.90):
-                                        self.disqualified = True
-                                        self.disqualification_reason = f"Max Overall Loss Breached: Equity ${self.equity:.2f} < ${self.initial_equity * 0.90:.2f}"
-                                        logger.error(self.disqualification_reason)
-                                        break
-                                    
-                                    # 2. Daily Loss Check (5% of initial balance)
-                                    daily_loss_amount = self.daily_high_water_mark - self.equity
-                                    max_daily_loss = self.initial_equity * 0.05
-                                    
-                                    if daily_loss_amount >= max_daily_loss:
-                                        self.disqualified = True
-                                        self.disqualification_reason = f"Daily Loss Limit Breached: Loss ${daily_loss_amount:.2f} >= ${max_daily_loss:.2f}"
-                                        logger.error(self.disqualification_reason)
-                                        break
-                                    
-                                    # 3. Daily Drawdown Halt (4.5% of initial balance)
-                                    if daily_loss_amount >= (self.initial_equity * 0.045):
-                                        if not self.is_halted_until_next_day:
-                                            logger.warning(f"4.5% Daily Drawdown reached. Halting trading until tomorrow. Time: {current_time}")
-                                            self.is_halted_until_next_day = True
-                                    
-                                    # --- FAST SIGNAL LOOKUP ---
-                                    combined_actions = {}
-                                    
-                                    # Check if we can open new positions
-                                    can_trade = True
-                                    if self.challenge_mode:
-                                        if self.is_halted_until_next_day or self.daily_trades_count >= 50:
-                                            can_trade = False
-                                    
-                                    # Pre-calculate current open positions count
-                                    open_pos_count = sum(1 for p in self.env.positions.values() if p is not None)
+                    # 1. Overall Loss Check (10% of initial balance)
+                    if self.equity < (self.initial_equity * 0.90):
+                        self.disqualified = True
+                        self.disqualification_reason = f"Max Overall Loss Breached: Equity ${self.equity:.2f} < ${self.initial_equity * 0.90:.2f}"
+                        logger.error(self.disqualification_reason)
+                        break
                     
-                                    for i, asset in enumerate(assets):
-                                        if not can_trade: break
+                    # 2. Daily Loss Check (5% of initial balance)
+                    daily_loss_amount = self.daily_high_water_mark - self.equity
+                    max_daily_loss = self.initial_equity * 0.05
                     
-                                        alpha_action = self.alpha_actions_matrix[current_idx, i]
-                                        alpha_actions_sum += abs(alpha_action)
-                                        
-                                        # Direction check
-                                        direction = 1 if alpha_action > 0.33 else (-1 if alpha_action < -0.33 else 0)
-                                        if direction == 0:
-                                            continue
-                                        
-                                        # Challenge Mode: Max 5 positions
-                                        if self.challenge_mode:
-                                            current_pos = self.env.positions.get(asset)
-                                            if current_pos is None:
-                                                if open_pos_count >= 5: continue
-                                            elif current_pos['direction'] == direction:
-                                                continue 
-                                            
-                                        alpha_non_zero += 1
-                                        
-                                        if self.verify_alpha:
-                                            sl_mult, tp_mult, size_pct, lots = 2.0, 4.0, 0.25, 0.1
-                                        else:
-                                            sl_mult = self.sl_matrix[current_idx, i]
-                                            tp_mult = self.tp_matrix[current_idx, i]
-                                            size_out = self.size_matrix[current_idx, i]
-                                            
-                                            if size_out < 0.30: continue
-                                                
-                                            entry_price = close_prices[asset][current_idx]
-                                            size_pct, lots, pos_size = self.calculate_position_size(asset, entry_price, size_out)
-                                        
-                                        if size_pct > 0.01:
-                                            combined_actions[asset] = {
-                                                'direction': direction,
-                                                'size': size_pct,
-                                                'sl_mult': sl_mult,
-                                                'tp_mult': tp_mult,
-                                                'lots': lots
-                                            }
-                                            
-                                            if self.challenge_mode:
-                                                current_pos = self.env.positions.get(asset)
-                                                if current_pos is None or current_pos['direction'] != direction:
-                                                    self.daily_trades_count += 1
-                                                    if current_pos is None: open_pos_count += 1
+                    if daily_loss_amount >= max_daily_loss:
+                        self.disqualified = True
+                        self.disqualification_reason = f"Daily Loss Limit Breached: Loss ${daily_loss_amount:.2f} >= ${max_daily_loss:.2f}"
+                        logger.error(self.disqualification_reason)
+                        break
+
+                    # 3. Daily Drawdown Halt (4.5% of initial balance)
+                    if daily_loss_amount >= (self.initial_equity * 0.045):
+                        if not self.is_halted_until_next_day:
+                            logger.warning(f"4.5% Daily Drawdown reached. Halting trading until tomorrow. Time: {current_time}")
+                            self.is_halted_until_next_day = True
                                     
-                                    # Step 2: Execute Trades (at Close of Candle T)
-                                    self.env.completed_trades = []
-                                    for asset, act in combined_actions.items():
-                                        current_pos = self.env.positions[asset]
-                                        price_raw = close_prices[asset][current_idx]
-                                        atr = atr_values[asset][current_idx]
-                                        
-                                        pip_scalar = 0.01 if 'JPY' in asset or 'XAU' in asset else 0.0001
-                                        slippage = np.random.uniform(0.5, 1.5) * pip_scalar
-                                        price = price_raw + (act['direction'] * -1 * slippage)
-                                            
-                                        if current_pos is None:
-                                            self.env._open_position(asset, act['direction'], act, price, atr)
-                                        elif current_pos['direction'] != act['direction']:
-                                            self.env._close_position(asset, price)
-                                            self.env._open_position(asset, act['direction'], act, price, atr)
-                                    
-                                    # Step 3: Advance to Candle T+1 and Update Positions
-                                    self.env.current_step += 1
-                                    if self.env.current_step >= self.env.max_steps:
-                                        break
-                                    self.env._update_positions()
-                                    
-                                    self.equity = self.env.equity
-                                    self.peak_equity = max(self.peak_equity, self.equity)
-                                    
-                                    if self.env.completed_trades:
-                                        for trade in self.env.completed_trades:
-                                            metrics_tracker.add_trade(trade)
-                                    
-                                    metrics_tracker.add_equity_point(self.env._get_current_timestamp(), self.equity)
-                                    
-                                    if current_idx % 10000 == 0:
-                                        logger.info(f"Step {current_idx}, Equity: ${self.equity:.2f}")
-                                logger.info(f"Episode {episode + 1} complete. Final Equity: ${self.equity:.2f}")
+                # --- FAST SIGNAL LOOKUP ---
+                combined_actions = {}
+
+                # Check if we can open new positions
+                can_trade = True
+                if self.challenge_mode:
+                    if self.is_halted_until_next_day or self.daily_trades_count >= 50:
+                        can_trade = False
+
+                # Pre-calculate current open positions count
+                open_pos_count = sum(1 for p in self.env.positions.values() if p is not None)
+
+                for i, asset in enumerate(assets):
+                    if not can_trade: break
+
+                    dir_probs = self.alpha_dir_probs[current_idx, i]
+                    meta_prob = self.alpha_meta_probs[current_idx, i]
+                    qual_score = self.alpha_qual_scores[current_idx, i]
+
+                    # Direction check
+                    pred_idx = np.argmax(dir_probs)
+                    direction = pred_idx - 1 # Map {0,1,2} -> {-1,0,1}
+
+                    if direction == 0:
+                        continue
+
+                    # Apply SL Model Thresholds
+                    if meta_prob < self.meta_thresh or qual_score < self.qual_thresh:
+                        continue
+
+                    # Challenge Mode: Max 5 positions
+                    if self.challenge_mode:
+                        current_pos = self.env.positions.get(asset)
+                        if current_pos is None:
+                            if open_pos_count >= 5: continue
+                        elif current_pos['direction'] == direction:
+                            continue
+
+                    alpha_non_zero += 1
+
+                    if self.verify_alpha:
+                        sl_mult, tp_mult, size_pct, lots = 2.0, 4.0, 0.25, 0.1
+                    else:
+                        sl_mult = self.sl_matrix[current_idx, i]
+                        tp_mult = self.tp_matrix[current_idx, i]
+                        size_out = self.size_matrix[current_idx, i]
+
+                        if size_out < 0.30: continue
+
+                        entry_price = close_prices[asset][current_idx]
+                        size_pct, lots, pos_size = self.calculate_position_size(asset, entry_price, size_out)
+
+                    if size_pct > 0.01:
+                        combined_actions[asset] = {
+                            'direction': direction,
+                            'size': size_pct,
+                            'sl_mult': sl_mult,
+                            'tp_mult': tp_mult,
+                            'lots': lots
+                        }
+
+                        if self.challenge_mode:
+                            current_pos = self.env.positions.get(asset)
+                            if current_pos is None or current_pos['direction'] != direction:
+                                self.daily_trades_count += 1
+                                if current_pos is None: open_pos_count += 1
+
+                # Step 2: Execute Trades (at Close of Candle T)
+                self.env.completed_trades = []
+                for asset, act in combined_actions.items():
+                    current_pos = self.env.positions[asset]
+                    price_raw = close_prices[asset][current_idx]
+                    atr = atr_values[asset][current_idx]
+
+                    pip_scalar = 0.01 if 'JPY' in asset or 'XAU' in asset else 0.0001
+                    slippage = np.random.uniform(0.5, 1.5) * pip_scalar
+                    price = price_raw + (act['direction'] * -1 * slippage)
+
+                    if current_pos is None:
+                        self.env._open_position(asset, act['direction'], act, price, atr)
+                    elif current_pos['direction'] != act['direction']:
+                        self.env._close_position(asset, price)
+                        self.env._open_position(asset, act['direction'], act, price, atr)
+
+                # Step 3: Advance to Candle T+1 and Update Positions
+                self.env.current_step += 1
+                if self.env.current_step >= self.env.max_steps:
+                    break
+                self.env._update_positions()
+
+                self.equity = self.env.equity
+                self.peak_equity = max(self.peak_equity, self.equity)
+
+                if self.env.completed_trades:
+                    for trade in self.env.completed_trades:
+                        metrics_tracker.add_trade(trade)
+
+                metrics_tracker.add_equity_point(self.env._get_current_timestamp(), self.equity)
+
+                if current_idx % 10000 == 0:
+                    logger.info(f"Step {current_idx}, Equity: ${self.equity:.2f}")
+
+            logger.info(f"Episode {episode + 1} complete. Final Equity: ${self.equity:.2f}")
             if self.challenge_mode:
                 if self.disqualified:
                     logger.error(f"CHALLENGE FAILED: DISQUALIFIED. Reason: {self.disqualification_reason}")
@@ -393,24 +408,33 @@ def run_combined_backtest(args):
     dummy_vec_env = DummyVecEnv([lambda: shared_env])
 
     # Load Normalizer
-    alpha_norm_path = str(alpha_model_path).replace('.zip', '_vecnormalize.pkl')
+    alpha_norm_path = str(alpha_model_path).replace('.pth', '_vecnormalize.pkl')
+    if not os.path.exists(alpha_norm_path):
+        alpha_norm_path = str(alpha_model_path).replace('.zip', '_vecnormalize.pkl')
     if not os.path.exists(alpha_norm_path):
         alpha_norm_path = str(alpha_model_path).replace('_model.zip', '_vecnormalize.pkl')
         
     alpha_norm_env = None
-    if os.path.exists(alpha_norm_path):
-        logger.info(f"Loading Normalizer from {alpha_norm_path}")
-        alpha_norm_env = VecNormalize.load(alpha_norm_path, dummy_vec_env)
-        alpha_norm_env.training = False
-        alpha_norm_env.norm_reward = False
+    if os.path.exists(alpha_norm_path) and alpha_norm_path.endswith('.pkl'):
+        try:
+            logger.info(f"Loading Normalizer from {alpha_norm_path}")
+            alpha_norm_env = VecNormalize.load(alpha_norm_path, dummy_vec_env)
+            alpha_norm_env.training = False
+            alpha_norm_env.norm_reward = False
+        except Exception as e:
+            logger.error(f"Failed to load normalizer: {e}")
+            alpha_norm_env = None
     
     # Load Models
-    alpha_model = PPO.load(alpha_model_path, env=dummy_vec_env)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    alpha_model = AlphaSLModel(input_dim=40).to(device)
+    alpha_model.load_state_dict(torch.load(alpha_model_path, map_location=device))
+    alpha_model.eval()
+
     scaler_path = risk_model_path.parent / "sl_risk_scaler.pkl"
     risk_scaler = joblib.load(scaler_path)
     
     risk_model = RiskModelSL(input_dim=40)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     state_dict = torch.load(risk_model_path, map_location=device)
     risk_model.load_state_dict(state_dict)
     risk_model.to(device)
@@ -420,7 +444,9 @@ def run_combined_backtest(args):
         alpha_model, risk_model, risk_scaler, data_dir_path, 
         initial_equity=args.initial_equity, alpha_norm_env=alpha_norm_env,
         env=shared_env, verify_alpha=args.verify_alpha,
-        challenge_mode=args.challenge_mode
+        challenge_mode=args.challenge_mode,
+        meta_thresh=args.meta_thresh,
+        qual_thresh=args.qual_thresh
     )
 
     metrics_tracker = backtest.run_backtest(episodes=args.episodes, max_steps=args.max_steps)
@@ -462,4 +488,6 @@ if __name__ == "__main__":
     parser.add_argument("--initial-equity", type=float, default=10.0)
     parser.add_argument("--verify-alpha", action="store_true")
     parser.add_argument("--challenge-mode", action="store_true", help="Enable prop-firm challenge risk rules")
+    parser.add_argument("--meta-thresh", type=float, default=0.78)
+    parser.add_argument("--qual-thresh", type=float, default=0.30)
     run_combined_backtest(parser.parse_args())
