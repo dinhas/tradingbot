@@ -546,8 +546,13 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
     if 'asset' in df_trades.columns:
         for asset in df_trades['asset'].unique():
             asset_trades = df_trades[df_trades['asset'] == asset].sort_values('timestamp')
-            cumulative_pnl = asset_trades['pnl'].cumsum()
-            ax3.plot(range(len(cumulative_pnl)), cumulative_pnl, marker='o', markersize=3, label=asset, linewidth=2)
+            cumulative_pnl = asset_trades['pnl'].cumsum().values
+            # Downsample for speed
+            if len(cumulative_pnl) > 1000:
+                indices = np.linspace(0, len(cumulative_pnl)-1, 1000).astype(int)
+                ax3.plot(indices, cumulative_pnl[indices], label=asset, linewidth=2)
+            else:
+                ax3.plot(range(len(cumulative_pnl)), cumulative_pnl, label=asset, linewidth=2)
         
         ax3.axhline(y=0, color='black', linestyle='--', linewidth=1)
         ax3.set_xlabel('Trade Number', fontsize=10, fontweight='bold')
@@ -600,18 +605,26 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
     ax6 = fig.add_subplot(gs[3, :])
     if 'entry_price' in df_trades.columns and 'exit_price' in df_trades.columns:
         # Plot trades over time
-        trade_times = range(len(df_trades))
-        entry_prices = df_trades['entry_price'].values
-        exit_prices = df_trades['exit_price'].values
-        pnls = df_trades['pnl'].values
+        # Downsample if too many trades to avoid hanging
+        if len(df_trades) > 2000:
+            df_plot = df_trades.sample(2000).sort_index()
+            ax6.set_title(f'Trade Timeline (Sampled 2000/{len(df_trades)} Trades)', fontsize=12, fontweight='bold')
+        else:
+            df_plot = df_trades
+            ax6.set_title('Trade Timeline (Entry → Exit)', fontsize=12, fontweight='bold')
+
+        entry_prices = df_plot['entry_price'].values
+        exit_prices = df_plot['exit_price'].values
+        pnls = df_plot['pnl'].values
+        trade_indices = df_plot.index
         
         # Color code by profit/loss
         colors_timeline = ['green' if p > 0 else 'red' for p in pnls]
         
-        for i, (entry, exit, color) in enumerate(zip(entry_prices, exit_prices, colors_timeline)):
-            ax6.plot([i, i], [entry, exit], color=color, alpha=0.6, linewidth=2)
-            ax6.scatter(i, entry, color='blue', s=30, zorder=3, alpha=0.7)
-            ax6.scatter(i, exit, color=color, s=30, zorder=3, alpha=0.7)
+        for idx, entry, exit, color in zip(trade_indices, entry_prices, exit_prices, colors_timeline):
+            ax6.plot([idx, idx], [entry, exit], color=color, alpha=0.6, linewidth=1)
+            ax6.scatter(idx, entry, color='blue', s=10, zorder=3, alpha=0.5)
+            ax6.scatter(idx, exit, color=color, s=10, zorder=3, alpha=0.5)
         
         ax6.set_xlabel('Trade Number', fontsize=11, fontweight='bold')
         ax6.set_ylabel('Price', fontsize=11, fontweight='bold')
