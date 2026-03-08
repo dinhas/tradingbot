@@ -49,7 +49,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-initial_equity = 10.0
+default_initial_equity = 10000.0
 
 
 class CombinedBacktest:
@@ -61,10 +61,11 @@ class CombinedBacktest:
         risk_model,
         risk_scaler,
         data_dir,
-        initial_equity=initial_equity,
+        initial_equity=default_initial_equity,
         env=None,
         verify_alpha=False,
         challenge_mode=False,
+        compounding=False,
     ):
         self.alpha_model = alpha_model
         self.risk_model = risk_model
@@ -73,6 +74,7 @@ class CombinedBacktest:
         self.initial_equity = initial_equity
         self.verify_alpha = verify_alpha
         self.challenge_mode = challenge_mode
+        self.compounding = compounding
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Challenge Mode Tracking
@@ -137,7 +139,10 @@ class CombinedBacktest:
             ]
             leverage = 100.0 if is_forex else 30.0
 
-        position_size = self.equity * size_out
+        # Position Sizing for stability
+        # If compounding is False, we use initial_equity for sizing
+        base_equity = self.equity if self.compounding else self.initial_equity
+        position_size = base_equity * size_out
         position_value_usd = position_size * leverage
 
         # Calculate Lots
@@ -215,17 +220,6 @@ class CombinedBacktest:
             N, num_assets
         )
 
-        # Debug: Print stats about the signals
-        logger.info(
-            f"DEBUG: Alpha signals - quality range: [{self.alpha_quality_matrix.min():.3f}, {self.alpha_quality_matrix.max():.3f}]"
-        )
-        logger.info(
-            f"DEBUG: Alpha signals - meta range: [{self.alpha_meta_matrix.min():.3f}, {self.alpha_meta_matrix.max():.3f}]"
-        )
-        logger.info(
-            f"DEBUG: Alpha signals - direction distribution: {np.unique(self.alpha_direction_matrix, return_counts=True)}"
-        )
-
         # Count how many would pass thresholds
         quality_passes = np.sum(self.alpha_quality_matrix >= 0.30)
         meta_passes = np.sum(self.alpha_meta_matrix >= 0.78)
@@ -301,17 +295,6 @@ class CombinedBacktest:
             # Debug: Print start and end step
             logger.info(f"DEBUG: start_step={start_step}, end_step={end_step}")
 
-            # Debug: Print some direction values at start_step
-            logger.info(
-                f"DEBUG: Direction at step {start_step}: {self.alpha_direction_matrix[start_step]}"
-            )
-            logger.info(
-                f"DEBUG: Quality at step {start_step}: {self.alpha_quality_matrix[start_step]}"
-            )
-            logger.info(
-                f"DEBUG: Meta at step {start_step}: {self.alpha_meta_matrix[start_step]}"
-            )
-
             alpha_non_zero = 0
             alpha_actions_sum = 0
 
@@ -325,10 +308,6 @@ class CombinedBacktest:
             for current_idx in tqdm(
                 range(start_step, end_step), desc=f"Ep {episode + 1}"
             ):
-                # ALWAYS print to see loop execution
-                if current_idx < 505:
-                    print(f"STEP {current_idx}", flush=True)
-
                 self.env.current_step = current_idx
                 current_time = self.env._get_current_timestamp()
 
@@ -387,103 +366,86 @@ class CombinedBacktest:
                 # --- FAST SIGNAL LOOKUP ---
                 combined_actions = {}
 
-            # Check if we can open new positions
-            can_trade = True
-            if self.challenge_mode:
-                if self.is_halted_until_next_day or self.daily_trades_count >= 50:
-                    can_trade = False
-
-            # Pre-calculate current open positions count
-            open_pos_count = sum(
-                1 for p in self.env.positions.values() if p is not None
-            )
-
-            for i, asset in enumerate(assets):
-                if not can_trade:
-                    break
-
-                # AlphaSLModel outputs: direction (-1, 0, 1), quality (raw), meta (0-1)
-                direction = int(self.alpha_direction_matrix[current_idx, i])
-                quality = self.alpha_quality_matrix[current_idx, i]
-                meta = self.alpha_meta_matrix[current_idx, i]
-
-                # Debug: ALWAYS print for first few iterations
-                if current_idx < 505 and i == 0:
-                    logger.info(
-                        f">>> Loop iteration: step={current_idx}, asset={asset}, dir={direction}, qual={quality:.3f}, meta={meta:.3f}"
-                    )
-
-                # Debug: print first few steps values
-                if current_idx < 510:
-                    logger.info(
-                        f"DEBUG Step {current_idx}, Asset {asset}: dir={direction}, qual={quality:.3f}, meta={meta:.3f}"
-                    )
-
-                # Apply thresholds: quality >= 0.30 AND meta >= 0.78
-                if quality < 0.30 or meta < 0.78:
-                    continue
-
-                # Skip if no direction
-                if direction == 0:
-                    continue
-
-                # Debug: signal passed thresholds and has direction != 0
-                if current_idx < 510:
-                    logger.info(
-                        f"DEBUG Step {current_idx}: {asset} PASSED -> dir={direction}, qual={quality:.3f}, meta={meta:.3f}"
-                    )
-
-                alpha_actions_sum += abs(direction)
-
-                # Challenge Mode: Max 5 positions
+                # Check if we can open new positions
+                can_trade = True
                 if self.challenge_mode:
-                    current_pos = self.env.positions.get(asset)
-                    if current_pos is None:
-                        if open_pos_count >= 5:
-                            continue
-                    elif current_pos["direction"] == direction:
+                    if self.is_halted_until_next_day or self.daily_trades_count >= 50:
+                        can_trade = False
+
+                # Pre-calculate current open positions count
+                open_pos_count = sum(
+                    1 for p in self.env.positions.values() if p is not None
+                )
+
+                for i, asset in enumerate(assets):
+                    if not can_trade:
+                        break
+
+                    # AlphaSLModel outputs: direction (-1, 0, 1), quality (raw), meta (0-1)
+                    direction = int(self.alpha_direction_matrix[current_idx, i])
+                    quality = self.alpha_quality_matrix[current_idx, i]
+                    meta = self.alpha_meta_matrix[current_idx, i]
+
+                    # Apply thresholds: quality >= 0.30 AND meta >= 0.78
+                    if quality < 0.30 or meta < 0.78:
                         continue
 
-                alpha_non_zero += 1
+                    # Skip if no direction
+                    if direction == 0:
+                        continue
 
-                if self.verify_alpha:
-                    sl_mult, tp_mult, size_pct, lots = 2.0, 4.0, 0.25, 0.1
-                else:
-                    sl_idx = self.sl_matrix[current_idx, i]
-                    tp_mult = self.tp_matrix[current_idx, i]
-                    size_out = self.size_matrix[current_idx, i]
+                    alpha_actions_sum += abs(direction)
 
-                    sl_mult = SL_CHOICES[sl_idx]
-
-                    entry_price = close_prices[asset][current_idx]
-                    size_pct, lots, pos_size = self.calculate_position_size(
-                        asset, entry_price, max(size_out, 0.1)
-                    )
-
-                if size_pct > 0.01:
-                    combined_actions[asset] = {
-                        "direction": direction,
-                        "size": size_pct,
-                        "sl_mult": sl_mult,
-                        "tp_mult": tp_mult,
-                        "lots": lots,
-                    }
-
+                    # Challenge Mode: Max 5 positions
                     if self.challenge_mode:
                         current_pos = self.env.positions.get(asset)
-                        if current_pos is None or current_pos["direction"] != direction:
-                            self.daily_trades_count += 1
-                            if current_pos is None:
-                                open_pos_count += 1
+                        if current_pos is None:
+                            if open_pos_count >= 5:
+                                continue
+                        elif current_pos["direction"] == direction:
+                            continue
+
+                    alpha_non_zero += 1
+
+                    if self.verify_alpha:
+                        sl_mult, tp_mult, size_pct, lots = 2.0, 4.0, 0.25, 0.1
+                    else:
+                        sl_mult = self.sl_matrix[current_idx, i]
+                        tp_mult = self.tp_matrix[current_idx, i]
+                        size_out = self.size_matrix[current_idx, i]
+
+                        entry_price = close_prices[asset][current_idx]
+                        size_pct, lots, pos_size = self.calculate_position_size(
+                            asset, entry_price, max(size_out, 0.1)
+                        )
+
+                    # Adjust size for environment based on compounding preference
+                    env_size = size_pct
+                    if not self.compounding:
+                        # To keep size non-compounding, relative to initial_equity:
+                        # absolute_size_usd = passed_size * MAX_POS_SIZE_PCT * current_equity
+                        # We want absolute_size_usd = size_pct * MAX_POS_SIZE_PCT * initial_equity
+                        # So passed_size = size_pct * (initial_equity / current_equity)
+                        env_size = size_pct * (self.initial_equity / max(self.equity, 1e-9))
+
+                    if env_size > 0.0001:
+                        combined_actions[asset] = {
+                            "direction": direction,
+                            "size": env_size,
+                            "sl_mult": sl_mult,
+                            "tp_mult": tp_mult,
+                            "lots": lots,
+                        }
+
+                        if self.challenge_mode:
+                            current_pos = self.env.positions.get(asset)
+                            if current_pos is None or current_pos["direction"] != direction:
+                                self.daily_trades_count += 1
+                                if current_pos is None:
+                                    open_pos_count += 1
 
                 # Step 2: Execute Trades (at Close of Candle T)
                 self.env.completed_trades = []
-
-                # Debug: Check if we have any actions
-                if combined_actions:
-                    logger.info(
-                        f"DEBUG: Combined actions at step {current_idx}: {combined_actions}"
-                    )
 
                 for asset, act in combined_actions.items():
                     current_pos = self.env.positions[asset]
@@ -511,6 +473,9 @@ class CombinedBacktest:
                 self.env._update_positions()
 
                 self.equity = self.env.equity
+                if not np.isfinite(self.equity):
+                    logger.error(f"Equity is non-finite at step {current_idx}. Stopping.")
+                    break
                 self.peak_equity = max(self.peak_equity, self.equity)
 
                 if self.env.completed_trades:
@@ -526,22 +491,6 @@ class CombinedBacktest:
             logger.info(
                 f"Episode {episode + 1} complete. Final Equity: ${self.equity:.2f}"
             )
-            if self.challenge_mode:
-                if self.disqualified:
-                    logger.error(
-                        f"CHALLENGE FAILED: DISQUALIFIED. Reason: {self.disqualification_reason}"
-                    )
-                else:
-                    profit_pct = (
-                        self.equity - self.initial_equity
-                    ) / self.initial_equity
-                    # Standard prop firm target is usually 10%
-                    if profit_pct >= 0.10:
-                        logger.info(f"CHALLENGE PASSED! Profit: {profit_pct:.2%}")
-                    else:
-                        logger.warning(
-                            f"CHALLENGE ENDED: Profit Target Not Met. Profit: {profit_pct:.2%}"
-                        )
 
         return metrics_tracker
 
@@ -550,8 +499,8 @@ def run_combined_backtest(args):
     """Main backtesting function"""
     project_root = Path(__file__).resolve().parent.parent
 
-    # Add Risklayer/src to path for custom policy loading
-    sys.path.insert(0, str(project_root / "Risklayer" / "src"))
+    # Add RiskLayer/src to path for custom policy loading
+    sys.path.insert(0, str(project_root / "RiskLayer" / "src"))
 
     alpha_model_path = project_root / args.alpha_model
     risk_model_path = project_root / args.risk_model
@@ -561,8 +510,11 @@ def run_combined_backtest(args):
     logger.info("Starting optimized Alpha-Risk backtest")
     output_dir_path.mkdir(parents=True, exist_ok=True)
 
-    if not alpha_model_path.exists() or not risk_model_path.exists():
-        logger.error("Model files not found")
+    if not alpha_model_path.exists():
+        logger.error(f"Alpha model file not found: {alpha_model_path}")
+        sys.exit(1)
+    if not risk_model_path.exists():
+        logger.error(f"Risk model file not found: {risk_model_path}")
         sys.exit(1)
 
     logger.info("Initializing environment...")
@@ -571,6 +523,7 @@ def run_combined_backtest(args):
     # Load AlphaSLModel (3 outputs: direction, quality, meta)
     logger.info(f"Loading AlphaSLModel from {alpha_model_path}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     alpha_model = AlphaSLModel(input_dim=40)
     alpha_checkpoint = torch.load(
         alpha_model_path, map_location=device, weights_only=False
@@ -592,6 +545,7 @@ def run_combined_backtest(args):
         env=shared_env,
         verify_alpha=args.verify_alpha,
         challenge_mode=args.challenge_mode,
+        compounding=args.compounding,
     )
 
     metrics_tracker = backtest.run_backtest(
@@ -635,17 +589,22 @@ if __name__ == "__main__":
     parser.add_argument(
         "--risk-model",
         type=str,
-        default="Risklayer/models/ppo_risk_model_final_v2_opt.zip",
+        default="RiskLayer/models/ppo_risk_model_final_v2_opt.zip",
     )
-    parser.add_argument("--data-dir", type=str, default="backtest/data")
+    parser.add_argument("--data-dir", type=str, default="data")
     parser.add_argument("--output-dir", type=str, default="backtest/results")
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--initial-equity", type=float, default=10.0)
+    parser.add_argument("--initial-equity", type=float, default=10000.0)
     parser.add_argument("--verify-alpha", action="store_true")
     parser.add_argument(
         "--challenge-mode",
         action="store_true",
         help="Enable prop-firm challenge risk rules",
+    )
+    parser.add_argument(
+        "--compounding",
+        action="store_true",
+        help="Enable equity compounding",
     )
     run_combined_backtest(parser.parse_args())
