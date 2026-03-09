@@ -55,6 +55,8 @@ def convert_sl_to_rl_dataset(input_path, output_path):
 
 
 if __name__ == "__main__":
+    # Resolved conflict: Keeping 'RiskLayer' (Capital L) from new code
     input_path = "RiskLayer/data/sl_risk_dataset.parquet"
     output_path = "RiskLayer/data/rl_risk_dataset.parquet"
+    
     convert_sl_to_rl_dataset(input_path, output_path)

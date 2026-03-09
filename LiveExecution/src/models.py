@@ -9,12 +9,12 @@ from pathlib import Path
 from stable_baselines3 import PPO
 
 # Add RiskLayer/src to path for custom policy loading
+# Resolved conflict: Keeping the new pathing for live-execution-paths-and-verification
 _risklayer_src = Path(__file__).resolve().parent.parent.parent / "RiskLayer" / "src"
 if str(_risklayer_src) not in sys.path:
     sys.path.insert(0, str(_risklayer_src))
 
 # --- PyTorch Model Architectures ---
-
 
 class ResidualBlock(nn.Module):
     def __init__(self, dim, dropout=0.1):
@@ -133,7 +133,6 @@ class RiskModelSL(nn.Module):
 
 # --- Model Loader ---
 
-
 class ModelLoader:
     """
     Loads and provides inference for Alpha and Risk models.
@@ -233,7 +232,6 @@ class ModelLoader:
         if observation.ndim == 1:
             observation = observation.reshape(1, -1)
 
-        # SL model doesn't have a normalizer yet (as per user), so use raw features
         obs_tensor = torch.from_numpy(observation.astype(np.float32)).to(self.device)
 
         with torch.no_grad():
