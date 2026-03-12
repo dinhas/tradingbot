@@ -35,7 +35,7 @@ port = 8000
 entrypoint = ["python", "main.py"]
 
 [cerebrium.hardware]
-cpu = 2
+cpu = 1
 memory = 2.0
 compute = "CPU"
 gpu_count = 0

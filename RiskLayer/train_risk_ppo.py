@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
+from stable_baselines3.common.vec_env import VecNormalize
 
 # Add src to path
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
@@ -34,16 +35,17 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
 CONFIG_B = dict(
-    learning_rate=1e-4,
+    learning_rate=1e-5,    # Emergency Patch: was 1e-4
     n_steps=4096,
-    batch_size=1024,  # Increased for better CPU throughput
-    n_epochs=10,
+    batch_size=512,       # Emergency Patch: was 1024
+    n_epochs=4,           # Emergency Patch: was 10
     gamma=0.995,
     gae_lambda=0.95,
-    clip_range=0.15,
-    ent_coef=0.005,
-    vf_coef=0.6,
-    max_grad_norm=0.5,
+    clip_range=0.10,      # Emergency Patch: was 0.15
+    ent_coef=0.0,         # Emergency Patch: was 0.005
+    vf_coef=0.5,          # Emergency Patch: was 0.6
+    max_grad_norm=0.3,    # Emergency Patch: was 0.5
+    target_kl=0.01,       # Emergency Patch: ADDED for stability
     policy_kwargs=dict(
         activation_fn=torch.nn.Tanh,
     ),
@@ -93,6 +95,16 @@ def train():
 
     # 2. Create Vectorized Environment
     env = VectorizedRiskEnv(signals_df, price_data, n_envs=8)
+    
+    # Emergency Fix: Use VecNormalize for stability
+    env = VecNormalize(
+        env,
+        norm_obs=True,
+        norm_reward=True,
+        clip_obs=10.0,
+        clip_reward=5.0,    # hard clips normalized reward
+        gamma=CONFIG_B["gamma"],
+    )
 
     # 3. Initialize Model
     model = PPO(
@@ -121,8 +133,12 @@ def train():
     # 6. Save Final Model
     model_path = os.path.join(MODELS_DIR, "ppo_risk_model_final_v2_opt.zip")
     model.save(model_path)
+    
+    # Save VecNormalize stats
+    stats_path = os.path.join(MODELS_DIR, "ppo_risk_model_final_vecnormalize.pkl")
+    env.save(stats_path)
 
-    logger.info(f"Training Complete. Model saved to {model_path}")
+    logger.info(f"Training Complete. Model saved to {model_path} and stats to {stats_path}")
 
 
 if __name__ == "__main__":
