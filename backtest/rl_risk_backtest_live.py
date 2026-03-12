@@ -1,6 +1,9 @@
 """
-Combined Alpha-Risk Model Backtesting Script - OPTIMIZED VERSION
-Resolved Merge Conflict: Vectorized PPO Inference with Flexible Thresholds
+Backtest Script with RL Risk Model (PPO) - Realistic Live Execution Environment
+Uses the default thresholds from LiveExecution/src/config.py:
+- meta_threshold: 0.7071
+- qual_threshold: 0.70
+- risk_threshold: 0.10
 """
 
 import os
@@ -16,12 +19,12 @@ from pathlib import Path
 from tqdm import tqdm
 from datetime import datetime
 
-# Add project root to sys.path to allow absolute imports
+# Add project root to sys.path
 project_root = str(Path(__file__).resolve().parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# Add numpy 1.x/2.x compatibility shim for SB3 model loading
+# NumPy compatibility shim
 if not hasattr(np, "_core"):
     import sys
 
@@ -43,7 +46,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SL_CHOICES = [0.5, 0.75, 1.0, 1.5, 1.75, 2.0, 2.5, 2.75, 3.0]
 DEFAULT_INITIAL_EQUITY = 10000.0
 
 
@@ -58,8 +60,10 @@ class NumpyEncoder(json.JSONEncoder):
         return super(NumpyEncoder, self).default(obj)
 
 
-class CombinedBacktest:
-    """Combined backtest using Alpha model for direction and PPO Risk model for SL/TP/sizing"""
+class RealisticLiveBacktest:
+    """
+    Backtest using RL risk model with live execution thresholds and realistic environment settings.
+    """
 
     def __init__(
         self,
@@ -68,10 +72,8 @@ class CombinedBacktest:
         risk_scaler,
         data_dir,
         initial_equity=DEFAULT_INITIAL_EQUITY,
-        env=None,
-        verify_alpha=False,
-        challenge_mode=False,
         compounding=False,
+        challenge_mode=False,
         meta_thresh=0.7071,
         qual_thresh=0.70,
         risk_thresh=0.10,
@@ -81,9 +83,8 @@ class CombinedBacktest:
         self.risk_scaler = risk_scaler
         self.data_dir = data_dir
         self.initial_equity = initial_equity
-        self.verify_alpha = verify_alpha
-        self.challenge_mode = challenge_mode
         self.compounding = compounding
+        self.challenge_mode = challenge_mode
         self.meta_thresh = meta_thresh
         self.qual_thresh = qual_thresh
         self.risk_thresh = risk_thresh
@@ -98,22 +99,18 @@ class CombinedBacktest:
         self.disqualification_reason = ""
 
         # Environment setup
-        self.env = (
-            env
-            if env is not None
-            else TradingEnv(data_dir=data_dir, stage=1, is_training=False)
-        )
+        self.env = TradingEnv(data_dir=data_dir, stage=1, is_training=False)
         self.env.equity = initial_equity
         self.equity = initial_equity
         self.peak_equity = initial_equity
 
-        # Risk model constants
+        # Risk model constants (matching live execution)
         self.MAX_LEVERAGE = 100.0
         self.MIN_LOTS = 0.01
         self.CONTRACT_SIZE = 100000
 
     def calculate_position_size(self, asset, entry_price, size_out):
-        """Calculate position size using Direct Model Allocation"""
+        """Calculate position size using Direct Model Allocation (matching live execution)"""
         leverage = self.MAX_LEVERAGE
         if self.challenge_mode:
             is_forex = asset in [
@@ -148,7 +145,7 @@ class CombinedBacktest:
         return size_out, lots, position_size
 
     def _precalculate_signals(self):
-        """Batch inference for speed."""
+        """Batch inference for speed (optimized)"""
         logger.info("Pre-calculating signals...")
         master_obs = self.env.master_obs_matrix
         N, _ = master_obs.shape
@@ -173,26 +170,23 @@ class CombinedBacktest:
         self.alpha_meta_matrix = np.concatenate(alpha_meta).reshape(N, num_assets)
 
         # Risk Inference (PPO)
-        if not self.verify_alpha:
-            sl_l, tp_l, sz_l = [], [], []
-            for i in tqdm(range(0, len(obs_flat), batch_size), desc="Risk Batch"):
-                batch = obs_flat[i : i + batch_size]
-                obs_scaled = self.risk_scaler.transform(batch).astype(np.float32)
-                actions, _ = self.risk_model.predict(obs_scaled, deterministic=True)
+        sl_l, tp_l, sz_l = [], [], []
+        for i in tqdm(range(0, len(obs_flat), batch_size), desc="Risk Batch"):
+            batch = obs_flat[i : i + batch_size]
+            obs_scaled = self.risk_scaler.transform(batch).astype(np.float32)
+            actions, _ = self.risk_model.predict(obs_scaled, deterministic=True)
 
-                # PPO Mapping: -1...1 to real world values (Matching RiskPPOEnv training)
-                # SL: 0.8 + (a+1)/2 * (3.5 - 0.8) -> [0.8, 3.5]
-                # TP: 1.2 + (a+1)/2 * (8.0 - 1.2) -> [1.2, 8.0]
-                # Size: 0.01 + (a+1)/2 * (0.30 - 0.01) -> [0.01, 0.30]
-                sl_l.append(0.8 + (actions[:, 0] + 1) / 2 * (3.5 - 0.8))
-                tp_l.append(1.2 + (actions[:, 1] + 1) / 2 * (8.0 - 1.2))
-                sz_l.append(0.01 + (actions[:, 2] + 1) / 2 * (0.30 - 0.01))
+            # PPO Mapping: -1...1 to real world values (Matching RiskPPOEnv training)
+            sl_l.append(0.8 + (actions[:, 0] + 1) / 2 * (3.5 - 0.8))
+            tp_l.append(1.2 + (actions[:, 1] + 1) / 2 * (8.0 - 1.2))
+            sz_l.append(0.01 + (actions[:, 2] + 1) / 2 * (0.30 - 0.01))
 
-            self.sl_matrix = np.concatenate(sl_l).reshape(N, num_assets)
-            self.tp_matrix = np.concatenate(tp_l).reshape(N, num_assets)
-            self.size_matrix = np.concatenate(sz_l).reshape(N, num_assets)
+        self.sl_matrix = np.concatenate(sl_l).reshape(N, num_assets)
+        self.tp_matrix = np.concatenate(tp_l).reshape(N, num_assets)
+        self.size_matrix = np.concatenate(sz_l).reshape(N, num_assets)
 
     def run_backtest(self, episodes=1, max_steps=None):
+        """Run backtest with realistic live execution settings"""
         self._precalculate_signals()
         metrics_tracker = BacktestMetrics()
         assets = self.env.assets
@@ -212,7 +206,7 @@ class CombinedBacktest:
                 self.env.current_step = current_idx
                 current_time = self.env._get_current_timestamp()
 
-                # Day Management & Drawdown Checks
+                # Day Management & Drawdown Checks (matching live execution)
                 day_str = current_time.strftime("%Y-%m-%d")
                 if day_str != self.current_day:
                     self.current_day = day_str
@@ -222,9 +216,7 @@ class CombinedBacktest:
 
                 daily_loss = self.daily_high_water_mark - self.equity
                 if daily_loss >= (self.initial_equity * 0.05):
-                    self.is_halted_until_next_day = (
-                        True  # Changed from disqualified for standard backtest
-                    )
+                    self.is_halted_until_next_day = True
 
                 # Signal Selection
                 combined_actions = {}
@@ -250,19 +242,11 @@ class CombinedBacktest:
                         continue
 
                     # Risk Params
-                    sl_mult = (
-                        self.sl_matrix[current_idx, i] if not self.verify_alpha else 2.0
-                    )
-                    tp_mult = (
-                        self.tp_matrix[current_idx, i] if not self.verify_alpha else 4.0
-                    )
-                    size_out = (
-                        self.size_matrix[current_idx, i]
-                        if not self.verify_alpha
-                        else 0.25
-                    )
+                    sl_mult = self.sl_matrix[current_idx, i]
+                    tp_mult = self.tp_matrix[current_idx, i]
+                    size_out = self.size_matrix[current_idx, i]
 
-                    if not self.verify_alpha and size_out < self.risk_thresh:
+                    if size_out < self.risk_thresh:
                         continue
 
                     entry_price = close_prices[asset][current_idx]
@@ -309,7 +293,7 @@ class CombinedBacktest:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Alpha-Risk Multi-Model Combined Backtest"
+        description="RL Risk Model Backtest - Realistic Live Execution Environment"
     )
     parser.add_argument(
         "--alpha-model", type=str, default="Alpha/models/alpha_model.pth"
@@ -324,16 +308,15 @@ def main():
     )
     parser.add_argument("--data-dir", type=str, default="backtest/data")
     parser.add_argument("--initial-equity", type=float, default=10000.0)
-    parser.add_argument("--meta", type=float, default=0.7071)
-    parser.add_argument("--qual", type=float, default=0.70)
-    parser.add_argument("--risk", type=float, default=0.10)
     parser.add_argument("--compounding", action="store_true", default=False)
+    parser.add_argument("--challenge-mode", action="store_true", default=False)
     parser.add_argument("--output-dir", type=str, default="backtest/results")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load Models
+    logger.info("Loading models...")
     alpha_model = AlphaSLModel(input_dim=40, hidden_dim=256, num_res_blocks=4).to(
         device
     )
@@ -343,19 +326,26 @@ def main():
     risk_model = PPO.load(args.risk_model, device=device)
     risk_scaler = joblib.load(args.risk_scaler)
 
-    # Initialize Backtest
-    bt = CombinedBacktest(
+    # Initialize Backtest with LIVE EXECUTION THRESHOLDS
+    logger.info("Initializing backtest with live execution thresholds:")
+    logger.info(f"  Meta threshold: 0.7071")
+    logger.info(f"  Quality threshold: 0.70")
+    logger.info(f"  Risk threshold: 0.10")
+
+    bt = RealisticLiveBacktest(
         alpha_model=alpha_model,
         risk_model=risk_model,
         risk_scaler=risk_scaler,
         data_dir=args.data_dir,
         initial_equity=args.initial_equity,
         compounding=args.compounding,
-        meta_thresh=args.meta,
-        qual_thresh=args.qual,
-        risk_thresh=args.risk,
+        challenge_mode=args.challenge_mode,
+        meta_thresh=0.7071,
+        qual_thresh=0.70,
+        risk_thresh=0.10,
     )
 
+    logger.info("Starting backtest...")
     metrics = bt.run_backtest()
     final_results = metrics.calculate_metrics()
 
@@ -364,16 +354,20 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = output_dir / f"combined_results_{timestamp}.json"
+    results_file = output_dir / f"rl_risk_backtest_live_thresholds_{timestamp}.json"
 
     with open(results_file, "w") as f:
         json.dump(final_results, f, indent=4, cls=NumpyEncoder)
 
-    logger.info(f"Backtest Completed. Results saved to {results_file}")
+    logger.info(f"\nBacktest Completed. Results saved to {results_file}")
+    logger.info(f"\n=== Final Results ===")
     logger.info(f"Final Equity: {final_results['final_equity']:.2f}")
     logger.info(f"Total Return: {final_results['total_return']:.2%}")
     logger.info(f"Win Rate: {final_results['win_rate']:.2%}")
     logger.info(f"Max Drawdown: {final_results['max_drawdown']:.2%}")
+    logger.info(f"Sharpe Ratio: {final_results['sharpe_ratio']:.2f}")
+    logger.info(f"Profit Factor: {final_results['profit_factor']:.3f}")
+    logger.info(f"Number of Trades: {final_results['total_trades']}")
 
 
 if __name__ == "__main__":

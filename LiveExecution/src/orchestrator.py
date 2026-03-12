@@ -303,29 +303,39 @@ class Orchestrator:
         asset_name = self._get_symbol_name(symbol_id)
         self.logger.info(f"--- M5 Close Detected: {asset_name} ({symbol_id}) ---")
         
-        if not self.fm.is_ready(): return
+        if not self.fm.is_ready():
+            self.logger.info(f"Feature manager not ready for {asset_name}. Skipping.")
+            return
 
         self.fm.update_from_trendbar(asset_name, trendbar)
 
-        if len(self.active_positions) >= 5 and symbol_id not in self.active_positions: return
-        if self.is_asset_locked(symbol_id): return
+        if len(self.active_positions) >= 5 and symbol_id not in self.active_positions:
+            self.logger.info(f"Max active positions (5) reached. Skipping {asset_name}.")
+            return
+        if self.is_asset_locked(symbol_id):
+            self.logger.info(f"Asset {asset_name} is locked (already has an active position). Skipping.")
+            return
 
         try:
             decision = yield threads.deferToThread(self.run_inference_chain, symbol_id)
             self.last_inference_time = time.time()
             
             if decision and decision.get('action') != 0:
+                self.logger.info(f"Executing trade for {asset_name}: {decision}")
                 yield self.execute_decision(decision, symbol_id)
+            elif decision and decision.get('action') == 0:
+                self.logger.debug(f"No trade action for {asset_name} based on inference results.")
             
             reactor.callLater(240.0, self.sync_active_positions)
         except Exception as e:
-            self.logger.error(f"Orchestration error: {e}")
+            self.logger.error(f"Orchestration error for {asset_name}: {e}")
 
     @inlineCallbacks
     def execute_decision(self, decision, symbol_id):
         try:
             side = ProtoOATradeSide.BUY if decision['action'] == 1 else ProtoOATradeSide.SELL
             asset_name = decision['asset']
+            self.logger.info(f"Placing {asset_name} {side} order. Lots: {decision['lots']:.2f}")
             contract_size = 100 if asset_name == 'XAUUSD' else 100000
             raw_volume = decision['lots'] * contract_size * 100
             step = 100 if asset_name == 'XAUUSD' else 100000
@@ -359,10 +369,14 @@ class Orchestrator:
             quality = float(alpha_out['quality'][0])
             meta = float(alpha_out['meta'][0])
             
-            if direction == 0: return {'action': 0}
+            self.logger.debug(f"Inference results for {asset_name}: Direction={direction}, Quality={quality:.3f}, Meta={meta:.3f}")
             
-            meta_thresh = self.config.get('META_THRESHOLD', 0.80)
-            qual_thresh = self.config.get('QUAL_THRESHOLD', 0.35)
+            if direction == 0:
+                self.logger.info(f"Model predicted neutral direction for {asset_name}. Skipping.")
+                return {'action': 0}
+            
+            meta_thresh = self.config.get('META_THRESHOLD', 0.7071)
+            qual_thresh = self.config.get('QUAL_THRESHOLD', 0.70)
             
             if meta < meta_thresh:
                 self._notify_threshold_breach(asset_name, "Meta", meta, meta_thresh)
@@ -375,7 +389,9 @@ class Orchestrator:
             risk_action = self.ml.get_risk_action(risk_obs)
             size_out = risk_action['size']
             
-            risk_thresh = self.config.get('RISK_THRESHOLD', 0.15)
+            self.logger.debug(f"Risk results for {asset_name}: Size={size_out:.3f}, SL_Mult={risk_action['sl_mult']:.2f}, TP_Mult={risk_action['tp_mult']:.2f}")
+            
+            risk_thresh = self.config.get('RISK_THRESHOLD', 0.10)
             if size_out < risk_thresh:
                 self._notify_threshold_breach(asset_name, "Risk", size_out, risk_thresh)
                 return {'action': 0}
@@ -404,13 +420,17 @@ class Orchestrator:
             
             return {'asset': asset_name, 'action': 1 if direction == 1 else 2, 'lots': float(lots), 'sl': float(sl_price), 'tp': float(tp_price), 'relative_sl': relative_sl, 'relative_tp': relative_tp}
         except Exception as e:
-            self.logger.error(f"Inference error: {e}")
+            self.logger.error(f"Inference error for {asset_name}: {e}")
             return None
 
     def _notify_threshold_breach(self, asset, name, value, threshold):
         key = f"thresh_{asset}_{name}"
         if not hasattr(self, '_last_thresh_alerts'): self._last_thresh_alerts = {}
         last = self._last_thresh_alerts.get(key, 0)
+        
+        # Always log at DEBUG level
+        self.logger.debug(f"THRESHOLD CHECK: {asset} {name} {value:.3f} (Threshold: {threshold:.3f})")
+        
         if time.time() - last > 300:
              self._last_thresh_alerts[key] = time.time()
              self.logger.warning(f"THRESHOLD BREACH: {asset} {name} {value:.3f} < {threshold:.3f}")

@@ -1,9 +1,37 @@
 import os
+import json
+from pathlib import Path
 from dotenv import load_dotenv
 
 class ConfigError(Exception):
     """Custom exception for configuration errors."""
     pass
+
+DEFAULT_THRESHOLDS = {
+    "meta_threshold": 0.7071,
+    "qual_threshold": 0.7,
+    "risk_threshold": 0.1,
+}
+
+def get_thresholds(project_root=None):
+    """Loads thresholds from saved JSON file or returns defaults."""
+    if project_root is None:
+        project_root = Path(__file__).resolve().parent.parent.parent
+    
+    results_path = Path(project_root) / "backtest" / "results" / "optimal_thresholds.json"
+
+    if results_path.exists():
+        try:
+            with open(results_path, "r") as f:
+                params = json.load(f)
+            return {
+                "meta_threshold": params.get("meta_threshold", DEFAULT_THRESHOLDS["meta_threshold"]),
+                "qual_threshold": params.get("qual_threshold", DEFAULT_THRESHOLDS["qual_threshold"]),
+                "risk_threshold": params.get("risk_threshold", DEFAULT_THRESHOLDS["risk_threshold"]),
+            }
+        except Exception:
+            return DEFAULT_THRESHOLDS
+    return DEFAULT_THRESHOLDS
 
 def load_config(override_env=None):
     """Loads and validates configuration from environment variables."""

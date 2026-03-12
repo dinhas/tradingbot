@@ -1,0 +1,79 @@
+[cerebrium.deployment]
+name = "tradingbot"
+python_version = "3.12"
+disable_auth = false
+include = [
+    "*.py",
+    "*.txt",
+    "*.parquet",
+    "Alpha/**/*",
+    "Risklayer/**/*", 
+    "LiveExecution/**/*",
+    "backtest/**/*",
+    "data/**/*",
+    "models/**/*",
+    "scripts/**/*",
+    ".env*"
+]
+exclude = [
+    ".*",
+    "__pycache__/**/*",
+    "*.pyc",
+    "*.log",
+    "*.md",
+    "backtest/results/**/*",
+    "conductor/**/*"
+]
+shell_commands = ["ln -s /cortex/Risklayer /cortex/RiskLayer"]
+pre_build_commands = []
+docker_base_image_url = "debian:bookworm-slim"
+use_uv = false
+deployment_initialization_timeout = 600
+
+[cerebrium.runtime.custom]
+port = 8000
+entrypoint = ["python", "main.py"]
+
+[cerebrium.hardware]
+cpu = 2
+memory = 2.0
+compute = "CPU"
+gpu_count = 0
+provider = "aws"
+region = "us-east-1"
+
+[cerebrium.scaling]
+min_replicas = 1
+max_replicas = 2
+replica_concurrency = 1
+response_grace_period = 3600
+cooldown = 1800
+scaling_metric = "concurrency_utilization"
+scaling_target = 100
+evaluation_interval = 30
+roll_out_duration_seconds = 0
+
+[cerebrium.dependencies.pip]
+ctrader-open-api = "latest"
+twisted = "latest"
+pandas = "latest"
+numpy = "latest"
+ta = "latest"
+gymnasium = "latest"
+stable-baselines3 = "latest"
+shimmy = ">=0.2.1"
+matplotlib = "latest"
+tqdm = "latest"
+lightgbm = "latest"
+scikit-learn = "latest"
+python-dotenv = "latest"
+torch = "latest"
+python-telegram-bot = "latest"
+fastapi = "latest"
+uvicorn = "latest"
+jinja2 = "latest"
+aiohttp = "latest"
+joblib = "latest"
+
+[cerebrium.dependencies.apt]
+ffmpeg = "latest"
