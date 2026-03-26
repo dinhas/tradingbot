@@ -64,6 +64,14 @@ class TradingEnv(gym.Env):
         self.completed_trades = []
         self.start_equity = self.equity
         self.peak_equity = self.equity
+
+        # Spread Configuration
+        self.SPREAD_PIPS = {
+            "EURUSD": 1.2, "GBPUSD": 1.5, "USDJPY": 1.0, "USDCHF": 1.8, "XAUUSD": 45.0,
+        }
+        self.PIP_SIZE = {
+            "EURUSD": 0.0001, "GBPUSD": 0.0001, "USDJPY": 0.01, "USDCHF": 0.0001, "XAUUSD": 0.1,
+        }
         
     def _create_master_obs_matrix(self):
         """Creates a single matrix containing all asset observations for batch inference."""
@@ -76,6 +84,7 @@ class TradingEnv(gym.Env):
             self.master_obs_matrix[:, i*40:(i+1)*40] = obs_matrix
 
     def _cache_data_arrays(self):
+        self.open_arrays = {a: self.raw_data[f"{a}_open"].values.astype(np.float32) for a in self.assets}
         self.close_arrays = {a: self.raw_data[f"{a}_close"].values.astype(np.float32) for a in self.assets}
         self.low_arrays = {a: self.raw_data[f"{a}_low"].values.astype(np.float32) for a in self.assets}
         self.high_arrays = {a: self.raw_data[f"{a}_high"].values.astype(np.float32) for a in self.assets}
@@ -206,19 +215,26 @@ class TradingEnv(gym.Env):
         return {asset: self.atr_arrays[asset][self.current_step] for asset in self.assets}
 
     def _update_positions(self):
-        """Check SL/TP for all open positions."""
-        current_prices = self._get_current_prices()
+        """Check SL/TP for all open positions using Bid/Ask and High/Low."""
         for asset, pos in list(self.positions.items()):
-            if pos is None:
-                continue
-            price = current_prices[asset]
-            if pos['direction'] == 1:  # Long
-                if price <= pos['sl']:
-                    self._close_position(asset, pos['sl'])
-                elif price >= pos['tp']:
-                    self._close_position(asset, pos['tp'])
-            else:  # Short
-                if price >= pos['sl']:
-                    self._close_position(asset, pos['sl'])
-                elif price <= pos['tp']:
-                    self._close_position(asset, pos['tp'])
+            if pos is None: continue
+
+            o = self.open_arrays[asset][self.current_step]
+            h = self.high_arrays[asset][self.current_step]
+            l = self.low_arrays[asset][self.current_step]
+
+            spread = self.SPREAD_PIPS.get(asset, 2.0) * self.PIP_SIZE.get(asset, 0.0001)
+            half_spread = spread / 2.0
+
+            if pos['direction'] == 1:  # Long: Triggered by BID
+                bid_o, bid_h, bid_l = o - half_spread, h - half_spread, l - half_spread
+                if bid_o <= pos['sl']: self._close_position(asset, bid_o)
+                elif bid_l <= pos['sl']: self._close_position(asset, pos['sl'])
+                elif bid_o >= pos['tp']: self._close_position(asset, bid_o)
+                elif bid_h >= pos['tp']: self._close_position(asset, pos['tp'])
+            else:  # Short: Triggered by ASK
+                ask_o, ask_h, ask_l = o + half_spread, h + half_spread, l + half_spread
+                if ask_o >= pos['sl']: self._close_position(asset, ask_o)
+                elif ask_h >= pos['sl']: self._close_position(asset, pos['sl'])
+                elif ask_o <= pos['tp']: self._close_position(asset, ask_o)
+                elif ask_l <= pos['tp']: self._close_position(asset, pos['tp'])

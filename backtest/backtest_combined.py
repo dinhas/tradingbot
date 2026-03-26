@@ -347,7 +347,8 @@ class CombinedBacktest:
 
                     pip_scalar = 0.01 if 'JPY' in asset or 'XAU' in asset else 0.0001
                     slippage = np.random.uniform(0.5, 1.5) * pip_scalar
-                    price = price_raw + (act['direction'] * -1 * slippage)
+                    # Entry: Long at Ask (Mid + slip), Short at Bid (Mid - slip)
+                    price = price_raw + (act['direction'] * slippage)
 
                     if current_pos is None:
                         self.env._open_position(asset, act['direction'], act, price, atr)
