@@ -31,37 +31,61 @@ PIP_SIZE = {
 EXECUTION_NOISE_ATR = 0.15   # ±0.15x ATR noise on trigger prices
 
 @njit
-def resolve_trade_fast(highs, lows, closes, entry_price, sl_price, tp_price, direction, spread_price):
-    sl_distance = abs(entry_price - sl_price)
+def resolve_trade_fast(opens, highs, lows, closes, entry_mid, sl_price, tp_price, direction, spread):
+    """
+    Realistic trade resolution with Bid/Ask spread, SL/TP side awareness, and gap handling.
+    - Long Entry: Ask = Mid + spread/2
+    - Long Exit/Triggers: Bid = Price - spread/2
+    - Short Entry: Bid = Mid - spread/2
+    - Short Exit/Triggers: Ask = Price + spread/2
+    - Gap: If Open breaches target, fill at Open.
+    - Collision: If SL and TP both hit in same candle, SL hit is assumed (conservative).
+    """
+    half_spread = spread / 2.0
 
     if direction == 1:  # Long
-        actual_entry = entry_price + spread_price
-        sl_check_price = sl_price
-        tp_check_price = tp_price
+        actual_entry = entry_mid + half_spread
     else:               # Short
-        actual_entry = entry_price - spread_price
-        sl_check_price = sl_price
-        tp_check_price = tp_price
+        actual_entry = entry_mid - half_spread
 
-    for i in range(len(highs)):
-        high = highs[i]
-        low = lows[i]
+    sl_dist = abs(actual_entry - sl_price)
+    if sl_dist < 1e-10: sl_dist = 1e-10
 
-        sl_hit = (direction == 1 and low <= sl_check_price) or (direction == -1 and high >= sl_check_price)
-        tp_hit = (direction == 1 and high >= tp_check_price) or (direction == -1 and low <= tp_check_price)
+    for i in range(len(opens)):
+        o = opens[i]
+        h = highs[i]
+        l = lows[i]
 
-        if sl_hit: return 0, -1.0, i + 1  # 0: sl_hit
-        if tp_hit:
-            tp_dist = abs(tp_price - entry_price)
-            return 1, (tp_dist / sl_distance if sl_distance > 1e-10 else 0.0), i + 1 # 1: tp_hit
+        if direction == 1:  # Long
+            bid_o = o - half_spread
+            bid_h = h - half_spread
+            bid_l = l - half_spread
 
-    exit_price = closes[-1]
-    if direction == 1: exit_price -= spread_price
-    else: exit_price += spread_price
+            # 1. Check for gap at open
+            if bid_o <= sl_price: return 0, (bid_o - actual_entry) / sl_dist, i + 1
+            if bid_o >= tp_price: return 1, (bid_o - actual_entry) / sl_dist, i + 1
+            # 2. Check intra-candle (SL takes priority)
+            if bid_l <= sl_price: return 0, (sl_price - actual_entry) / sl_dist, i + 1
+            if bid_h >= tp_price: return 1, (tp_price - actual_entry) / sl_dist, i + 1
+        else:               # Short
+            ask_o = o + half_spread
+            ask_h = h + half_spread
+            ask_l = l + half_spread
 
-    pnl = (exit_price - actual_entry) * direction
-    timeout_r = pnl / sl_distance if sl_distance > 1e-10 else 0.0
-    return 2, timeout_r, len(closes) # 2: timeout
+            # 1. Check for gap at open
+            if ask_o >= sl_price: return 0, (actual_entry - ask_o) / sl_dist, i + 1
+            if ask_o <= tp_price: return 1, (actual_entry - ask_o) / sl_dist, i + 1
+            # 2. Check intra-candle (SL takes priority)
+            if ask_h >= sl_price: return 0, (actual_entry - sl_price) / sl_dist, i + 1
+            if ask_l <= tp_price: return 1, (actual_entry - tp_price) / sl_dist, i + 1
+
+    # 3. Timeout at final Close
+    if direction == 1:
+        pnl = (closes[-1] - half_spread) - actual_entry
+    else:
+        pnl = actual_entry - (closes[-1] + half_spread)
+
+    return 2, pnl / sl_dist, len(closes) # 2: timeout
 
 class VectorizedRiskEnv(VecEnv):
     """
@@ -79,6 +103,7 @@ class VectorizedRiskEnv(VecEnv):
         self.all_directions = self.signals['direction'].values.astype(np.int32)
 
         # Pre-calculate entry data
+        self.open_arrays = {a: price_data[a]['open'].values.astype(np.float32) for a in self.assets}
         self.close_arrays = {a: price_data[a]['close'].values.astype(np.float32) for a in self.assets}
         self.high_arrays = {a: price_data[a]['high'].values.astype(np.float32) for a in self.assets}
         self.low_arrays = {a: price_data[a]['low'].values.astype(np.float32) for a in self.assets}
@@ -141,13 +166,15 @@ class VectorizedRiskEnv(VecEnv):
             spread_price = SPREAD_PIPS.get(asset, 2.0) * PIP_SIZE.get(asset, 0.0001)
 
             res_code, res_r, res_len = resolve_trade_fast(
+                self.open_arrays[asset][f_start:f_end],
                 self.high_arrays[asset][f_start:f_end],
                 self.low_arrays[asset][f_start:f_end],
                 self.close_arrays[asset][f_start:f_end],
                 entry_price, sl_price, tp_price, direction, spread_price
             )
 
-            reward = res_r - (spread_price * 1.5 / (atr_price * eff_sl + 1e-9))
+            # reward is already spread-inclusive via res_r
+            reward = res_r
             reward *= (size_pcts[i] / 0.1)
             rewards[i] = np.clip(reward, -10.0, 10.0)
 
@@ -330,6 +357,7 @@ class RiskPPOEnv(gym.Env):
         return data
 
     def _cache_data_arrays(self, df):
+        self.open_arrays = {a: df[f"{a}_open"].values.astype(np.float32) for a in self.assets}
         self.close_arrays = {a: df[f"{a}_close"].values.astype(np.float32) for a in self.assets}
         self.low_arrays = {a: df[f"{a}_low"].values.astype(np.float32) for a in self.assets}
         self.high_arrays = {a: df[f"{a}_high"].values.astype(np.float32) for a in self.assets}
@@ -437,12 +465,13 @@ class RiskPPOEnv(gym.Env):
         
         start_idx = self.current_step + 1
         end_idx = min(start_idx + 1000, len(self.data_index))
+        future_opens = self.open_arrays[asset][start_idx:end_idx]
         future_highs = self.high_arrays[asset][start_idx:end_idx]
         future_lows = self.low_arrays[asset][start_idx:end_idx]
         future_closes = self.close_arrays[asset][start_idx:end_idx]
         
         outcome, timeout_r, hold_time = self._resolve_trade_v2(
-            future_highs, future_lows, future_closes,
+            future_opens, future_highs, future_lows, future_closes,
             entry_price, sl_price, tp_price, direction, asset
         )
         
@@ -452,11 +481,11 @@ class RiskPPOEnv(gym.Env):
         
         return reward, reward_info, outcome
 
-    def _resolve_trade_v2(self, future_highs, future_lows, future_closes, entry_price, sl_price, tp_price, direction, asset):
+    def _resolve_trade_v2(self, future_opens, future_highs, future_lows, future_closes, entry_price, sl_price, tp_price, direction, asset):
         spread_price = SPREAD_PIPS.get(asset, 2.0) * PIP_SIZE.get(asset, 0.0001)
         
         res_code, res_r, res_len = resolve_trade_fast(
-            future_highs, future_lows, future_closes,
+            future_opens, future_highs, future_lows, future_closes,
             entry_price, sl_price, tp_price, direction, spread_price
         )
 
