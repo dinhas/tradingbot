@@ -135,6 +135,20 @@ class CombinedBacktest:
             lots = np.clip(lots, self.MIN_LOTS, 100.0)
         
         return size_out, lots, position_size
+
+    def _get_execution_price(self, asset, mid_price, direction):
+        """
+        Convert mid to tradable execution price with spread and optional slippage.
+        direction: +1 buy (ask), -1 sell (bid)
+        """
+        spread = self.env.SPREAD_PIPS.get(asset, 2.0) * self.env.PIP_SIZE.get(asset, 0.0001)
+        half_spread = spread / 2.0
+        price = mid_price + (direction * half_spread)
+        if self.ENABLE_SLIPPAGE:
+            pip_scalar = self.env.PIP_SIZE.get(asset, 0.0001)
+            slip = np.random.uniform(self.SLIPPAGE_MIN_PIPS, self.SLIPPAGE_MAX_PIPS) * pip_scalar
+            price += direction * slip
+        return price
     
     def _precalculate_signals(self):
         """Pre-calculate all model outputs in large batches for the entire dataset."""
@@ -344,17 +358,14 @@ class CombinedBacktest:
                     current_pos = self.env.positions[asset]
                     price_raw = close_prices[asset][current_idx]
                     atr = atr_values[asset][current_idx]
-
-                    pip_scalar = 0.01 if 'JPY' in asset or 'XAU' in asset else 0.0001
-                    slippage = np.random.uniform(0.5, 1.5) * pip_scalar
-                    # Entry: Long at Ask (Mid + slip), Short at Bid (Mid - slip)
-                    price = price_raw + (act['direction'] * slippage)
+                    open_price = self._get_execution_price(asset, price_raw, act['direction'])
 
                     if current_pos is None:
-                        self.env._open_position(asset, act['direction'], act, price, atr)
+                        self.env._open_position(asset, act['direction'], act, open_price, atr)
                     elif current_pos['direction'] != act['direction']:
-                        self.env._close_position(asset, price)
-                        self.env._open_position(asset, act['direction'], act, price, atr)
+                        close_price = self._get_execution_price(asset, price_raw, -current_pos['direction'])
+                        self.env._close_position(asset, close_price)
+                        self.env._open_position(asset, act['direction'], act, open_price, atr)
 
                 # Step 3: Advance to Candle T+1 and Update Positions
                 self.env.current_step += 1

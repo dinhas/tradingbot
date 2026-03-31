@@ -149,19 +149,27 @@ class TradingEnv(gym.Env):
         for asset, act in actions.items():
             direction = act['direction']
             current_pos = self.positions[asset]
-            price = current_prices[asset]
+            price_mid = current_prices[asset]
             atr = atrs[asset]
             
             if current_pos is None:
                 if direction != 0:
-                    self._open_position(asset, direction, act, price, atr)
+                    entry_price = self._to_executable_price(asset, price_mid, direction)
+                    self._open_position(asset, direction, act, entry_price, atr)
             elif current_pos['direction'] == direction:
                 pass
             elif direction != 0 and current_pos['direction'] != direction:
-                self._close_position(asset, price)
-                self._open_position(asset, direction, act, price, atr)
+                close_price = self._to_executable_price(asset, price_mid, -current_pos['direction'])
+                entry_price = self._to_executable_price(asset, price_mid, direction)
+                self._close_position(asset, close_price)
+                self._open_position(asset, direction, act, entry_price, atr)
             elif direction == 0 and current_pos is not None:
-                self._close_position(asset, price)
+                close_price = self._to_executable_price(asset, price_mid, -current_pos['direction'])
+                self._close_position(asset, close_price)
+
+    def _to_executable_price(self, asset, mid_price, direction):
+        spread = self.SPREAD_PIPS.get(asset, 2.0) * self.PIP_SIZE.get(asset, 0.0001)
+        return mid_price + (direction * spread / 2.0)
 
     def _open_position(self, asset, direction, act, price, atr):
         size = act['size'] * self.MAX_POS_SIZE_PCT * self.equity
@@ -180,7 +188,10 @@ class TradingEnv(gym.Env):
             'tp': tp,
             'entry_step': self.current_step,
             'sl_dist': sl_dist,
-            'tp_dist': tp_dist
+            'tp_dist': tp_dist,
+            'sl_mult': float(act.get('sl_mult', 0.0)),
+            'tp_mult': float(act.get('tp_mult', 0.0)),
+            'size_pct': float(act.get('size', 0.0)),
         }
         # Entry fee
         self.equity -= size * 0.00002
@@ -196,15 +207,37 @@ class TradingEnv(gym.Env):
         self.equity += pnl
         # Exit fee
         self.equity -= pos['size'] * 0.00002
-        
+
+        spread_price = self.SPREAD_PIPS.get(asset, 2.0) * self.PIP_SIZE.get(asset, 0.0001)
+        hold_bars = max(1, int(self.current_step - pos['entry_step']))
+        hold_time_minutes = hold_bars * 5
+        planned_rr = (pos['tp_dist'] / (pos['sl_dist'] + 1e-12)) if pos['sl_dist'] > 0 else 0.0
+        risk_notional = (pos['sl_dist'] / max(pos['entry_price'], 1e-9)) * (pos['size'] * self.leverage)
+        fees_total = pos['size'] * 0.00004
+        spread_cost_est = (spread_price / max(pos['entry_price'], 1e-9)) * (pos['size'] * self.leverage)
+        net_pnl = pnl - fees_total
+
         self.completed_trades.append({
             'timestamp': self._get_current_timestamp(),
             'asset': asset,
             'pnl': pnl,
-            'net_pnl': pnl - (pos['size'] * 0.00004), # Approx total fees
+            'net_pnl': net_pnl,
             'entry_price': pos['entry_price'],
             'exit_price': price,
-            'size': pos['size']
+            'size': pos['size'],
+            'size_pct': pos.get('size_pct', 0.0),
+            'direction': pos['direction'],
+            'sl': pos['sl'],
+            'tp': pos['tp'],
+            'sl_mult': pos.get('sl_mult', 0.0),
+            'tp_mult': pos.get('tp_mult', 0.0),
+            'rr_ratio': planned_rr,
+            'hold_time': hold_time_minutes,
+            'hold_bars': hold_bars,
+            'fees': fees_total,
+            'spread_cost_est': spread_cost_est,
+            'risk_amount': risk_notional,
+            'realized_r': (net_pnl / risk_notional) if risk_notional > 1e-9 else 0.0,
         })
         self.positions[asset] = None
 
