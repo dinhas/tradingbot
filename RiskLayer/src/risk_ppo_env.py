@@ -5,7 +5,11 @@ import pandas as pd
 import logging
 import os
 from collections import deque
-from numba import njit, float32, int32
+try:
+    from numba import njit
+except ImportError:  # pragma: no cover - allows training smoke tests without numba
+    def njit(fn):
+        return fn
 from frozen_feature_engine import FeatureEngine
 from stable_baselines3.common.vec_env import VecEnv
 
@@ -29,6 +33,24 @@ PIP_SIZE = {
 }
 
 EXECUTION_NOISE_ATR = 0.15   # ±0.15x ATR noise on trigger prices
+
+def add_execution_noise(sl_mult, tp_mult):
+    """
+    Apply conservative execution uncertainty to SL/TP multipliers.
+    Returns effective multipliers used for both simulation and reward.
+    """
+    eff_sl = max(0.3, sl_mult - np.random.uniform(0, EXECUTION_NOISE_ATR))
+    eff_tp = tp_mult + np.random.uniform(0, EXECUTION_NOISE_ATR * 0.5)
+    return eff_sl, eff_tp
+
+def compute_spread_cost_in_r(asset, atr_price, eff_sl_mult):
+    """
+    Approximate round-trip spread friction in R units.
+    1R is distance from entry to SL in price terms.
+    """
+    spread_price = SPREAD_PIPS.get(asset, 2.0) * PIP_SIZE.get(asset, 0.0001)
+    risk_distance = max(atr_price * max(eff_sl_mult, 0.3), 1e-8)
+    return (spread_price / risk_distance)
 
 @njit
 def resolve_trade_fast(opens, highs, lows, closes, entry_mid, sl_price, tp_price, direction, spread):
@@ -476,7 +498,7 @@ class RiskPPOEnv(gym.Env):
         )
         
         reward, reward_info = self._compute_reward_v3(
-            outcome, sl_mult, tp_mult, size_pct, timeout_r, asset, atr_price
+            outcome, eff_sl_mult, eff_tp_mult, size_pct, timeout_r, asset, atr_price
         )
         
         return reward, reward_info, outcome
@@ -492,16 +514,13 @@ class RiskPPOEnv(gym.Env):
         outcome = "sl_hit" if res_code == 0 else "tp_hit" if res_code == 1 else "timeout"
         return outcome, res_r, res_len
 
-    def _compute_reward_v3(self, outcome, sl_mult, tp_mult, size_pct, timeout_r, asset, atr_price):
-        eff_sl, eff_tp = add_execution_noise(sl_mult, tp_mult)
+    def _compute_reward_v3(self, outcome, eff_sl, eff_tp, size_pct, timeout_r, asset, atr_price):
         rr_ratio = eff_tp / eff_sl
 
-        if outcome == "tp_hit":
-            base_r = rr_ratio
-        elif outcome == "sl_hit":
-            base_r = -1.0
-        elif outcome == "timeout":
-            base_r = np.clip(timeout_r, -1.5, rr_ratio * 0.85)
+        # Use realized trade outcome (spread-inclusive from resolver) to avoid
+        # optimistic reward leakage from theoretical RR-only scoring.
+        if outcome in ("tp_hit", "sl_hit", "timeout"):
+            base_r = timeout_r
         else:
             base_r = 0.0
 
@@ -509,12 +528,12 @@ class RiskPPOEnv(gym.Env):
         reward = base_r - spread_cost
 
         shape = 0.0
-        if rr_ratio >= 1.5: shape += min(0.3, (rr_ratio - 1.5) * 0.1)
+        if 1.2 <= rr_ratio <= 3.5: shape += 0.05
         if 1.0 <= eff_sl <= 2.5: shape += 0.05
         
         penalty = 0.0
         if eff_sl < 0.8: penalty -= (0.4 + (0.8 - eff_sl) * 0.5)
-        if rr_ratio < 1.0: penalty -= 0.5
+        if rr_ratio < 1.1: penalty -= 0.3
         if eff_sl > 3.0 and rr_ratio < 1.5: penalty -= 0.2
         
         reward = reward + shape + penalty

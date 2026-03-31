@@ -94,7 +94,9 @@ class BacktestMetrics:
                 'gross_loss': 0
             }
             
-        df_trades = pd.DataFrame(self.trades)
+        df_trades = pd.DataFrame(self.trades).copy()
+        if "timestamp" in df_trades.columns:
+            df_trades["timestamp"] = pd.to_datetime(df_trades["timestamp"], errors="coerce")
         
         # Use net_pnl if available, otherwise calculate it
         if 'net_pnl' in df_trades.columns:
@@ -110,7 +112,7 @@ class BacktestMetrics:
         gross_loss = abs(losing_trades['final_pnl'].sum()) if len(losing_trades) > 0 else 0
         
         # PRIMARY METRIC: Profit Factor
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 999.0
 
         # Sharpe Ratio (assuming 252 trading days, 5min candles)
         if len(self.equity_curve) > 1:
@@ -128,9 +130,11 @@ class BacktestMetrics:
         else:
             avg_rr_ratio = 0
             
-        # Trade Frequency (trades per day)
-        if self.timestamps:
-            time_span_days = (self.timestamps[-1] - self.timestamps[0]).total_seconds() / 86400
+        # Trade Frequency (trades per day) - based on actual trade timestamps
+        if "timestamp" in df_trades.columns and df_trades["timestamp"].notna().any():
+            t0 = df_trades["timestamp"].min()
+            t1 = df_trades["timestamp"].max()
+            time_span_days = (t1 - t0).total_seconds() / 86400 if pd.notna(t0) and pd.notna(t1) else 0
             trade_frequency = len(df_trades) / time_span_days if time_span_days > 0 else 0
         else:
             trade_frequency = 0
@@ -141,6 +145,13 @@ class BacktestMetrics:
         else:
             avg_hold_time = 0
             
+        # Realism diagnostics aligned with training environment intent
+        avg_spread_cost = float(df_trades["spread_cost_est"].mean()) if "spread_cost_est" in df_trades.columns else 0.0
+        spread_to_profit = (avg_spread_cost / (abs(df_trades["final_pnl"]).mean() + 1e-9)) if len(df_trades) else 0.0
+        avg_realized_r = float(df_trades["realized_r"].mean()) if "realized_r" in df_trades.columns else 0.0
+        low_risk_share = float((df_trades["sl_mult"] <= 1.2).mean()) if "sl_mult" in df_trades.columns else 0.0
+        rr_compliance = float((df_trades["rr_ratio"] >= 1.2).mean()) if "rr_ratio" in df_trades.columns else 0.0
+
         metrics = {
             'profit_factor': profit_factor,
             'total_return': total_return,
@@ -156,7 +167,12 @@ class BacktestMetrics:
             'gross_profit': gross_profit,
             'gross_loss': gross_loss,
             'final_equity': final_equity,
-            'initial_equity': initial_equity
+            'initial_equity': initial_equity,
+            'avg_spread_cost': avg_spread_cost,
+            'spread_to_abs_pnl_ratio': spread_to_profit,
+            'avg_realized_r': avg_realized_r,
+            'pct_low_risk_sl': low_risk_share,
+            'pct_rr_ge_1p2': rr_compliance,
         }
         
         return metrics
@@ -166,7 +182,7 @@ class BacktestMetrics:
         if not self.trades:
             return {}
             
-        df_trades = pd.DataFrame(self.trades)
+        df_trades = pd.DataFrame(self.trades).copy()
         
         # Use net_pnl if available
         if 'net_pnl' in df_trades.columns:
@@ -187,8 +203,11 @@ class BacktestMetrics:
             per_asset[asset] = {
                 'num_trades': len(asset_trades),
                 'win_rate': len(winning) / len(asset_trades) if len(asset_trades) > 0 else 0,
-                'profit_factor': gross_profit / gross_loss if gross_loss > 0 else float('inf'),
-                'total_pnl': asset_trades['final_pnl'].sum()
+                'profit_factor': gross_profit / gross_loss if gross_loss > 0 else 999.0,
+                'total_pnl': asset_trades['final_pnl'].sum(),
+                'avg_rr_ratio': asset_trades['rr_ratio'].mean() if 'rr_ratio' in asset_trades.columns else 0.0,
+                'avg_realized_r': asset_trades['realized_r'].mean() if 'realized_r' in asset_trades.columns else 0.0,
+                'avg_spread_cost': asset_trades['spread_cost_est'].mean() if 'spread_cost_est' in asset_trades.columns else 0.0,
             }
             
         return per_asset
@@ -423,6 +442,11 @@ def run_backtest(args):
     logger.info(f"{'Max Drawdown:':<40} {metrics.get('max_drawdown', 0):.2%}")
     logger.info(f"{'Win Rate:':<40} {metrics.get('win_rate', 0):.2%}")
     logger.info(f"{'Average RR Ratio:':<40} {metrics.get('avg_rr_ratio', 0):.2f}")
+    logger.info(f"{'Average Realized R:':<40} {metrics.get('avg_realized_r', 0):.3f}")
+    logger.info(f"{'Avg Spread Cost ($ est):':<40} {metrics.get('avg_spread_cost', 0):.6f}")
+    logger.info(f"{'Spread / |PnL| Ratio:':<40} {metrics.get('spread_to_abs_pnl_ratio', 0):.3f}")
+    logger.info(f"{'% Low-Risk SL (<=1.2):':<40} {metrics.get('pct_low_risk_sl', 0):.2%}")
+    logger.info(f"{'% RR >= 1.2:':<40} {metrics.get('pct_rr_ge_1p2', 0):.2%}")
     logger.info(f"{'Trade Frequency (per day):':<40} {metrics.get('trade_frequency', 0):.2f}")
     logger.info(f"{'Average Hold Time (minutes):':<40} {metrics.get('avg_hold_time_minutes', 0):.1f}")
     logger.info(f"{'Total Trades:':<40} {metrics.get('total_trades', 0)}")
