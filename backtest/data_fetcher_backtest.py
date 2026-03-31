@@ -11,15 +11,18 @@ from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
 
-# Load environment variables from .env
-load_dotenv()
+# Configure logging at the very top
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# --- Configuration ---
-CT_APP_ID = os.getenv("CT_APP_ID")
-CT_APP_SECRET = os.getenv("CT_APP_SECRET")
-CT_ACCOUNT_ID = int(os.getenv("CT_ACCOUNT_ID", "0"))
-CT_ACCESS_TOKEN = os.getenv("CT_ACCESS_TOKEN")
-CT_HOST_TYPE = os.getenv("CT_HOST_TYPE", "demo")
+# Hardcoded Credentials
+CT_APP_ID = "17481_ejoPRnjMkFdEkcZTHbjYt5n98n6wRE2wESCkSSHbLIvdWzRkRp"
+CT_APP_SECRET = "AaIrnTNyz47CC9t5nsCXU67sCXtKOm7samSkpNFIvqKOaz1vJ1"
+CT_ACCOUNT_ID = 45559627
+CT_ACCESS_TOKEN = "nHEnxubVAIjSkisNbbPAd4gWCVrX0hG8aKbteZrX4GY"
+CT_HOST_TYPE = "demo"
+
+logger.info(f"Script Started - Account ID: {CT_ACCOUNT_ID}, Host: {CT_HOST_TYPE}")
 
 
 # Asset Universe (same as training)
@@ -31,28 +34,28 @@ SYMBOL_IDS = {
     'USDJPY': 4     # USD/JPY
 }
 
-# Backtesting Data Range: 2025 (Jan 1 to Dec 14, 2025)
+# Backtesting Data Range: 2025 (Jan 1 to Dec 31, 2025)
 START_DATE = datetime(2025, 1, 1)
-END_DATE = datetime(2025, 12, 19)  # Fetch until end of Dec 19
+END_DATE = datetime(2025, 12, 31)  # Fetch until end of Dec 31
 TIMEFRAME = ProtoOATrendbarPeriod.M5
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DataFetcherBacktest:
     def __init__(self):
         host = EndPoints.PROTOBUF_LIVE_HOST if CT_HOST_TYPE.lower() == "live" else EndPoints.PROTOBUF_DEMO_HOST
-        self.client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
-        self.request_delay = 1.0  # Increased delay to 1.0s to avoid rate limits
+        port = EndPoints.PROTOBUF_PORT
+        logger.info(f"Initializing Client for {host}:{port}")
+        self.client = Client(host, port, TcpProtocol)
+        self.request_delay = 1.0
         self.downloaded_data = {}
-        # Define a robust path to the backtest data directory at the project root
-        # Define a robust path to the backtest data directory
         self.data_dir = Path(__file__).resolve().parent / "data"
 
     def start(self):
+        logger.info("Setting callbacks and starting service...")
         self.client.setConnectedCallback(self.on_connected)
         self.client.setDisconnectedCallback(self.on_disconnected)
         self.client.setMessageReceivedCallback(self.on_message)
         self.client.startService()
+        logger.info("Reactor running...")
         reactor.run()
 
     def on_disconnected(self, client, reason):
@@ -82,10 +85,12 @@ class DataFetcherBacktest:
 
             # 2. Account Auth
             acc_auth_req = ProtoOAAccountAuthReq()
-            acc_auth_req.ctidTraderAccountId = CT_ACCOUNT_ID
+            acc_auth_req.ctidTraderAccountId = int(CT_ACCOUNT_ID)
             acc_auth_req.accessToken = CT_ACCESS_TOKEN
-            yield self.send_proto_request(acc_auth_req)
-            logging.info("Account Auth Success.")
+            res_auth = yield self.send_proto_request(acc_auth_req)
+            payload_auth = Protobuf.extract(res_auth)
+            logging.info(f"Account Auth Response: {payload_auth}")
+            logging.info(f"Authenticated for Account ID: {CT_ACCOUNT_ID}")
             
             # 2a. Brief pause to stabilize connection
             d_wait = defer.Deferred()
