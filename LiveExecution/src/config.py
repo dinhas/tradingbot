@@ -55,5 +55,10 @@ def load_config(override_env=None):
     config["TELEGRAM_PNL_MILESTONE"] = float(env.get("TELEGRAM_PNL_MILESTONE", "1.0"))
     config["TELEGRAM_PULSE_INTERVAL"] = int(env.get("TELEGRAM_PULSE_INTERVAL", "7200"))
     config["TELEGRAM_ERROR_ALERTS"] = env.get("TELEGRAM_ERROR_ALERTS", "true").lower() == "true"
+    config["TRAILING_STOP_ENABLED"] = env.get("TRAILING_STOP_ENABLED", "true").lower() == "true"
+    config["TRAILING_TRIGGER_R"] = float(env.get("TRAILING_TRIGGER_R", "1.25"))
+    config["TRAILING_ATR_MULT"] = float(env.get("TRAILING_ATR_MULT", "1.0"))
+    config["BREAKEVEN_TRIGGER_R"] = float(env.get("BREAKEVEN_TRIGGER_R", "0.90"))
+    config["BREAKEVEN_BUFFER_ATR"] = float(env.get("BREAKEVEN_BUFFER_ATR", "0.10"))
         
     return config

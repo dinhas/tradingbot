@@ -158,7 +158,7 @@ class VectorizedRiskEnv(VecEnv):
     def step_wait(self):
         # actions: [n_envs, 3]
         actions = self.actions
-        sl_mults = 0.8 + (actions[:, 0] + 1) / 2 * (3.5 - 0.8)
+        sl_mults = 1.0 + (actions[:, 0] + 1) / 2 * (3.5 - 1.0)
         tp_mults = 1.2 + (actions[:, 1] + 1) / 2 * (8.0 - 1.2)
         size_pcts = 0.1 + (actions[:, 2] + 1) / 2 * (0.3 - 0.1) # Simplified size curriculum
 
@@ -453,7 +453,7 @@ class RiskPPOEnv(gym.Env):
         action = np.nan_to_num(action, nan=0.0)
         sl_raw, tp_raw, size_raw = action[0], action[1], action[2]
         
-        sl_mult = 0.8 + (sl_raw + 1) / 2 * (3.5 - 0.8)
+        sl_mult = 1.0 + (sl_raw + 1) / 2 * (3.5 - 1.0)
         tp_mult = 1.2 + (tp_raw + 1) / 2 * (8.0 - 1.2)
         size_min, size_max = self._get_curriculum_size_range(self.total_steps_counter)
         size_pct = size_min + (size_raw + 1) / 2 * (size_max - size_min)
@@ -532,9 +532,14 @@ class RiskPPOEnv(gym.Env):
         if 1.0 <= eff_sl <= 2.5: shape += 0.05
         
         penalty = 0.0
-        if eff_sl < 0.8: penalty -= (0.4 + (0.8 - eff_sl) * 0.5)
+        if eff_sl < 1.0: penalty -= (0.5 + (1.0 - eff_sl) * 0.7)
+        if eff_sl < 1.2: penalty -= 0.15
         if rr_ratio < 1.1: penalty -= 0.3
         if eff_sl > 3.0 and rr_ratio < 1.5: penalty -= 0.2
+        if outcome == "sl_hit" and eff_sl < 1.25:
+            penalty -= 0.2
+        if outcome == "tp_hit" and 1.2 <= eff_sl <= 2.8:
+            shape += 0.08
         
         reward = reward + shape + penalty
         size_scalar = np.clip(size_pct / 0.10, 0.1, 5.0)
