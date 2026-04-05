@@ -77,18 +77,18 @@ PIP_SIZE = {
 }
 
 # PPO action-space mapping (from VectorizedRiskEnv.step_wait)
-SL_LOW, SL_HIGH = 0.8, 3.5
+SL_LOW, SL_HIGH = 1.0, 3.5
 TP_LOW, TP_HIGH = 1.2, 8.0
 SIZE_LOW, SIZE_HIGH = 0.1, 0.3
 
 initial_equity = 10.0
 
 
-def _map_actions(raw_actions):
+def _map_actions(raw_actions, sl_low=SL_LOW, sl_high=SL_HIGH, tp_low=TP_LOW, tp_high=TP_HIGH, size_low=SIZE_LOW, size_high=SIZE_HIGH):
     """Map PPO [-1,1] actions to SL/TP/Size using training-env formulas."""
-    sl = SL_LOW + (raw_actions[:, 0] + 1) / 2 * (SL_HIGH - SL_LOW)
-    tp = TP_LOW + (raw_actions[:, 1] + 1) / 2 * (TP_HIGH - TP_LOW)
-    sz = SIZE_LOW + (raw_actions[:, 2] + 1) / 2 * (SIZE_HIGH - SIZE_LOW)
+    sl = sl_low + (raw_actions[:, 0] + 1) / 2 * (sl_high - sl_low)
+    tp = tp_low + (raw_actions[:, 1] + 1) / 2 * (tp_high - tp_low)
+    sz = size_low + (raw_actions[:, 2] + 1) / 2 * (size_high - size_low)
     return sl, tp, sz
 
 
@@ -107,6 +107,13 @@ class CombinedBacktest:
         challenge_mode=False,
         meta_thresh=0.78,
         qual_thresh=0.30,
+        sl_low=SL_LOW,
+        sl_high=SL_HIGH,
+        enable_trailing_stop=True,
+        breakeven_trigger_r=0.9,
+        breakeven_buffer_atr=0.10,
+        trailing_trigger_r=1.25,
+        trailing_atr_mult=1.0,
     ):
         self.alpha_model = alpha_model
         self.risk_model = risk_model        # SB3 PPO model
@@ -117,6 +124,8 @@ class CombinedBacktest:
         self.challenge_mode = challenge_mode
         self.meta_thresh = meta_thresh
         self.qual_thresh = qual_thresh
+        self.sl_low = sl_low
+        self.sl_high = sl_high
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Challenge Mode Tracking
@@ -138,6 +147,11 @@ class CombinedBacktest:
         self.env.equity = initial_equity
         self.env.start_equity = initial_equity
         self.env.peak_equity = initial_equity
+        self.env.enable_trailing_stop = True
+        self.env.breakeven_trigger_r = breakeven_trigger_r
+        self.env.breakeven_buffer_atr = breakeven_buffer_atr
+        self.env.trailing_trigger_r = trailing_trigger_r
+        self.env.trailing_atr_mult = trailing_atr_mult
 
         # Position sizing constants
         self.MAX_LEVERAGE = 100.0
@@ -272,7 +286,7 @@ class CombinedBacktest:
                 batch_obs = obs_flat[i : i + batch_size]
                 actions, _ = self.risk_model.predict(batch_obs, deterministic=True)
 
-                sl_vals, tp_vals, sz_vals = _map_actions(actions)
+                sl_vals, tp_vals, sz_vals = _map_actions(actions, sl_low=self.sl_low, sl_high=self.sl_high)
                 sl_list.append(sl_vals)
                 tp_list.append(tp_vals)
                 size_list.append(sz_vals)
@@ -298,7 +312,7 @@ class CombinedBacktest:
 
         logger.info(f"Running {episodes} episodes with max {max_steps or self.env.max_steps} steps...")
         logger.info(f"Thresholds: meta >= {self.meta_thresh}, qual >= {self.qual_thresh}")
-        logger.info(f"RL action mapping: SL [{SL_LOW},{SL_HIGH}], TP [{TP_LOW},{TP_HIGH}], Size [{SIZE_LOW},{SIZE_HIGH}]")
+        logger.info(f"RL action mapping: SL [{self.sl_low},{self.sl_high}], TP [{TP_LOW},{TP_HIGH}], Size [{SIZE_LOW},{SIZE_HIGH}]")
 
         for episode in range(episodes):
             self.env.reset()
@@ -549,6 +563,13 @@ def run_combined_backtest(args):
         challenge_mode=args.challenge_mode,
         meta_thresh=args.meta_thresh,
         qual_thresh=args.qual_thresh,
+        sl_low=args.sl_low,
+        sl_high=args.sl_high,
+        enable_trailing_stop=not args.disable_trailing_stop,
+        breakeven_trigger_r=args.breakeven_trigger_r,
+        breakeven_buffer_atr=args.breakeven_buffer_atr,
+        trailing_trigger_r=args.trailing_trigger_r,
+        trailing_atr_mult=args.trailing_atr_mult,
     )
 
     metrics_tracker = backtest.run_backtest(episodes=args.episodes, max_steps=args.max_steps)
@@ -595,4 +616,11 @@ if __name__ == "__main__":
     parser.add_argument("--challenge-mode", action="store_true", help="Enable prop-firm challenge risk rules")
     parser.add_argument("--meta-thresh", type=float, default=0.78)
     parser.add_argument("--qual-thresh", type=float, default=0.30)
+    parser.add_argument("--sl-low", type=float, default=1.0, help="Lower bound for SL ATR multiplier action mapping.")
+    parser.add_argument("--sl-high", type=float, default=3.5, help="Upper bound for SL ATR multiplier action mapping.")
+    parser.add_argument("--disable-trailing-stop", action="store_true", help="Disable BE/trailing-stop logic in backtest.")
+    parser.add_argument("--breakeven-trigger-r", type=float, default=0.9, help="Move SL to BE after this many R in unrealized profit.")
+    parser.add_argument("--breakeven-buffer-atr", type=float, default=0.10, help="Extra ATR buffer when moving stop to breakeven.")
+    parser.add_argument("--trailing-trigger-r", type=float, default=1.25, help="Arm trailing stop after this many R in unrealized profit.")
+    parser.add_argument("--trailing-atr-mult", type=float, default=1.0, help="ATR multiplier used for trailing stop distance.")
     run_combined_backtest(parser.parse_args())

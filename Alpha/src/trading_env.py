@@ -31,6 +31,11 @@ class TradingEnv(gym.Env):
         self.MIN_POSITION_SIZE = 10  
         self.MIN_ATR_MULTIPLIER = 0.0001
         self.REWARD_LOG_INTERVAL = 5000
+        self.enable_trailing_stop = False
+        self.breakeven_trigger_r = 0.9
+        self.breakeven_buffer_atr = 0.10
+        self.trailing_trigger_r = 1.25
+        self.trailing_atr_mult = 1.0
 
         # Load Data
         self.data = self._load_data()
@@ -192,6 +197,11 @@ class TradingEnv(gym.Env):
             'sl_mult': float(act.get('sl_mult', 0.0)),
             'tp_mult': float(act.get('tp_mult', 0.0)),
             'size_pct': float(act.get('size', 0.0)),
+            'initial_risk_dist': sl_dist,
+            'best_price': price,
+            'trailing_active': False,
+            'trailing_distance': 0.0,
+            'current_stop_loss': sl,
         }
         # Entry fee
         self.equity -= size * 0.00002
@@ -258,16 +268,68 @@ class TradingEnv(gym.Env):
 
             spread = self.SPREAD_PIPS.get(asset, 2.0) * self.PIP_SIZE.get(asset, 0.0001)
             half_spread = spread / 2.0
+            atr = self.atr_arrays[asset][self.current_step]
+
+            if self.enable_trailing_stop:
+                self._apply_trailing_logic(pos, atr, o, h, l, half_spread)
 
             if pos['direction'] == 1:  # Long: Triggered by BID
                 bid_o, bid_h, bid_l = o - half_spread, h - half_spread, l - half_spread
-                if bid_o <= pos['sl']: self._close_position(asset, bid_o)
-                elif bid_l <= pos['sl']: self._close_position(asset, pos['sl'])
+                if bid_l <= pos['current_stop_loss']: self._close_position(asset, pos['current_stop_loss'])
                 elif bid_o >= pos['tp']: self._close_position(asset, bid_o)
                 elif bid_h >= pos['tp']: self._close_position(asset, pos['tp'])
             else:  # Short: Triggered by ASK
                 ask_o, ask_h, ask_l = o + half_spread, h + half_spread, l + half_spread
-                if ask_o >= pos['sl']: self._close_position(asset, ask_o)
-                elif ask_h >= pos['sl']: self._close_position(asset, pos['sl'])
+                if ask_h >= pos['current_stop_loss']: self._close_position(asset, pos['current_stop_loss'])
                 elif ask_o <= pos['tp']: self._close_position(asset, ask_o)
                 elif ask_l <= pos['tp']: self._close_position(asset, pos['tp'])
+
+    def _apply_trailing_logic(self, pos, atr, o, h, l, half_spread):
+        atr = max(float(atr), max(pos['entry_price'], 1e-9) * self.MIN_ATR_MULTIPLIER)
+        initial_r = max(float(pos.get('initial_risk_dist', pos.get('sl_dist', 0.0))), 1e-9)
+        direction = pos['direction']
+        prev_sl = float(pos.get('current_stop_loss', pos.get('sl', pos['entry_price'])))
+
+        if direction == 1:
+            bid_h = h - half_spread
+            pos['best_price'] = max(float(pos.get('best_price', pos['entry_price'])), bid_h)
+            favorable = pos['best_price'] - pos['entry_price']
+
+            if not pos.get('trailing_active', False):
+                if favorable >= self.breakeven_trigger_r * initial_r:
+                    be_stop = pos['entry_price'] + (self.breakeven_buffer_atr * atr)
+                    prev_sl = max(prev_sl, be_stop)
+
+                # ATR-based stop adjustment is allowed only before trailing activation
+                if favorable >= self.trailing_trigger_r * initial_r:
+                    activation_price = bid_h
+                    trailing_distance = abs(activation_price - prev_sl)
+                    pos['trailing_distance'] = max(trailing_distance, 1e-9)
+                    pos['trailing_active'] = True
+
+            if pos.get('trailing_active', False):
+                new_sl = bid_h - pos['trailing_distance']
+                prev_sl = max(prev_sl, new_sl)
+        else:
+            ask_l = l + half_spread
+            pos['best_price'] = min(float(pos.get('best_price', pos['entry_price'])), ask_l)
+            favorable = pos['entry_price'] - pos['best_price']
+
+            if not pos.get('trailing_active', False):
+                if favorable >= self.breakeven_trigger_r * initial_r:
+                    be_stop = pos['entry_price'] - (self.breakeven_buffer_atr * atr)
+                    prev_sl = min(prev_sl, be_stop)
+
+                # ATR-based stop adjustment is allowed only before trailing activation
+                if favorable >= self.trailing_trigger_r * initial_r:
+                    activation_price = ask_l
+                    trailing_distance = abs(activation_price - prev_sl)
+                    pos['trailing_distance'] = max(trailing_distance, 1e-9)
+                    pos['trailing_active'] = True
+
+            if pos.get('trailing_active', False):
+                new_sl = ask_l + pos['trailing_distance']
+                prev_sl = min(prev_sl, new_sl)
+
+        pos['current_stop_loss'] = prev_sl
+        pos['sl'] = prev_sl
