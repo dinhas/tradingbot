@@ -39,6 +39,7 @@ class Orchestrator:
         self.entry_prices = {} # Maps positionId to entry_price
         self.pnl_milestones = {} # Maps positionId to last notified % milestone
         self.pending_risk_actions = {} # Maps positionId to risk_actions
+        self.position_risk_profiles = {} # Maps positionId to trailing/breakeven controls
         
         # Price precision (digits) for each asset (Match native cTrader precision)
         self.symbol_digits = {
@@ -106,10 +107,13 @@ class Orchestrator:
 
                         if symbol_id in self.active_positions:
                             del self.active_positions[symbol_id]
+                        self.position_risk_profiles.pop(pos_id, None)
 
                     elif pos.positionStatus == ProtoOAPositionStatus.POSITION_STATUS_OPEN:
                         self.active_positions[symbol_id] = pos_id
                         self.entry_prices[pos_id] = pos.price
+                        if symbol_id in self.pending_risk_actions:
+                            self.position_risk_profiles[pos_id] = self.pending_risk_actions.pop(symbol_id)
                         self.logger.info(f"Position {pos_id} is now OPEN for {asset_name}")
 
                         contract_size = 100 if asset_name == 'XAUUSD' else 100000
@@ -306,6 +310,7 @@ class Orchestrator:
         if not self.fm.is_ready(): return
 
         self.fm.update_from_trendbar(asset_name, trendbar)
+        yield self._manage_open_position_risk(symbol_id, asset_name)
 
         if len(self.active_positions) >= 5 and symbol_id not in self.active_positions: return
         if self.is_asset_locked(symbol_id): return
@@ -332,6 +337,7 @@ class Orchestrator:
             volume = int(round(raw_volume / step) * step)
             
             execution_res = yield self.client.execute_market_order(symbol_id, volume, side, relative_sl=decision.get('relative_sl'), relative_tp=decision.get('relative_tp'))
+            self.pending_risk_actions[symbol_id] = self._build_risk_profile(decision)
             
             digits = self.symbol_digits.get(asset_name, 5)
             current_price = self.fm.history[asset_name].iloc[-1]['close']
@@ -406,6 +412,70 @@ class Orchestrator:
         except Exception as e:
             self.logger.error(f"Inference error: {e}")
             return None
+
+    def _build_risk_profile(self, decision):
+        direction = 1 if decision.get('action') == 1 else -1
+        return {
+            "direction": direction,
+            "relative_sl": int(decision.get("relative_sl", 0)),
+            "relative_tp": int(decision.get("relative_tp", 0)),
+            "breakeven_trigger_r": float(self.config.get("BREAKEVEN_TRIGGER_R", 0.90)),
+            "breakeven_buffer_atr": float(self.config.get("BREAKEVEN_BUFFER_ATR", 0.10)),
+            "trailing_trigger_r": float(self.config.get("TRAILING_TRIGGER_R", 1.25)),
+            "trailing_atr_mult": float(self.config.get("TRAILING_ATR_MULT", 1.0)),
+            "trailing_enabled": bool(self.config.get("TRAILING_STOP_ENABLED", True)),
+            "last_relative_sl": int(decision.get("relative_sl", 0)),
+        }
+
+    @inlineCallbacks
+    def _manage_open_position_risk(self, symbol_id, asset_name):
+        pos_id = self.active_positions.get(symbol_id)
+        if pos_id in (None, "PENDING"):
+            return
+
+        profile = self.position_risk_profiles.get(pos_id)
+        if not profile:
+            return
+
+        history = self.fm.history.get(asset_name)
+        if history is None or history.empty:
+            return
+
+        entry_price = self.entry_prices.get(pos_id)
+        if entry_price is None or profile.get("relative_sl", 0) <= 0:
+            return
+
+        current_price = float(history.iloc[-1]["close"])
+        atr = max(float(self.fm.get_atr(asset_name)), current_price * 0.0001)
+        initial_r_dist = profile["relative_sl"] / 100000.0
+        favorable_move = (current_price - entry_price) * profile["direction"]
+        r_gain = favorable_move / max(initial_r_dist, 1e-9)
+
+        desired_sl_dist = profile["last_relative_sl"] / 100000.0
+        if r_gain >= profile["breakeven_trigger_r"]:
+            be_dist = max(initial_r_dist - (profile["breakeven_buffer_atr"] * atr), atr * 0.05)
+            desired_sl_dist = min(desired_sl_dist, be_dist)
+
+        if profile["trailing_enabled"] and r_gain >= profile["trailing_trigger_r"]:
+            trailing_dist = max(profile["trailing_atr_mult"] * atr, atr * 0.05)
+            desired_sl_dist = min(desired_sl_dist, trailing_dist)
+
+        new_relative_sl = int(max(round(desired_sl_dist * 100000), 1))
+        if new_relative_sl >= profile["last_relative_sl"]:
+            return
+
+        try:
+            yield self.client.amend_position_protection(
+                pos_id=pos_id,
+                relative_sl=new_relative_sl,
+                relative_tp=profile.get("relative_tp"),
+                trailing_stop=profile.get("trailing_enabled", True),
+            )
+            profile["last_relative_sl"] = new_relative_sl
+            self.position_risk_profiles[pos_id] = profile
+            self.logger.info(f"Updated trailing SL for {asset_name} position {pos_id} -> {new_relative_sl}")
+        except Exception as e:
+            self.logger.error(f"Failed trailing update for {asset_name} position {pos_id}: {e}")
 
     def _notify_threshold_breach(self, asset, name, value, threshold):
         key = f"thresh_{asset}_{name}"

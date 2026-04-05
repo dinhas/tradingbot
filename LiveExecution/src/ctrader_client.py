@@ -306,3 +306,19 @@ class CTraderClient:
             
         res_msg = yield self.send_request(req)
         return Protobuf.extract(res_msg)
+
+    @inlineCallbacks
+    def amend_position_protection(self, pos_id, relative_sl=None, relative_tp=None, trailing_stop=False):
+        """Amends SL/TP for an open position with optional native cTrader trailing."""
+        req = ProtoOAAmendPositionSLTPReq()
+        req.ctidTraderAccountId = self.account_id
+        req.positionId = pos_id
+
+        if relative_sl is not None:
+            req.relativeStopLoss = int(relative_sl)
+        if relative_tp is not None:
+            req.relativeTakeProfit = int(relative_tp)
+
+        req.trailingStopLoss = bool(trailing_stop)
+        res_msg = yield self.send_request(req)
+        return Protobuf.extract(res_msg)

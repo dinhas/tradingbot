@@ -33,6 +33,9 @@ PIP_SIZE = {
 }
 
 EXECUTION_NOISE_ATR = 0.15   # ±0.15x ATR noise on trigger prices
+BREAKEVEN_TRIGGER_R = 0.9
+BREAKEVEN_BUFFER_ATR = 0.10
+TRAILING_TRIGGER_R = 1.25
 
 def add_execution_noise(sl_mult, tp_mult):
     """
@@ -109,6 +112,123 @@ def resolve_trade_fast(opens, highs, lows, closes, entry_mid, sl_price, tp_price
 
     return 2, pnl / sl_dist, len(closes) # 2: timeout
 
+
+@njit
+def resolve_trade_with_trailing_fast(
+    opens,
+    highs,
+    lows,
+    closes,
+    atrs,
+    entry_mid,
+    sl_price,
+    tp_price,
+    direction,
+    spread,
+    be_trigger_r,
+    be_buffer_atr,
+    trailing_trigger_r,
+):
+    """
+    Trade resolver that mirrors combined-backtest trailing/BE behavior:
+    - Bid/Ask aware execution and trigger checks.
+    - Before trailing activation: BE/ATR pre-activation adjustments.
+    - On activation: fixed trailing distance is stored once.
+    - After activation: stop follows price with fixed distance only.
+    """
+    half_spread = spread / 2.0
+    if direction == 1:
+        actual_entry = entry_mid + half_spread
+    else:
+        actual_entry = entry_mid - half_spread
+
+    initial_risk = abs(actual_entry - sl_price)
+    if initial_risk < 1e-10:
+        initial_risk = 1e-10
+
+    current_sl = sl_price
+    trailing_active = False
+    trailing_distance = 0.0
+    best_price = actual_entry
+
+    for i in range(len(opens)):
+        o = opens[i]
+        h = highs[i]
+        l = lows[i]
+        atr_i = atrs[i]
+        if atr_i <= 0:
+            atr_i = max(actual_entry, 1e-9) * 1e-4
+
+        if direction == 1:
+            bid_o = o - half_spread
+            bid_h = h - half_spread
+            bid_l = l - half_spread
+
+            if bid_h > best_price:
+                best_price = bid_h
+            favorable = best_price - actual_entry
+
+            if not trailing_active:
+                if favorable >= be_trigger_r * initial_risk:
+                    be_stop = actual_entry + (be_buffer_atr * atr_i)
+                    if be_stop > current_sl:
+                        current_sl = be_stop
+                if favorable >= trailing_trigger_r * initial_risk:
+                    trailing_distance = abs(bid_h - current_sl)
+                    if trailing_distance < 1e-10:
+                        trailing_distance = 1e-10
+                    trailing_active = True
+
+            if trailing_active:
+                new_sl = bid_h - trailing_distance
+                if new_sl > current_sl:
+                    current_sl = new_sl
+
+            if bid_l <= current_sl:
+                return 0, (current_sl - actual_entry) / initial_risk, i + 1
+            if bid_o >= tp_price:
+                return 1, (bid_o - actual_entry) / initial_risk, i + 1
+            if bid_h >= tp_price:
+                return 1, (tp_price - actual_entry) / initial_risk, i + 1
+        else:
+            ask_o = o + half_spread
+            ask_h = h + half_spread
+            ask_l = l + half_spread
+
+            if ask_l < best_price:
+                best_price = ask_l
+            favorable = actual_entry - best_price
+
+            if not trailing_active:
+                if favorable >= be_trigger_r * initial_risk:
+                    be_stop = actual_entry - (be_buffer_atr * atr_i)
+                    if be_stop < current_sl:
+                        current_sl = be_stop
+                if favorable >= trailing_trigger_r * initial_risk:
+                    trailing_distance = abs(ask_l - current_sl)
+                    if trailing_distance < 1e-10:
+                        trailing_distance = 1e-10
+                    trailing_active = True
+
+            if trailing_active:
+                new_sl = ask_l + trailing_distance
+                if new_sl < current_sl:
+                    current_sl = new_sl
+
+            if ask_h >= current_sl:
+                return 0, (actual_entry - current_sl) / initial_risk, i + 1
+            if ask_o <= tp_price:
+                return 1, (actual_entry - ask_o) / initial_risk, i + 1
+            if ask_l <= tp_price:
+                return 1, (actual_entry - tp_price) / initial_risk, i + 1
+
+    if direction == 1:
+        pnl = (closes[-1] - half_spread) - actual_entry
+    else:
+        pnl = actual_entry - (closes[-1] + half_spread)
+
+    return 2, pnl / initial_risk, len(closes)
+
 class VectorizedRiskEnv(VecEnv):
     """
     Simplified Vectorized Environment for Risk Model Training.
@@ -158,7 +278,7 @@ class VectorizedRiskEnv(VecEnv):
     def step_wait(self):
         # actions: [n_envs, 3]
         actions = self.actions
-        sl_mults = 0.8 + (actions[:, 0] + 1) / 2 * (3.5 - 0.8)
+        sl_mults = 1.0 + (actions[:, 0] + 1) / 2 * (3.5 - 1.0)
         tp_mults = 1.2 + (actions[:, 1] + 1) / 2 * (8.0 - 1.2)
         size_pcts = 0.1 + (actions[:, 2] + 1) / 2 * (0.3 - 0.1) # Simplified size curriculum
 
@@ -187,12 +307,20 @@ class VectorizedRiskEnv(VecEnv):
             tp_price = entry_price + (direction * eff_tp * atr_price)
             spread_price = SPREAD_PIPS.get(asset, 2.0) * PIP_SIZE.get(asset, 0.0001)
 
-            res_code, res_r, res_len = resolve_trade_fast(
+            res_code, res_r, res_len = resolve_trade_with_trailing_fast(
                 self.open_arrays[asset][f_start:f_end],
                 self.high_arrays[asset][f_start:f_end],
                 self.low_arrays[asset][f_start:f_end],
                 self.close_arrays[asset][f_start:f_end],
-                entry_price, sl_price, tp_price, direction, spread_price
+                self.atr_arrays[asset][f_start:f_end],
+                entry_price,
+                sl_price,
+                tp_price,
+                direction,
+                spread_price,
+                BREAKEVEN_TRIGGER_R,
+                BREAKEVEN_BUFFER_ATR,
+                TRAILING_TRIGGER_R,
             )
 
             # reward is already spread-inclusive via res_r
@@ -453,7 +581,7 @@ class RiskPPOEnv(gym.Env):
         action = np.nan_to_num(action, nan=0.0)
         sl_raw, tp_raw, size_raw = action[0], action[1], action[2]
         
-        sl_mult = 0.8 + (sl_raw + 1) / 2 * (3.5 - 0.8)
+        sl_mult = 1.0 + (sl_raw + 1) / 2 * (3.5 - 1.0)
         tp_mult = 1.2 + (tp_raw + 1) / 2 * (8.0 - 1.2)
         size_min, size_max = self._get_curriculum_size_range(self.total_steps_counter)
         size_pct = size_min + (size_raw + 1) / 2 * (size_max - size_min)
@@ -506,9 +634,11 @@ class RiskPPOEnv(gym.Env):
     def _resolve_trade_v2(self, future_opens, future_highs, future_lows, future_closes, entry_price, sl_price, tp_price, direction, asset):
         spread_price = SPREAD_PIPS.get(asset, 2.0) * PIP_SIZE.get(asset, 0.0001)
         
-        res_code, res_r, res_len = resolve_trade_fast(
+        res_code, res_r, res_len = resolve_trade_with_trailing_fast(
             future_opens, future_highs, future_lows, future_closes,
-            entry_price, sl_price, tp_price, direction, spread_price
+            self.atr_arrays[asset][self.current_step + 1:min(self.current_step + 1 + len(future_opens), len(self.atr_arrays[asset]))],
+            entry_price, sl_price, tp_price, direction, spread_price,
+            BREAKEVEN_TRIGGER_R, BREAKEVEN_BUFFER_ATR, TRAILING_TRIGGER_R
         )
 
         outcome = "sl_hit" if res_code == 0 else "tp_hit" if res_code == 1 else "timeout"
@@ -532,9 +662,14 @@ class RiskPPOEnv(gym.Env):
         if 1.0 <= eff_sl <= 2.5: shape += 0.05
         
         penalty = 0.0
-        if eff_sl < 0.8: penalty -= (0.4 + (0.8 - eff_sl) * 0.5)
+        if eff_sl < 1.0: penalty -= (0.5 + (1.0 - eff_sl) * 0.7)
+        if eff_sl < 1.2: penalty -= 0.15
         if rr_ratio < 1.1: penalty -= 0.3
         if eff_sl > 3.0 and rr_ratio < 1.5: penalty -= 0.2
+        if outcome == "sl_hit" and eff_sl < 1.25:
+            penalty -= 0.2
+        if outcome == "tp_hit" and 1.2 <= eff_sl <= 2.8:
+            shape += 0.08
         
         reward = reward + shape + penalty
         size_scalar = np.clip(size_pct / 0.10, 0.1, 5.0)
