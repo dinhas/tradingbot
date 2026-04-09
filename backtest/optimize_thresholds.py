@@ -17,14 +17,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 # Add RiskLayer/src to path for custom policy loading
-_risklayer_src = PROJECT_ROOT / "RiskLayer" / "src"
+_risklayer_src = PROJECT_ROOT / "Risklayer" / "src"
 if str(_risklayer_src) not in sys.path:
     sys.path.insert(0, str(_risklayer_src))
 
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.feature_engine import FeatureEngine
 from Alpha.src.labeling import Labeler
-from risk_model_sl import RiskModelSL
 from backtest.data_fetcher_backtest import DataFetcherBacktest, SYMBOL_IDS
 
 # Configure logging
@@ -36,34 +35,39 @@ logger = logging.getLogger(__name__)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def ensure_2025_data(data_dir):
-    """Checks for 2025 data and downloads it if missing."""
+def ensure_backtest_data(data_dir):
+    """Checks for backtest data and downloads it if missing."""
     missing = False
     for asset in SYMBOL_IDS.keys():
-        file_path = data_dir / f"{asset}_5m_2025.parquet"
+        file_path = data_dir / f"{asset}_5m_backtest.parquet"
         if not file_path.exists():
-            logger.info(f"Missing 2025 data for {asset}")
+            logger.info(f"Missing backtest data for {asset}")
             missing = True
             break
 
     if missing:
-        logger.info("Starting DataFetcherBacktest to download 2025 data...")
+        logger.info("Starting DataFetcherBacktest to download data...")
         fetcher = DataFetcherBacktest()
         fetcher.start()  # Note: This will block until complete
     else:
-        logger.info("All 2025 backtest data found.")
+        logger.info("All backtest data found.")
 
 
 def load_data(data_dir):
-    """Loads 2025 data for all assets."""
+    """Loads backtest data for all assets."""
     data_dict = {}
     for asset in SYMBOL_IDS.keys():
-        file_path = data_dir / f"{asset}_5m_2025.parquet"
+        file_path = data_dir / f"{asset}_5m_backtest.parquet"
+        if not file_path.exists():
+            # Fallback to 2025 legacy
+            file_path = data_dir / f"{asset}_5m_2025.parquet"
+            
         if file_path.exists():
             df = pd.read_parquet(file_path)
             # Ensure index is datetime
             df.index = pd.to_datetime(df.index)
             data_dict[asset] = df
+            logger.info(f"Loaded {asset} from {file_path.name}")
         else:
             logger.warning(f"Could not load data for {asset}")
     return data_dict
@@ -82,20 +86,14 @@ def optimize_thresholds():
     parser.add_argument(
         "--risk-model",
         type=str,
-        default="RiskLayer/models/ppo_risk_model_final_v2_opt.zip",
-        help="Path to Risk model (RL or SL)",
+        default="Risklayer/models/ppo_risk_model_final_v2_opt.zip",
+        help="Path to RL Risk model (PPO)",
     )
     parser.add_argument(
         "--risk-scaler",
         type=str,
-        default="RiskLayer/models/rl_risk_scaler.pkl",
+        default="Risklayer/models/rl_risk_scaler.pkl",
         help="Path to Risk scaler",
-    )
-    parser.add_argument(
-        "--use-rl",
-        action="store_true",
-        default=True,
-        help="Use RL (PPO) model instead of SL",
     )
     parser.add_argument(
         "--data-dir",
@@ -109,35 +107,32 @@ def optimize_thresholds():
     risk_path = PROJECT_ROOT / args.risk_model
     scaler_path = PROJECT_ROOT / args.risk_scaler
     data_dir = PROJECT_ROOT / args.data_dir
-    use_rl = args.use_rl
 
     # 1. Ensure Data
-    ensure_2025_data(data_dir)
+    ensure_backtest_data(data_dir)
 
     # 2. Load Data and Models
-    logger.info("Loading 2025 data...")
+    logger.info("Loading backtest data...")
     data_dict = load_data(data_dir)
     if not data_dict:
         logger.error("No data loaded. Exiting.")
         return
 
     logger.info(f"Loading Alpha model from {alpha_path}...")
+    # Using parameters from Alpha/src/model.py
     alpha_model = AlphaSLModel(input_dim=40, hidden_dim=256, num_res_blocks=4).to(
         DEVICE
     )
     alpha_model.load_state_dict(torch.load(alpha_path, map_location=DEVICE))
     alpha_model.eval()
 
-    # Load Risk Model (RL or SL)
-    logger.info(f"Loading Risk model from {risk_path}...")
-    if use_rl and risk_path.exists() and risk_path.suffix == ".zip":
-        logger.info("Using RL (PPO) Risk model...")
+    # Load RL Risk Model
+    logger.info(f"Loading RL Risk model from {risk_path}...")
+    if risk_path.exists() and risk_path.suffix == ".zip":
         risk_model = PPO.load(str(risk_path), device=DEVICE)
     else:
-        logger.info("Using SL Risk model...")
-        risk_model = RiskModelSL(input_dim=40).to(DEVICE)
-        risk_model.load_state_dict(torch.load(risk_path, map_location=DEVICE))
-        risk_model.eval()
+        logger.error(f"RL Risk model not found or invalid format: {risk_path}")
+        return
 
     logger.info(f"Loading Risk Scaler from {scaler_path}...")
     risk_scaler = joblib.load(scaler_path)
@@ -184,25 +179,22 @@ def optimize_thresholds():
                 # Alpha Forward
                 dir_logits, qual_pred, meta_logits = alpha_model(b_X)
 
-                # Risk Forward (RL or SL)
-                if use_rl:
-                    action, _ = risk_model.predict(
-                        b_X_risk.cpu().numpy(), deterministic=True
-                    )
-                    action = torch.from_numpy(action).to(DEVICE)
-                    sl_raw = action[:, 0]
-                    tp_raw = action[:, 1]
-                    size_raw = action[:, 2]
-                    # Convert from [-1, 1] to actual values
-                    risk_size = 0.1 + (size_raw + 1) / 2 * (0.3 - 0.1)
-                else:
-                    risk_preds = risk_model(b_X_risk)
-                    risk_size = risk_preds["size"]
+                # RL Risk Prediction
+                # PPO model predict returns (action, next_state)
+                # We need to run it through the policy to get raw actions for sizing
+                # or just use the sizing action from predict if we want deterministic
+                actions, _ = risk_model.predict(b_X_risk.cpu().numpy(), deterministic=True)
+                actions = torch.from_numpy(actions).to(DEVICE)
+                
+                # size_raw is index 2 in our action space [-1, 1]
+                size_raw = actions[:, 2]
+                # Convert from [-1, 1] to actual values [0.1, 0.3] matching risk_ppo_env
+                risk_size = 0.1 + (size_raw + 1) / 2 * (0.3 - 0.1)
 
                 dir_probs = torch.softmax(dir_logits, dim=1)
                 meta_probs = torch.sigmoid(meta_logits)
 
-                conf, pred_dir = torch.max(dir_probs, dim=1)
+                _, pred_dir = torch.max(dir_probs, dim=1)
                 pred_dir = pred_dir - 1  # Map {0,1,2} -> {-1,0,1}
 
                 all_pred_dirs.append(pred_dir)
@@ -221,9 +213,11 @@ def optimize_thresholds():
     # 4. 3D GPU-Accelerated Grid Search
     logger.info(f"Starting 3D Grid Search on {len(pred_dirs)} predictions...")
 
-    meta_thresholds = torch.linspace(0.6, 0.95, 10).to(DEVICE)
-    qual_thresholds = torch.linspace(0.4, 0.8, 8).to(DEVICE)
-    risk_thresholds = torch.linspace(0.3, 0.7, 8).to(DEVICE)
+    # Grid search ranges
+    meta_thresholds = torch.linspace(0.7, 0.98, 12).to(DEVICE)
+    qual_thresholds = torch.linspace(0.2, 0.6, 10).to(DEVICE)
+    # Risk size thresholds (since sizes are 0.1 to 0.3, we look for 'confident' sizes)
+    risk_thresholds = torch.linspace(0.1, 0.25, 8).to(DEVICE)
 
     best_expectancy = -np.inf
     best_params = None
@@ -241,7 +235,7 @@ def optimize_thresholds():
                 )
 
                 num_trades = mask.sum().item()
-                if num_trades < 50:
+                if num_trades < 100: # Increased min trades for statistical significance
                     continue
 
                 t_actual = actual_dirs[mask]
@@ -253,9 +247,9 @@ def optimize_thresholds():
                 is_loss = (~is_win) & (~is_time_exit)
 
                 r_returns = torch.zeros_like(t_actual, dtype=torch.float32)
-                r_returns[is_win] = 4.0
-                r_returns[is_time_exit] = -0.5
-                r_returns[is_loss] = -1.5
+                r_returns[is_win] = 3.5  # Conservative avg win R
+                r_returns[is_time_exit] = -0.3 # Average timeout cost
+                r_returns[is_loss] = -1.5 # Average loss cost
 
                 avg_r = r_returns.mean().item()
 
@@ -267,7 +261,7 @@ def optimize_thresholds():
                         "risk_threshold": round(r_t.item(), 4),
                         "expected_win_rate": round(is_win.float().mean().item(), 4),
                         "expected_avg_r": round(avg_r, 4),
-                        "num_trades_2025": num_trades,
+                        "num_trades_dataset": num_trades,
                         "optimized_at": datetime.now().isoformat(),
                     }
 
@@ -280,7 +274,7 @@ def optimize_thresholds():
         logger.info(f"Alpha Qual Thresh:  {best_params['qual_threshold']:.4f}")
         logger.info(f"Risk Size Thresh:   {best_params['risk_threshold']:.4f}")
         logger.info(f"Expected Avg R:     {best_params['expected_avg_r']:.3f}")
-        logger.info(f"Total Trades (2025): {best_params['num_trades_2025']}")
+        logger.info(f"Total Trades:       {best_params['num_trades_dataset']}")
         logger.info("=" * 40)
 
         output_file = PROJECT_ROOT / "backtest" / "results" / "optimal_thresholds.json"

@@ -34,9 +34,9 @@ SYMBOL_IDS = {
     'USDJPY': 4     # USD/JPY
 }
 
-# Backtesting Data Range: 2025 (Jan 1 to Dec 31, 2025)
+# Updated Range: Jan 2025 to April 9, 2026
 START_DATE = datetime(2025, 1, 1)
-END_DATE = datetime(2025, 12, 31)  # Fetch until end of Dec 31
+END_DATE = datetime(2026, 4, 10)  # Fetches until 2026-04-09 23:59:59
 TIMEFRAME = ProtoOATrendbarPeriod.M5
 
 class DataFetcherBacktest:
@@ -97,25 +97,25 @@ class DataFetcherBacktest:
             reactor.callLater(2.0, d_wait.callback, None)
             yield d_wait
             
-            # 3. Fetch Backtesting Data (2025)
-            # Ensure we write to backtest/data
+            # 3. Fetch Backtesting Data (Continuous from 2025 up to today)
             self.data_dir.mkdir(parents=True, exist_ok=True)
             
             fetch_tasks = []
-            # Use enumeration to stagger start times
             for i, (asset_name, symbol_id) in enumerate(SYMBOL_IDS.items()):
                 if symbol_id == 0:
-                    logging.warning(f"Skipping {asset_name}: Symbol ID not set. Please update SYMBOL_IDS.")
+                    logging.warning(f"Skipping {asset_name}: Symbol ID not set.")
                     continue
                 
-                # Check if file already exists
-                fname = self.data_dir / f"{asset_name}_5m_2025.parquet"
+                # We check for a consolidated backtest file
+                fname = self.data_dir / f"{asset_name}_5m_backtest.parquet"
                 if fname.exists():
-                    logging.info(f"✅ Found existing backtest data for {asset_name}. Skipping download.")
-                    continue
+                    df_check = pd.read_parquet(fname)
+                    # If it ends within the last 24 hours of our target, we skip
+                    if df_check.index[-1] >= (END_DATE - timedelta(days=1)):
+                        logging.info(f"✅ Backtest data for {asset_name} is already up to date. Skipping.")
+                        continue
                     
-                # Store task for parallel execution with staggered start
-                # Delay each asset by 2.0s relative to previous
+                # Delay each asset by 2.0s relative to previous to avoid rate limits
                 d = self.fetch_asset_history(asset_name, symbol_id, initial_delay=i*2.0)
                 fetch_tasks.append(d)
             
@@ -138,10 +138,27 @@ class DataFetcherBacktest:
             reactor.callLater(initial_delay, d_delay.callback, None)
             yield d_delay
             
-        logging.info(f"📥 Starting fetch for {asset_name} (ID: {symbol_id}) - 2025 BACKTEST DATA")
+        logging.info(f"📥 Starting fetch for {asset_name} (ID: {symbol_id}) - UPDATING BACKTEST DATA")
         
-        current_start = START_DATE
+        fname_final = self.data_dir / f"{asset_name}_5m_backtest.parquet"
+        fname_2025 = self.data_dir / f"{asset_name}_5m_2025.parquet"
+        
         all_bars = []
+        current_start = START_DATE
+        
+        # Smart Resume Logic:
+        # 1. Check if consolidated backtest file exists
+        if fname_final.exists():
+            existing_df = pd.read_parquet(fname_final)
+            all_bars.append(existing_df)
+            current_start = existing_df.index[-1].to_pydatetime()
+            logging.info(f"   {asset_name}: Resuming from consolidated file (ends at {current_start})")
+        # 2. Else check if legacy 2025 file exists to use as base
+        elif fname_2025.exists():
+            df_2025 = pd.read_parquet(fname_2025)
+            all_bars.append(df_2025)
+            current_start = df_2025.index[-1].to_pydatetime()
+            logging.info(f"   {asset_name}: Found 2025 data. Resuming from {current_start}")
         
         while current_start < END_DATE:
             # Request 5 days at a time to be SAFE from size limits
@@ -156,14 +173,13 @@ class DataFetcherBacktest:
             req.fromTimestamp = int(current_start.timestamp() * 1000)
             req.toTimestamp = int(chunk_end.timestamp() * 1000)
             
-            # Retry loop for the current chunk
             max_retries = 5
             retry_count = 0
             chunk_success = False
 
             while retry_count < max_retries:
                 try:
-                    # Rate limit delay (between chunks)
+                    # Rate limit delay
                     d = defer.Deferred()
                     reactor.callLater(self.request_delay, d.callback, None)
                     yield d
@@ -172,16 +188,12 @@ class DataFetcherBacktest:
                     payload = Protobuf.extract(res_msg)
                     
                     if not hasattr(payload, 'trendbar') or not payload.trendbar:
-                        logging.warning(f"   {asset_name}: No trendbars in payload for {current_start} to {chunk_end}. Payload: {payload}")
-                        # No data in this chunk, but request was successful
                         chunk_success = True
                         break
                     
                     bars_data = []
                     for bar in payload.trendbar:
-                        # cTrader Price = value / 100,000
                         DIVISOR = 100000.0
-                        
                         low = bar.low / DIVISOR
                         open_p = (bar.low + bar.deltaOpen) / DIVISOR
                         high = (bar.low + bar.deltaHigh) / DIVISOR
@@ -200,54 +212,43 @@ class DataFetcherBacktest:
                         break
 
                     df_chunk = pd.DataFrame(bars_data)
-                    
-                    # Create time index (Approximation based on M5)
                     time_index = pd.date_range(start=current_start, periods=len(df_chunk), freq='5min')
                     df_chunk.index = time_index
                     
                     all_bars.append(df_chunk)
-                    logging.info(f"   {asset_name}: Fetched {len(df_chunk)} bars. Next: {chunk_end}")
+                    logging.info(f"   {asset_name}: Fetched {len(df_chunk)} bars up to {chunk_end}")
                     
                     chunk_success = True
-                    break # Success, exit retry loop
+                    break 
 
                 except Exception as e:
                     retry_count += 1
-                    logging.error(f"⚠️ Error fetching chunk for {asset_name} (Attempt {retry_count}/{max_retries}): {e}")
-                    
-                    # Exponential backoff: 2s, 4s, 8s, 16s, 32s
+                    logging.error(f"⚠️ Error {asset_name} ({retry_count}/{max_retries}): {e}")
                     backoff_time = 2.0 ** retry_count
-                    logging.info(f"   Retrying in {backoff_time} seconds...")
-                    
                     d_wait = defer.Deferred()
                     reactor.callLater(backoff_time, d_wait.callback, None)
                     yield d_wait
             
             if not chunk_success:
-                logging.error(f"❌ Failed to fetch chunk starting {current_start} for {asset_name} after {max_retries} attempts. Skipping to next chunk.")
+                logging.error(f"❌ Failed chunk for {asset_name} starting {current_start}.")
             
-            # Move to next chunk
             current_start = chunk_end
         
         if all_bars:
             full_df = pd.concat(all_bars)
-            full_df = full_df[~full_df.index.duplicated(keep='first')]
+            full_df = full_df[~full_df.index.duplicated(keep='last')]
+            full_df.sort_index(inplace=True)
             
-            # Save Backtest Data
-            fname = self.data_dir / f"{asset_name}_5m_2025.parquet"
-            full_df.to_parquet(fname)
-            logging.info(f"✅ Saved {fname}: {len(full_df)} rows (2025 backtest data).")
+            # Save to consolidated backtest file
+            full_df.to_parquet(fname_final)
+            logging.info(f"✅ Saved {fname_final}: {len(full_df)} rows.")
         else:
             logging.warning(f"⚠️ No data fetched for {asset_name}!")
 
 if __name__ == "__main__":
     fetcher = DataFetcherBacktest()
-    print("Starting Backtest Data Fetcher for 2025... (Press Ctrl+C to stop manually)")
+    print(f"Starting Data Fetcher until {END_DATE.date()}...")
     try:
         fetcher.start()
     except KeyboardInterrupt:
         logging.info("Interrupted.")
-
-
-
-

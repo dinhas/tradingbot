@@ -142,7 +142,21 @@ class CombinedBacktest:
         if env is not None:
             self.env = env
         else:
+            # We want to use the consolidated backtest data if available
             self.env = TradingEnv(data_dir=data_dir, stage=1, is_training=False)
+            
+            # Update internal asset data if backtest file exists (overrides default search)
+            for a in self.env.assets:
+                fname = os.path.join(data_dir, f"{a}_5m_backtest.parquet")
+                if os.path.exists(fname):
+                    df = pd.read_parquet(fname)
+                    self.env.data[a] = df
+                    logger.info(f"TradingEnv: Loaded extended data for {a} from {fname}")
+            
+            # Re-process and re-cache if we loaded new data
+            self.env.raw_data, self.env.processed_data = self.env.feature_engine.preprocess_data(self.env.data)
+            self.env._cache_data_arrays()
+            self.env.max_steps = len(self.env.processed_data) - 1
 
         self.env.equity = initial_equity
         self.env.start_equity = initial_equity
