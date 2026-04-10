@@ -52,6 +52,7 @@ from risk_model_ppo import RiskActorCriticPolicy, RiskFeatureExtractor  # noqa: 
 # Absolute imports from project root
 from Alpha.src.trading_env import TradingEnv
 from Alpha.src.model import AlphaSLModel
+from backtest.optimize_thresholds import optimize_thresholds_main
 from backtest.rl_backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -82,6 +83,7 @@ TP_LOW, TP_HIGH = 1.2, 8.0
 SIZE_LOW, SIZE_HIGH = 0.1, 0.3
 
 initial_equity = 10.0
+SEQ_LEN = 50
 
 
 def _map_actions(raw_actions, sl_low=SL_LOW, sl_high=SL_HIGH, tp_low=TP_LOW, tp_high=TP_HIGH, size_low=SIZE_LOW, size_high=SIZE_HIGH):
@@ -90,6 +92,16 @@ def _map_actions(raw_actions, sl_low=SL_LOW, sl_high=SL_HIGH, tp_low=TP_LOW, tp_
     tp = tp_low + (raw_actions[:, 1] + 1) / 2 * (tp_high - tp_low)
     sz = size_low + (raw_actions[:, 2] + 1) / 2 * (size_high - size_low)
     return sl, tp, sz
+
+
+def _build_sequence_windows(features_2d: np.ndarray, seq_len: int = SEQ_LEN):
+    """Build LSTM windows and return (X_seq, valid_idx)."""
+    n = len(features_2d)
+    if n <= seq_len:
+        return np.empty((0, seq_len, features_2d.shape[1]), dtype=np.float32), np.empty((0,), dtype=np.int64)
+    valid_idx = np.arange(seq_len, n, dtype=np.int64)
+    X_seq = np.stack([features_2d[i - seq_len : i] for i in valid_idx], axis=0).astype(np.float32)
+    return X_seq, valid_idx
 
 
 class CombinedBacktest:
@@ -266,33 +278,32 @@ class CombinedBacktest:
         master_obs = self.env.master_obs_matrix  # (N, num_assets * 40)
         N, total_dims = master_obs.shape
         num_assets = len(self.env.assets)
+        obs_by_asset = master_obs.reshape(N, num_assets, 40)
 
-        # Reshape to (N * num_assets, 40)
-        obs_flat = master_obs.reshape(-1, 40)
+        # ── 1. Alpha Batch Inference (sequence model) ──
+        logger.info(f"Running Alpha sequence inference on {N} timesteps x {num_assets} assets...")
+        self.alpha_dir_probs = np.zeros((N, num_assets, 3), dtype=np.float32)
+        self.alpha_meta_probs = np.zeros((N, num_assets), dtype=np.float32)
+        self.alpha_qual_scores = np.zeros((N, num_assets), dtype=np.float32)
+        self.alpha_dir_probs[:, :, 1] = 1.0  # default neutral before first full sequence
 
-        # ── 1. Alpha Batch Inference ──
-        logger.info(f"Running Alpha inference on {len(obs_flat)} observations...")
-        if self.alpha_norm_env is not None:
-            obs_norm = self.alpha_norm_env.normalize_obs(obs_flat)
-        else:
-            obs_norm = obs_flat
-
-        dir_probs_list, meta_probs_list, qual_scores_list = [], [], []
-        batch_size = 16384
-        for i in tqdm(range(0, len(obs_norm), batch_size), desc="Alpha Batch"):
-            batch = torch.from_numpy(obs_norm[i : i + batch_size]).to(self.device)
-            with torch.no_grad():
-                dir_logits, qual_pred, meta_logits = self.alpha_model(batch)
-                dir_probs_list.append(torch.softmax(dir_logits, dim=1).cpu().numpy())
-                meta_probs_list.append(torch.sigmoid(meta_logits).cpu().numpy())
-                qual_scores_list.append(qual_pred.cpu().numpy())
-
-        self.alpha_dir_probs = np.concatenate(dir_probs_list, axis=0).reshape(N, num_assets, 3)
-        self.alpha_meta_probs = np.concatenate(meta_probs_list, axis=0).reshape(N, num_assets)
-        self.alpha_qual_scores = np.concatenate(qual_scores_list, axis=0).reshape(N, num_assets)
+        batch_size = 4096
+        with torch.no_grad():
+            for asset_idx in tqdm(range(num_assets), desc="Alpha Seq Assets"):
+                obs_asset = obs_by_asset[:, asset_idx, :]  # (N, 40)
+                X_seq, valid_idx = _build_sequence_windows(obs_asset, seq_len=SEQ_LEN)
+                if len(valid_idx) == 0:
+                    continue
+                for i in range(0, len(X_seq), batch_size):
+                    batch = torch.from_numpy(X_seq[i : i + batch_size]).to(self.device)
+                    dir_logits, qual_pred, meta_logits = self.alpha_model(batch)
+                    self.alpha_dir_probs[valid_idx[i : i + batch_size], asset_idx, :] = torch.softmax(dir_logits, dim=1).cpu().numpy()
+                    self.alpha_meta_probs[valid_idx[i : i + batch_size], asset_idx] = torch.sigmoid(meta_logits).squeeze(-1).cpu().numpy()
+                    self.alpha_qual_scores[valid_idx[i : i + batch_size], asset_idx] = qual_pred.squeeze(-1).cpu().numpy()
 
         # ── 2. PPO Risk Batch Inference ──
         if not self.verify_alpha:
+            obs_flat = master_obs.reshape(-1, 40)
             logger.info(f"Running PPO Risk inference on {len(obs_flat)} observations...")
             sl_list, tp_list, size_list = [], [], []
 
@@ -528,6 +539,28 @@ def run_combined_backtest(args):
         logger.error(f"Risk model not found: {risk_model_path}")
         sys.exit(1)
 
+    # ── Optimize thresholds before backtest ──
+    logger.info("Running threshold optimizer before combined backtest...")
+    optimize_thresholds_main(
+        alpha_model=args.alpha_model,
+        risk_model=args.risk_model,
+        risk_scaler=args.risk_scaler,
+        data_dir=args.data_dir,
+    )
+    thresholds_path = project_root / "backtest" / "results" / "optimal_thresholds.json"
+    if thresholds_path.exists():
+        with open(thresholds_path, "r") as f:
+            best = json.load(f)
+        args.meta_thresh = float(best.get("meta_threshold", args.meta_thresh))
+        args.qual_thresh = float(best.get("qual_threshold", args.qual_thresh))
+        logger.info(
+            f"Using optimized thresholds -> meta: {args.meta_thresh:.4f}, qual: {args.qual_thresh:.4f}"
+        )
+    else:
+        logger.warning(
+            f"Threshold file not found at {thresholds_path}; using CLI/default thresholds."
+        )
+
     # ── Environment ──
     logger.info("Initializing environment...")
     shared_env = TradingEnv(data_dir=data_dir_path, stage=1, is_training=False)
@@ -553,7 +586,7 @@ def run_combined_backtest(args):
 
     # ── Alpha Model (SL) ──
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    alpha_model = AlphaSLModel(input_dim=40).to(device)
+    alpha_model = AlphaSLModel(input_dim=40, hidden_dim=256, num_layers=2).to(device)
     alpha_model.load_state_dict(torch.load(alpha_model_path, map_location=device))
     alpha_model.eval()
     logger.info(f"Alpha model loaded from {alpha_model_path}")
@@ -621,6 +654,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Combined SL-Alpha + RL-Risk Backtest")
     parser.add_argument("--alpha-model", type=str, default="Alpha/models/alpha_model.pth")
     parser.add_argument("--risk-model", type=str, default="Risklayer/models/ppo_risk_model_final_v2_opt.zip")
+    parser.add_argument("--risk-scaler", type=str, default="Risklayer/models/rl_risk_scaler.pkl")
     parser.add_argument("--data-dir", type=str, default="backtest/data")
     parser.add_argument("--output-dir", type=str, default="backtest/results")
     parser.add_argument("--episodes", type=int, default=1)
