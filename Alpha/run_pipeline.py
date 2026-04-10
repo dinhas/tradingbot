@@ -135,27 +135,25 @@ def train_model(features_path, labels_path, model_save_path):
     os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
     
     # Configuration for large scale training
-    BATCH_SIZE = 8192  # Sequences are (50, 40) vs (40,) — 50x more memory per sample
+    BATCH_SIZE = 8192  # Sequences are (50, 40)
     LEARNING_RATE = 1e-3
-    EPOCHS = 100 # Increased to 100 epochs
+    EPOCHS = 100 
     NUM_GPUS = torch.cuda.device_count()
     
     # 1. Dataset Split
-    # Peek at features to get total length
     total_samples = len(np.load(features_path, mmap_mode='r'))
     indices = np.arange(total_samples)
     np.random.shuffle(indices)
-    split = int(0.95 * total_samples) # 5% val is plenty for 2.5M (125k samples)
+    split = int(0.95 * total_samples) 
     train_indices, val_indices = indices[:split], indices[split:]
 
-    # Compute inverse-frequency class weights for direction labels (fix imbalance)
-    # Direction labels are in {-1, 0, 1}, mapped to {0, 1, 2} in loss fn
+    # Compute inverse-frequency class weights for direction labels
     all_dir_labels = np.load(labels_path)['direction']
     train_dir_labels = all_dir_labels[train_indices]
     class_counts = np.bincount((train_dir_labels + 1).astype(int), minlength=3).astype(np.float32)
-    class_counts = np.where(class_counts == 0, 1.0, class_counts)  # avoid div by zero
+    class_counts = np.where(class_counts == 0, 1.0, class_counts)
     class_weights = 1.0 / class_counts
-    class_weights = class_weights / class_weights.sum() * 3        # normalize to sum to num_classes
+    class_weights = class_weights / class_weights.sum() * 3
     alpha_dir_tensor = torch.tensor(class_weights, dtype=torch.float32).to(DEVICE)
     logger.info(f"Direction class weights: {class_weights}")
 
@@ -166,7 +164,7 @@ def train_model(features_path, labels_path, model_save_path):
         train_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=True, 
-        num_workers=4, # Reduced to match system suggestion
+        num_workers=4,
         pin_memory=True,
         prefetch_factor=2
     )
@@ -174,7 +172,7 @@ def train_model(features_path, labels_path, model_save_path):
         val_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=False, 
-        num_workers=4, # Reduced to match system suggestion
+        num_workers=4,
         pin_memory=True
     )
     
@@ -185,16 +183,14 @@ def train_model(features_path, labels_path, model_save_path):
         model = torch.nn.DataParallel(model)
         
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-    # OneCycleLR with optimized pct_start for large data
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer, 
         max_lr=LEARNING_RATE, 
         steps_per_epoch=len(train_loader), 
         epochs=EPOCHS,
-        pct_start=0.3 # Longer warm-up
+        pct_start=0.3
     )
     
-    # Modern FP16 Mixed Precision API
     scaler = torch.amp.GradScaler('cuda')
     
     best_val_loss = float('inf')
@@ -211,16 +207,13 @@ def train_model(features_path, labels_path, model_save_path):
             
             optimizer.zero_grad(set_to_none=True)
             
-            # Use modern autocast API
             with torch.amp.autocast('cuda'):
                 outputs = model(b_X)
-                # Task weighting: Direction and Meta are critical
                 loss, _ = multi_head_loss(
                     outputs, (b_dir, b_qual, b_meta), alpha_dir=alpha_dir_tensor
                 )
             
             scaler.scale(loss).backward()
-            # Unscale before clipping so clip operates on true gradient magnitudes
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
@@ -258,8 +251,6 @@ def train_model(features_path, labels_path, model_save_path):
 
     logger.info("Optimized large-scale training complete.")
 
-    logger.info("Optimized training complete.")
-
 def main():
     parser = argparse.ArgumentParser(description="Alpha Layer Training Pipeline")
     parser.add_argument("--data-dir", type=str, default="../data", help="Directory containing OHLCV parquet files")
@@ -274,10 +265,12 @@ def main():
     parser.add_argument("--backtest-max-steps", type=int, default=2000, help="Max steps for post-training backtest")
     
     args = parser.parse_args()
+    
+    # Logic: Run backtest unless explicitly skipped
     run_post_backtest = (not args.skip_post_backtest) or args.run_post_backtest
     
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    # Ensure data_dir is absolute
+    
     if not os.path.isabs(args.data_dir):
         args.data_dir = os.path.abspath(os.path.join(base_dir, args.data_dir))
 
