@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 from tqdm import tqdm
 import gc
+import subprocess
 
 # Add project root to sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,25 +33,32 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+SEQ_LEN = 50
 
 class AlphaDataset(Dataset):
-    def __init__(self, features_path, labels_path, indices=None):
-        # Use memory mapping to avoid loading 2.5M rows into RAM
+    def __init__(self, features_path, labels_path, indices=None, seq_len=SEQ_LEN):
         self.features = np.load(features_path, mmap_mode='r')
         labels_data = np.load(labels_path)
         self.directions = labels_data['direction']
         self.qualities = labels_data['quality']
         self.metas = labels_data['meta']
-        
-        self.indices = indices if indices is not None else np.arange(len(self.features))
+        self.seq_len = seq_len
+
+        if indices is not None:
+            # Filter out any index that doesn't have a full lookback window
+            self.indices = indices[indices >= seq_len]
+        else:
+            self.indices = np.arange(seq_len, len(self.features))
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
         real_idx = self.indices[idx]
+        # Return a sequence window of shape (seq_len, 40)
+        window = self.features[real_idx - self.seq_len : real_idx].copy()  # .copy() for writability
         return (
-            torch.from_numpy(self.features[real_idx].copy()), # .copy() to make it writable for torch
+            torch.from_numpy(window),                                                    # (seq_len, 40)
             torch.tensor(self.directions[real_idx], dtype=torch.float32),
             torch.tensor(self.qualities[real_idx], dtype=torch.float32),
             torch.tensor(self.metas[real_idx], dtype=torch.float32)
@@ -127,7 +135,7 @@ def train_model(features_path, labels_path, model_save_path):
     os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
     
     # Configuration for large scale training
-    BATCH_SIZE = 16384 # Increased for 2.5M rows and multi-GPU throughput
+    BATCH_SIZE = 8192  # Sequences are (50, 40) vs (40,) — 50x more memory per sample
     LEARNING_RATE = 1e-3
     EPOCHS = 100 # Increased to 100 epochs
     NUM_GPUS = torch.cuda.device_count()
@@ -139,7 +147,18 @@ def train_model(features_path, labels_path, model_save_path):
     np.random.shuffle(indices)
     split = int(0.95 * total_samples) # 5% val is plenty for 2.5M (125k samples)
     train_indices, val_indices = indices[:split], indices[split:]
-    
+
+    # Compute inverse-frequency class weights for direction labels (fix imbalance)
+    # Direction labels are in {-1, 0, 1}, mapped to {0, 1, 2} in loss fn
+    all_dir_labels = np.load(labels_path)['direction']
+    train_dir_labels = all_dir_labels[train_indices]
+    class_counts = np.bincount((train_dir_labels + 1).astype(int), minlength=3).astype(np.float32)
+    class_counts = np.where(class_counts == 0, 1.0, class_counts)  # avoid div by zero
+    class_weights = 1.0 / class_counts
+    class_weights = class_weights / class_weights.sum() * 3        # normalize to sum to num_classes
+    alpha_dir_tensor = torch.tensor(class_weights, dtype=torch.float32).to(DEVICE)
+    logger.info(f"Direction class weights: {class_weights}")
+
     train_dataset = AlphaDataset(features_path, labels_path, indices=train_indices)
     val_dataset = AlphaDataset(features_path, labels_path, indices=val_indices)
     
@@ -160,7 +179,7 @@ def train_model(features_path, labels_path, model_save_path):
     )
     
     # 2. Initialize Model and Multi-GPU
-    model = AlphaSLModel(input_dim=40, hidden_dim=256, num_res_blocks=4).to(DEVICE)
+    model = AlphaSLModel(input_dim=40, hidden_dim=256, num_layers=2).to(DEVICE)
     if NUM_GPUS > 1:
         logger.info(f"Using {NUM_GPUS} GPUs for training.")
         model = torch.nn.DataParallel(model)
@@ -197,10 +216,13 @@ def train_model(features_path, labels_path, model_save_path):
                 outputs = model(b_X)
                 # Task weighting: Direction and Meta are critical
                 loss, _ = multi_head_loss(
-                    outputs, (b_dir, b_qual, b_meta)
+                    outputs, (b_dir, b_qual, b_meta), alpha_dir=alpha_dir_tensor
                 )
             
             scaler.scale(loss).backward()
+            # Unscale before clipping so clip operates on true gradient magnitudes
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
@@ -216,7 +238,7 @@ def train_model(features_path, labels_path, model_save_path):
                 b_X, b_dir, b_qual, b_meta = [t.to(DEVICE, non_blocking=True) for t in batch]
                 with torch.amp.autocast('cuda'):
                     outputs = model(b_X)
-                    loss, _ = multi_head_loss(outputs, (b_dir, b_qual, b_meta))
+                    loss, _ = multi_head_loss(outputs, (b_dir, b_qual, b_meta), alpha_dir=alpha_dir_tensor)
                     val_loss += loss.item()
         
         avg_val_loss = val_loss / len(val_loader)
@@ -243,6 +265,12 @@ def main():
     parser.add_argument("--data-dir", type=str, default="../data", help="Directory containing OHLCV parquet files")
     parser.add_argument("--skip-gen", action="store_true", help="Skip dataset generation")
     parser.add_argument("--smoke-test", action="store_true", help="Run with limited samples")
+    parser.add_argument("--run-post-backtest", action="store_true", help="Run threshold optimizer and combined backtest after training")
+    parser.add_argument("--risk-model", type=str, default="Risklayer/models/ppo_risk_model_final_v2_opt.zip", help="Path to RL risk model")
+    parser.add_argument("--risk-scaler", type=str, default="Risklayer/models/rl_risk_scaler.pkl", help="Path to RL risk scaler")
+    parser.add_argument("--backtest-data-dir", type=str, default="backtest/data", help="Backtest data directory")
+    parser.add_argument("--backtest-output-dir", type=str, default="backtest/results", help="Backtest results output directory")
+    parser.add_argument("--backtest-max-steps", type=int, default=2000, help="Max steps for post-training backtest")
     
     args = parser.parse_args()
     
@@ -265,6 +293,33 @@ def main():
     
     if os.path.exists(features_path) and os.path.exists(labels_path):
         train_model(features_path, labels_path, model_path)
+
+        if args.run_post_backtest:
+            alpha_model_relpath = os.path.relpath(model_path, os.path.dirname(base_dir))
+            logger.info("Starting post-training threshold optimization...")
+            optimizer_cmd = [
+                sys.executable, "-m", "backtest.optimize_thresholds",
+                "--alpha-model", alpha_model_relpath,
+                "--risk-model", args.risk_model,
+                "--risk-scaler", args.risk_scaler,
+                "--data-dir", args.backtest_data_dir,
+            ]
+            logger.info(f"Running: {' '.join(optimizer_cmd)}")
+            subprocess.run(optimizer_cmd, check=True)
+
+            logger.info("Starting post-training combined backtest...")
+            backtest_cmd = [
+                sys.executable, "-m", "backtest.backtest_combined",
+                "--alpha-model", alpha_model_relpath,
+                "--risk-model", args.risk_model,
+                "--risk-scaler", args.risk_scaler,
+                "--data-dir", args.backtest_data_dir,
+                "--output-dir", args.backtest_output_dir,
+                "--max-steps", str(args.backtest_max_steps),
+                "--episodes", "1",
+            ]
+            logger.info(f"Running: {' '.join(backtest_cmd)}")
+            subprocess.run(backtest_cmd, check=True)
     else:
         logger.error(f"Dataset not found in {dataset_dir}. Cannot train.")
 

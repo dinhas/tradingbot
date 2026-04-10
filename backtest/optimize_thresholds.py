@@ -33,6 +33,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+SEQ_LEN = 50
+
+
+def _build_sequence_windows(features_2d: np.ndarray, seq_len: int = SEQ_LEN):
+    """
+    Build sequence windows for LSTM model.
+    Returns:
+      X_seq: (N-seq_len, seq_len, 40)
+      valid_idx: indices in original array corresponding to sequence targets
+    """
+    n = len(features_2d)
+    if n <= seq_len:
+        return np.empty((0, seq_len, features_2d.shape[1]), dtype=np.float32), np.empty((0,), dtype=np.int64)
+
+    valid_idx = np.arange(seq_len, n, dtype=np.int64)
+    X_seq = np.stack([features_2d[i - seq_len : i] for i in valid_idx], axis=0).astype(np.float32)
+    return X_seq, valid_idx
 
 
 def ensure_backtest_data(data_dir):
@@ -73,40 +90,11 @@ def load_data(data_dir):
     return data_dict
 
 
-def optimize_thresholds():
-    parser = argparse.ArgumentParser(
-        description="Alpha-Risk Multi-Model Threshold Optimizer"
-    )
-    parser.add_argument(
-        "--alpha-model",
-        type=str,
-        default="Alpha/models/alpha_model.pth",
-        help="Path to Alpha model",
-    )
-    parser.add_argument(
-        "--risk-model",
-        type=str,
-        default="Risklayer/models/ppo_risk_model_final_v2_opt.zip",
-        help="Path to RL Risk model (PPO)",
-    )
-    parser.add_argument(
-        "--risk-scaler",
-        type=str,
-        default="Risklayer/models/rl_risk_scaler.pkl",
-        help="Path to Risk scaler",
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=str,
-        default="backtest/data",
-        help="Directory for backtest data",
-    )
-    args = parser.parse_args()
-
-    alpha_path = PROJECT_ROOT / args.alpha_model
-    risk_path = PROJECT_ROOT / args.risk_model
-    scaler_path = PROJECT_ROOT / args.risk_scaler
-    data_dir = PROJECT_ROOT / args.data_dir
+def optimize_thresholds_main(alpha_model, risk_model, risk_scaler, data_dir):
+    alpha_path = PROJECT_ROOT / alpha_model
+    risk_path = PROJECT_ROOT / risk_model
+    scaler_path = PROJECT_ROOT / risk_scaler
+    data_dir = PROJECT_ROOT / data_dir
 
     # 1. Ensure Data
     ensure_backtest_data(data_dir)
@@ -119,10 +107,7 @@ def optimize_thresholds():
         return
 
     logger.info(f"Loading Alpha model from {alpha_path}...")
-    # Using parameters from Alpha/src/model.py
-    alpha_model = AlphaSLModel(input_dim=40, hidden_dim=256, num_res_blocks=4).to(
-        DEVICE
-    )
+    alpha_model = AlphaSLModel(input_dim=40, hidden_dim=256, num_layers=2).to(DEVICE)
     alpha_model.load_state_dict(torch.load(alpha_path, map_location=DEVICE))
     alpha_model.eval()
 
@@ -139,7 +124,7 @@ def optimize_thresholds():
 
     # 3. Preprocess and Generate Predictions
     engine = FeatureEngine()
-    labeler = Labeler(stride=5)
+    labeler = Labeler()
 
     all_pred_dirs = []
     all_meta_probs = []
@@ -157,18 +142,20 @@ def optimize_thresholds():
         filtered_norm_df = normalized_df.loc[common_indices]
         filtered_labels_df = labels_df.loc[common_indices]
 
-        # Get raw features for Alpha (using the vectorized engine)
-        X = engine.get_observation_vectorized(filtered_norm_df, asset)
+        # Get raw per-step features and convert to LSTM sequences
+        X = engine.get_observation_vectorized(filtered_norm_df, asset).astype(np.float32)  # (N, 40)
+        X_seq, valid_idx = _build_sequence_windows(X, seq_len=SEQ_LEN)  # (N-SEQ_LEN, 50, 40)
+        if len(X_seq) == 0:
+            logger.warning(f"Skipping {asset}: not enough rows for SEQ_LEN={SEQ_LEN}")
+            continue
 
-        # Risk Scaling
-        X_risk = risk_scaler.transform(X).astype(np.float32)
+        # Risk model stays per-step (40-dim), aligned to sequence target index
+        X_risk = risk_scaler.transform(X[valid_idx]).astype(np.float32)
 
-        X_tensor = torch.from_numpy(X).to(DEVICE)
+        X_tensor = torch.from_numpy(X_seq).to(DEVICE)
         X_risk_tensor = torch.from_numpy(X_risk).to(DEVICE)
 
-        actual_dirs = (
-            torch.from_numpy(filtered_labels_df["direction"].values).to(DEVICE).long()
-        )
+        actual_dirs = torch.from_numpy(filtered_labels_df["direction"].values[valid_idx]).to(DEVICE).long()
 
         batch_size = 8192
         with torch.no_grad():
@@ -286,6 +273,43 @@ def optimize_thresholds():
         logger.info(f"Optimal parameters saved to {output_file}")
     else:
         logger.warning("No valid threshold combinations found.")
+
+
+def optimize_thresholds():
+    parser = argparse.ArgumentParser(
+        description="Alpha-Risk Multi-Model Threshold Optimizer"
+    )
+    parser.add_argument(
+        "--alpha-model",
+        type=str,
+        default="Alpha/models/alpha_model.pth",
+        help="Path to Alpha model",
+    )
+    parser.add_argument(
+        "--risk-model",
+        type=str,
+        default="Risklayer/models/ppo_risk_model_final_v2_opt.zip",
+        help="Path to RL Risk model (PPO)",
+    )
+    parser.add_argument(
+        "--risk-scaler",
+        type=str,
+        default="Risklayer/models/rl_risk_scaler.pkl",
+        help="Path to Risk scaler",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default="backtest/data",
+        help="Directory for backtest data",
+    )
+    args = parser.parse_args()
+    optimize_thresholds_main(
+        alpha_model=args.alpha_model,
+        risk_model=args.risk_model,
+        risk_scaler=args.risk_scaler,
+        data_dir=args.data_dir,
+    )
 
 
 if __name__ == "__main__":

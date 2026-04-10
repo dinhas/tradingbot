@@ -41,41 +41,47 @@ class ResidualBlock(nn.Module):
         return residual + out
 
 class AlphaSLModel(nn.Module):
-    def __init__(self, input_dim: int = 40, hidden_dim: int = 256, num_res_blocks: int = 4):
+    def __init__(self, input_dim: int = 40, hidden_dim: int = 256, num_layers: int = 2, dropout: float = 0.2):
         super(AlphaSLModel, self).__init__()
 
-        # Initial Projection
-        self.input_proj = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LeakyReLU(0.1),
-            nn.LayerNorm(hidden_dim)
+        # Per-timestep input projection (applied across the sequence dimension)
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+
+        # 2-layer LSTM backbone — batch_first=True means input shape is (batch, seq_len, hidden_dim)
+        self.lstm = nn.LSTM(
+            input_size=hidden_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=False
         )
 
-        # Residual Backbone
-        self.backbone = nn.Sequential(*[
-            ResidualBlock(hidden_dim) for _ in range(num_res_blocks)
-        ])
+        # Post-LSTM normalization
+        self.ln = nn.LayerNorm(hidden_dim)
 
-        # Head A: Direction (3 classes: -1, 0, 1)
+        # Head A: Direction (3 classes: maps from {-1,0,1} to {0,1,2} in loss fn)
         self.direction_head = nn.Linear(hidden_dim, 3)
 
-        # Head B: Quality (Regression [0, 1])
+        # Head B: Quality (regression, 0-1)
         self.quality_head = nn.Linear(hidden_dim, 1)
 
-        # Head C: Meta (Binary [0, 1])
+        # Head C: Meta (binary classification, raw logits for BCEWithLogitsLoss)
         self.meta_head = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
-        features = self.input_proj(x)
-        features = self.backbone(features)
+        # x: (batch, seq_len, input_dim)
+        # Project each timestep independently
+        x = self.input_proj(x)                      # (batch, seq_len, hidden_dim)
+        x = torch.relu(x)
 
-        # Direction: 3 classes
+        # LSTM — we only need the final timestep's hidden state
+        lstm_out, (h_n, _) = self.lstm(x)           # lstm_out: (batch, seq_len, hidden_dim)
+        features = lstm_out[:, -1, :]               # (batch, hidden_dim) — last timestep
+        features = self.ln(features)
+
         direction_logits = self.direction_head(features)
-
-        # Quality: Linear output
         quality = self.quality_head(features)
-
-        # Meta: Raw Logits (For BCEWithLogitsLoss stability)
         meta_logits = self.meta_head(features)
 
         return direction_logits, quality, meta_logits
@@ -107,9 +113,9 @@ def multi_head_loss(outputs, targets, weights=(2.0, 0.5, 1.0), alpha_dir=None):
     return total_loss, (loss_dir, loss_qual, loss_meta)
 
 if __name__ == "__main__":
-    model = AlphaSLModel(input_dim=40)
-    x = torch.randn(16, 40)
+    model = AlphaSLModel(input_dim=40, hidden_dim=256, num_layers=2)
+    x = torch.randn(16, 50, 40)  # (batch, seq_len, input_dim)
     dir_logits, qual, meta = model(x)
-    print(f"Direction logits shape: {dir_logits.shape}")
-    print(f"Quality shape: {qual.shape}")
-    print(f"Meta shape: {meta.shape}")
+    print(f"Direction logits shape: {dir_logits.shape}")  # expect (16, 3)
+    print(f"Quality shape: {qual.shape}")                 # expect (16, 1)
+    print(f"Meta shape: {meta.shape}")                    # expect (16, 1)
