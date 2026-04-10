@@ -8,6 +8,8 @@ stable-baselines3
 shimmy>=0.2.1
 matplotlib
 tqdm
+pyarrow
+fastparquet
 lightgbm
 scikit-learn
 python-dotenv
