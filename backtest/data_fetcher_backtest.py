@@ -34,8 +34,8 @@ SYMBOL_IDS = {
     'USDJPY': 4     # USD/JPY
 }
 
-# Updated Range: Jan 2025 to April 9, 2026
-START_DATE = datetime(2025, 1, 1)
+# Backtest Range: Jan 1, 2026 to Apr 9, 2026 (END_DATE is exclusive)
+START_DATE = datetime(2026, 1, 1)
 END_DATE = datetime(2026, 4, 10)  # Fetches until 2026-04-09 23:59:59
 TIMEFRAME = ProtoOATrendbarPeriod.M5
 
