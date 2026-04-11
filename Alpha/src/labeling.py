@@ -3,7 +3,7 @@ import numpy as np
 from typing import List, Tuple, Dict
 
 class Labeler:
-    def __init__(self, upper_mult: float = 4.0, lower_mult: float = 1.5, time_barrier: int = 20, stride: int = 10):
+    def __init__(self, upper_mult: float = 2.0, lower_mult: float = 1.5, time_barrier: int = 20, stride: int = 10):
         self.upper_mult = upper_mult
         self.lower_mult = lower_mult
         self.time_barrier = time_barrier

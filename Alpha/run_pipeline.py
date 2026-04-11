@@ -36,32 +36,48 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEQ_LEN = 50
 
 class AlphaDataset(Dataset):
-    def __init__(self, features_path, labels_path, indices=None, seq_len=SEQ_LEN):
-        self.features = np.load(features_path, mmap_mode='r')
+    def __init__(self, features_full_path, labels_path, indices=None, seq_len=SEQ_LEN):
+        # Load the FULL bar matrix (all timestamps, memory-mapped)
+        self.features_full = np.load(features_full_path, mmap_mode='r')
         labels_data = np.load(labels_path)
         self.directions = labels_data['direction']
-        self.qualities = labels_data['quality']
-        self.metas = labels_data['meta']
-        self.seq_len = seq_len
+        self.qualities  = labels_data['quality']
+        self.metas      = labels_data['meta']
+        self.full_idx   = labels_data['full_idx']  # position of each label in features_full
+        self.seq_len    = seq_len
+
+        # Build valid index set — only labels where a full lookback window exists
+        all_label_idx = np.arange(len(self.directions))
+        valid_mask = self.full_idx >= seq_len
+        valid_label_idx = all_label_idx[valid_mask]
 
         if indices is not None:
-            # Filter out any index that doesn't have a full lookback window
-            self.indices = indices[indices >= seq_len]
+            # Intersect requested indices with valid ones
+            self.indices = np.intersect1d(indices, valid_label_idx)
         else:
-            self.indices = np.arange(seq_len, len(self.features))
+            self.indices = valid_label_idx
+
+        logger.info(f"AlphaDataset: {len(self.indices)} valid samples "
+                    f"(dropped {len(all_label_idx) - len(valid_label_idx)} for insufficient lookback)")
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        real_idx = self.indices[idx]
-        # Return a sequence window of shape (seq_len, 40)
-        window = self.features[real_idx - self.seq_len : real_idx].copy()  # .copy() for writability
+        label_idx = self.indices[idx]
+        full_row  = self.full_idx[label_idx]   # position in the full consecutive bar matrix
+
+        # Slice 50 REAL consecutive M5 bars from the full matrix
+        window = self.features_full[full_row - self.seq_len : full_row].copy()  # (seq_len, n_cols)
+
+        # Take only the first 40 feature columns (the model's input_dim)
+        window = window[:, :40]
+
         return (
-            torch.from_numpy(window),                                                    # (seq_len, 40)
-            torch.tensor(self.directions[real_idx], dtype=torch.float32),
-            torch.tensor(self.qualities[real_idx], dtype=torch.float32),
-            torch.tensor(self.metas[real_idx], dtype=torch.float32)
+            torch.from_numpy(window),                                               # (50, 40)
+            torch.tensor(self.directions[label_idx], dtype=torch.float32),
+            torch.tensor(self.qualities[label_idx],  dtype=torch.float32),
+            torch.tensor(self.metas[label_idx],      dtype=torch.float32)
         )
 
 def generate_dataset(data_dir, output_dir, smoke_test=False):
@@ -73,11 +89,20 @@ def generate_dataset(data_dir, output_dir, smoke_test=False):
 
     # 1. Get raw and normalized features
     aligned_df, normalized_df = loader.get_features()
+
+    # Save the COMPLETE normalized bar matrix — every timestamp, all assets
+    os.makedirs(output_dir, exist_ok=True)
+    full_features_path = os.path.join(output_dir, "features_full.npy")
+    if not os.path.exists(full_features_path):
+        logger.info(f"Saving full bar matrix: {normalized_df.shape}")
+        np.save(full_features_path, normalized_df.values.astype(np.float32))
+        logger.info(f"Full bar matrix saved: {normalized_df.shape[0]} rows x {normalized_df.shape[1]} cols")
     
     all_X_list = []
     all_y_dir_list = []
     all_y_qual_list = []
     all_y_meta_list = []
+    all_full_idx_list = []
 
     for asset in loader.assets:
         logger.info(f"Processing labels for {asset}...")
@@ -94,6 +119,16 @@ def generate_dataset(data_dir, output_dir, smoke_test=False):
             
         filtered_norm_df = normalized_df.loc[common_indices]
         filtered_labels_df = labels_df.loc[common_indices]
+
+        # Get integer position of each label timestamp in the FULL normalized_df index
+        full_idx = normalized_df.index.get_indexer(filtered_labels_df.index)
+        invalid_mask = full_idx == -1
+        if invalid_mask.any():
+            logger.warning(f"{asset}: {invalid_mask.sum()} label timestamps not found in normalized_df — dropping")
+            filtered_labels_df = filtered_labels_df[~invalid_mask]
+            full_idx = full_idx[~invalid_mask]
+
+        all_full_idx_list.append(full_idx)
         
         logger.info(f"Extracting vectorized features for {len(filtered_labels_df)} samples of {asset}...")
         
@@ -110,24 +145,30 @@ def generate_dataset(data_dir, output_dir, smoke_test=False):
     y_dir_np = np.concatenate(all_y_dir_list).astype(np.float32)
     y_qual_np = np.concatenate(all_y_qual_list).astype(np.float32)
     y_meta_np = np.concatenate(all_y_meta_list).astype(np.float32)
+    full_idx_np = np.concatenate(all_full_idx_list).astype(np.int64)
     
     # Clear lists to free RAM
-    del all_X_list, all_y_dir_list, all_y_qual_list, all_y_meta_list
+    del all_X_list, all_y_dir_list, all_y_qual_list, all_y_meta_list, all_full_idx_list
     gc.collect()
     
     # 3. Save as binary numpy files
-    os.makedirs(output_dir, exist_ok=True)
     features_path = os.path.join(output_dir, "features.npy")
     labels_path = os.path.join(output_dir, "labels.npz")
     
     np.save(features_path, X_np)
-    np.savez(labels_path, direction=y_dir_np, quality=y_qual_np, meta=y_meta_np)
+    np.savez(labels_path,
+        direction=y_dir_np,
+        quality=y_qual_np,
+        meta=y_meta_np,
+        full_idx=full_idx_np
+    )
+    logger.info(f"Saved labels with full_idx. Sample full_idx[:5]: {full_idx_np[:5]}")
     
     logger.info(f"Dataset saved to {output_dir}. Total samples: {len(X_np)}")
     
-    return features_path, labels_path
+    return features_path, labels_path, full_features_path
 
-def train_model(features_path, labels_path, model_save_path):
+def train_model(features_path, labels_path, features_full_path, model_save_path):
     """Trains the AlphaSLModel with optimizations for large datasets (2.5M rows)."""
     logger.info(f"Starting optimized large-scale training...")
     
@@ -157,8 +198,8 @@ def train_model(features_path, labels_path, model_save_path):
     alpha_dir_tensor = torch.tensor(class_weights, dtype=torch.float32).to(DEVICE)
     logger.info(f"Direction class weights: {class_weights}")
 
-    train_dataset = AlphaDataset(features_path, labels_path, indices=train_indices)
-    val_dataset = AlphaDataset(features_path, labels_path, indices=val_indices)
+    train_dataset = AlphaDataset(features_full_path, labels_path, indices=train_indices)
+    val_dataset = AlphaDataset(features_full_path, labels_path, indices=val_indices)
     
     train_loader = DataLoader(
         train_dataset, 
@@ -277,17 +318,18 @@ def main():
     dataset_dir = os.path.join(base_dir, "data", "training_set")
     model_path = os.path.join(base_dir, "models", "alpha_model.pth")
     
+    features_path = os.path.join(dataset_dir, "features.npy")
+    labels_path = os.path.join(dataset_dir, "labels.npz")
+    full_features_path = os.path.join(dataset_dir, "features_full.npy")
+
     if not args.skip_gen:
         if not os.path.exists(args.data_dir):
             logger.error(f"Data directory not found at {args.data_dir}")
             return
-        generate_dataset(args.data_dir, dataset_dir, smoke_test=args.smoke_test)
+        features_path, labels_path, full_features_path = generate_dataset(args.data_dir, dataset_dir, smoke_test=args.smoke_test)
     
-    features_path = os.path.join(dataset_dir, "features.npy")
-    labels_path = os.path.join(dataset_dir, "labels.npz")
-    
-    if os.path.exists(features_path) and os.path.exists(labels_path):
-        train_model(features_path, labels_path, model_path)
+    if os.path.exists(features_path) and os.path.exists(labels_path) and os.path.exists(full_features_path):
+        train_model(features_path, labels_path, full_features_path, model_path)
 
         if run_post_backtest:
             alpha_model_relpath = os.path.relpath(model_path, os.path.dirname(base_dir))
