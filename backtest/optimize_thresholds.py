@@ -216,6 +216,48 @@ def optimize_thresholds_main(alpha_model, risk_model, risk_scaler, data_dir, alp
     risk_sizes = torch.cat(all_risk_sizes)
     actual_dirs = torch.cat(all_actual_dirs)
 
+    # --- DEBUG: Log and Save Prediction Distributions ---
+    logger.info("\n" + "=" * 40)
+    logger.info("PREDICTION DISTRIBUTION DEBUG")
+    logger.info("=" * 40)
+    logger.info(f"Total Prediction Samples: {len(pred_dirs)}")
+    
+    # Meta Debug
+    m_min, m_max = meta_probs.min().item(), meta_probs.max().item()
+    m_mean, m_std = meta_probs.mean().item(), meta_probs.std().item()
+    logger.info(f"Meta Probs  | Min: {m_min:.4f} | Max: {m_max:.4f} | Mean: {m_mean:.4f} | Std: {m_std:.4f}")
+    
+    # Quality Debug
+    q_min, q_max = qual_preds.min().item(), qual_preds.max().item()
+    q_mean, q_std = qual_preds.mean().item(), qual_preds.std().item()
+    logger.info(f"Qual Preds  | Min: {q_min:.4f} | Max: {q_max:.4f} | Mean: {q_mean:.4f} | Std: {q_std:.4f}")
+    
+    # Risk Debug
+    if not alpha_only:
+        r_min, r_max = risk_sizes.min().item(), risk_sizes.max().item()
+        r_mean, r_std = risk_sizes.mean().item(), risk_sizes.std().item()
+        logger.info(f"Risk Sizes  | Min: {r_min:.4f} | Max: {r_max:.4f} | Mean: {r_mean:.4f} | Std: {r_std:.4f}")
+    
+    # Direction Distribution
+    dir_counts = torch.bincount((pred_dirs + 1).long(), minlength=3)
+    logger.info(f"Dir Preds   | Short: {dir_counts[0]} | Flat: {dir_counts[1]} | Long: {dir_counts[2]}")
+    logger.info("=" * 40 + "\n")
+
+    # Save raw outputs for external analysis
+    debug_dir = PROJECT_ROOT / "backtest" / "results" / "debug"
+    os.makedirs(debug_dir, exist_ok=True)
+    debug_file = debug_dir / f"model_outputs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.npz"
+    np.savez(
+        debug_file,
+        pred_dirs=pred_dirs.numpy(),
+        meta_probs=meta_probs.numpy(),
+        qual_preds=qual_preds.numpy(),
+        risk_sizes=risk_sizes.numpy(),
+        actual_dirs=actual_dirs.numpy()
+    )
+    logger.info(f"Raw model outputs saved to {debug_file}")
+    # ---------------------------------------------------
+
     # 4. GPU-Accelerated Grid Search
     logger.info(f"Starting Grid Search on {len(pred_dirs)} predictions...")
 
