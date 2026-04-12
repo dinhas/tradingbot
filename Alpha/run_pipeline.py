@@ -43,7 +43,8 @@ class AlphaDataset(Dataset):
         self.directions = labels_data['direction']
         self.qualities  = labels_data['quality']
         self.metas      = labels_data['meta']
-        self.full_idx   = labels_data['full_idx']  # position of each label in features_full
+        self.full_idx   = labels_data['full_idx']   # position of each label in features_full
+        self.asset_idx  = labels_data['asset_idx']  # which asset this label belongs to
         self.seq_len    = seq_len
 
         # Build valid index set — only labels where a full lookback window exists
@@ -66,12 +67,12 @@ class AlphaDataset(Dataset):
     def __getitem__(self, idx):
         label_idx = self.indices[idx]
         full_row  = self.full_idx[label_idx]   # position in the full consecutive bar matrix
+        a_idx     = self.asset_idx[label_idx]  # asset index
 
-        # Slice 50 REAL consecutive M5 bars from the full matrix
-        window = self.features_full[full_row - self.seq_len : full_row].copy()  # (seq_len, n_cols)
-
-        # Take only the first 40 feature columns (the model's input_dim)
-        window = window[:, :40]
+        # Slice 50 REAL consecutive M5 bars from the full matrix for the specific asset
+        start_col = a_idx * 40
+        end_col   = start_col + 40
+        window = self.features_full[full_row - self.seq_len : full_row, start_col : end_col].copy()
 
         return (
             torch.from_numpy(window),                                               # (50, 40)
@@ -95,16 +96,25 @@ def generate_dataset(data_dir, output_dir, smoke_test=False):
     full_features_path = os.path.join(output_dir, "features_full.npy")
     if not os.path.exists(full_features_path):
         logger.info(f"Saving full bar matrix: {normalized_df.shape}")
-        np.save(full_features_path, normalized_df.values.astype(np.float32))
-        logger.info(f"Full bar matrix saved: {normalized_df.shape[0]} rows x {normalized_df.shape[1]} cols")
+
+        # Create master observation matrix (N, num_assets * 40)
+        n_steps = len(normalized_df)
+        num_assets = len(loader.assets)
+        master_obs = np.zeros((n_steps, num_assets * 40), dtype=np.float32)
+        for i, asset in enumerate(loader.assets):
+            master_obs[:, i*40:(i+1)*40] = engine.get_observation_vectorized(normalized_df, asset)
+
+        np.save(full_features_path, master_obs)
+        logger.info(f"Full bar matrix saved: {master_obs.shape[0]} rows x {master_obs.shape[1]} cols")
     
     all_X_list = []
     all_y_dir_list = []
     all_y_qual_list = []
     all_y_meta_list = []
     all_full_idx_list = []
+    all_asset_idx_list = []
 
-    for asset in loader.assets:
+    for i, asset in enumerate(loader.assets):
         logger.info(f"Processing labels for {asset}...")
         labels_df = labeler.label_data(aligned_df, asset)
         
@@ -129,6 +139,7 @@ def generate_dataset(data_dir, output_dir, smoke_test=False):
             full_idx = full_idx[~invalid_mask]
 
         all_full_idx_list.append(full_idx)
+        all_asset_idx_list.append(np.full(len(full_idx), i, dtype=np.int64))
         
         logger.info(f"Extracting vectorized features for {len(filtered_labels_df)} samples of {asset}...")
         
@@ -146,9 +157,10 @@ def generate_dataset(data_dir, output_dir, smoke_test=False):
     y_qual_np = np.concatenate(all_y_qual_list).astype(np.float32)
     y_meta_np = np.concatenate(all_y_meta_list).astype(np.float32)
     full_idx_np = np.concatenate(all_full_idx_list).astype(np.int64)
+    asset_idx_np = np.concatenate(all_asset_idx_list).astype(np.int64)
     
     # Clear lists to free RAM
-    del all_X_list, all_y_dir_list, all_y_qual_list, all_y_meta_list, all_full_idx_list
+    del all_X_list, all_y_dir_list, all_y_qual_list, all_y_meta_list, all_full_idx_list, all_asset_idx_list
     gc.collect()
     
     # 3. Save as binary numpy files
@@ -160,7 +172,8 @@ def generate_dataset(data_dir, output_dir, smoke_test=False):
         direction=y_dir_np,
         quality=y_qual_np,
         meta=y_meta_np,
-        full_idx=full_idx_np
+        full_idx=full_idx_np,
+        asset_idx=asset_idx_np
     )
     logger.info(f"Saved labels with full_idx. Sample full_idx[:5]: {full_idx_np[:5]}")
     

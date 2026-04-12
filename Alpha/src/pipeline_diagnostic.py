@@ -46,15 +46,15 @@ else:
     print(f"  {FAIL}  Only {n_rows:,} rows — this looks like the sparse labeled file, not the full matrix")
     all_passed = False
 
-# ---- TEST 3: labels.npz has full_idx ----
-print("\nTEST 3 — labels.npz contains full_idx")
+# ---- TEST 3: labels.npz has full_idx and asset_idx ----
+print("\nTEST 3 — labels.npz contains full_idx and asset_idx")
 labels = np.load(LABELS_PATH)
 keys = list(labels.keys())
 print(f"  Keys found: {keys}")
-if 'full_idx' in keys:
-    print(f"  {PASS}  full_idx present — {len(labels['full_idx']):,} entries")
+if 'full_idx' in keys and 'asset_idx' in keys:
+    print(f"  {PASS}  Indices present — {len(labels['full_idx']):,} entries")
 else:
-    print(f"  {FAIL}  full_idx missing — pipeline fix was not applied")
+    print(f"  {FAIL}  Indices missing — pipeline fix was not applied")
     all_passed = False
 
 # ---- TEST 4: full_idx values point into features_full correctly ----
@@ -74,29 +74,44 @@ else:
 # ---- TEST 5: window is real consecutive bars (the core gappy window test) ----
 print("\nTEST 5 — Window consecutive bar check (THE KEY TEST)")
 print("  Sampling 5 windows and checking they are consecutive rows in features_full...")
-sample_label_positions = [1000, 5000, 20000, 50000, 100000]
+sample_label_positions = [100, 500, 1100, 2100, 4100] # Smoke test has 5000 samples (1000 per asset)
 sample_label_positions = [p for p in sample_label_positions if p < len(full_idx)]
 gap_bug_detected = False
 
+asset_idx = labels['asset_idx']
+
 for label_pos in sample_label_positions:
     full_row = full_idx[label_pos]
-    window   = features_full[full_row - SEQ_LEN : full_row]
+    a_idx    = asset_idx[label_pos]
+
+    start_col = a_idx * 40
+    end_col   = start_col + 40
+    window    = features_full[full_row - SEQ_LEN : full_row, start_col : end_col]
 
     # Check: the rows in the window should be drawn from the dense matrix.
-    # We verify this indirectly — the window must have exactly SEQ_LEN rows
-    # and the full_row must be a high integer (pointing deep into the full matrix)
     if len(window) != SEQ_LEN:
         print(f"  {FAIL}  label_pos={label_pos}: window has {len(window)} rows, expected {SEQ_LEN}")
         gap_bug_detected = True
+    elif window.shape[1] != 40:
+        print(f"  {FAIL}  label_pos={label_pos}: window has {window.shape[1]} cols, expected 40")
+        gap_bug_detected = True
     else:
-        # full_row should be >> label_pos (since features_full has all bars, not just labeled)
-        density_ratio = full_row / (label_pos + 1)
-        print(f"  label_pos={label_pos:>6}  full_row={full_row:>7}  density_ratio={density_ratio:.1f}x  rows={len(window)}")
+        # full_row should be >> pos_in_asset (the index in the sparse labels for this asset)
+        # Calculate how many labels for THIS asset preceded this one
+        pos_in_asset = np.sum(asset_idx[:label_pos] == a_idx)
+
+        density_ratio = full_row / (pos_in_asset + 1)
+        print(f"  label_pos={label_pos:>6}  full_row={full_row:>7}  asset_idx={a_idx}  density_ratio={density_ratio:.1f}x  rows={len(window)}")
 
 if not gap_bug_detected and len(sample_label_positions) > 0:
-    # If density_ratio is ~10, it means full_row >> label_pos — correct (full matrix is ~10x denser)
-    last_ratio = full_idx[sample_label_positions[-1]] / (sample_label_positions[-1] + 1)
-    if last_ratio > 3.0:
+    # If density_ratio is ~10, it means full_row >> pos_in_asset — correct (full matrix is ~10x denser)
+    # We check a sample that is far enough into the asset data
+    last_label_pos = sample_label_positions[-1]
+    a_idx = asset_idx[last_label_pos]
+    pos_in_asset = np.sum(asset_idx[:last_label_pos] == a_idx)
+    ratio = full_idx[last_label_pos] / (pos_in_asset + 1)
+
+    if ratio > 3.0:
         print(f"  {PASS}  density_ratio > 3x confirms windows are from full bar matrix, not sparse labels")
     else:
         print(f"  {FAIL}  density_ratio ≈ 1x — windows are still drawn from sparse labeled file (gappy bug still present)")
