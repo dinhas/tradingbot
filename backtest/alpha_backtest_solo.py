@@ -82,11 +82,12 @@ class AlphaSoloBacktest:
         data_dir,
         initial_equity=INITIAL_EQUITY,
         env=None,
-        meta_thresh=0.78,
-        qual_thresh=0.30,
-        fixed_sl=2.0,
-        fixed_tp=4.0,
+        meta_thresh=0.85,
+        qual_thresh=0.45,
+        fixed_sl=3.0,
+        fixed_tp=3.0,
         fixed_size=0.25,
+        trade_cooldown_bars=6,  # Minimum bars between trades per asset
         enable_trailing_stop=True,
         breakeven_trigger_r=0.9,
         breakeven_buffer_atr=0.10,
@@ -101,6 +102,7 @@ class AlphaSoloBacktest:
         self.fixed_sl = fixed_sl
         self.fixed_tp = fixed_tp
         self.fixed_size = fixed_size
+        self.trade_cooldown_bars = trade_cooldown_bars
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Create Alpha environment for data access (or reuse existing)
@@ -242,6 +244,7 @@ class AlphaSoloBacktest:
             self.env.equity = self.initial_equity
 
             alpha_signals = 0
+            last_trade_step = {a: -999 for a in assets}  # Cooldown tracker
 
             for current_idx in tqdm(range(start_step, end_step), desc=f"Ep {episode+1}"):
                 self.env.current_step = current_idx
@@ -263,6 +266,10 @@ class AlphaSoloBacktest:
                     if meta_prob < self.meta_thresh or qual_score < self.qual_thresh:
                         continue
 
+                    # Per-asset cooldown to prevent overtrading
+                    if (current_idx - last_trade_step[asset]) < self.trade_cooldown_bars:
+                        continue
+
                     alpha_signals += 1
                     combined_actions[asset] = {"direction": direction}
 
@@ -275,11 +282,13 @@ class AlphaSoloBacktest:
 
                     if current_pos is None:
                         self._open_position_fixed(asset, act["direction"], mid_price, atr)
+                        last_trade_step[asset] = current_idx
                     elif current_pos["direction"] != act["direction"]:
                         close_price = self._get_execution_price(asset, mid_price, -current_pos["direction"])
                         self.env._close_position(asset, close_price)
                         self.equity = self.env.equity
                         self._open_position_fixed(asset, act["direction"], mid_price, atr)
+                        last_trade_step[asset] = current_idx
 
                 # ADVANCE & UPDATE
                 self.env.current_step += 1
@@ -312,10 +321,11 @@ def main():
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--initial-equity", type=float, default=10.0)
-    parser.add_argument("--meta-thresh", type=float, default=0.78)
-    parser.add_argument("--qual-thresh", type=float, default=0.30)
-    parser.add_argument("--sl", type=float, default=2.0, help="Fixed SL ATR multiplier")
-    parser.add_argument("--tp", type=float, default=4.0, help="Fixed TP ATR multiplier")
+    parser.add_argument("--meta-thresh", type=float, default=0.85)
+    parser.add_argument("--qual-thresh", type=float, default=0.45)
+    parser.add_argument("--sl", type=float, default=3.0, help="Fixed SL ATR multiplier")
+    parser.add_argument("--tp", type=float, default=3.0, help="Fixed TP ATR multiplier")
+    parser.add_argument("--cooldown", type=int, default=6, help="Min bars between trades per asset")
     parser.add_argument("--size", type=float, default=0.25, help="Fixed position size multiplier")
     parser.add_argument("--disable-trailing", action="store_true", help="Disable trailing stop")
     
@@ -358,6 +368,7 @@ def main():
         fixed_sl=args.sl,
         fixed_tp=args.tp,
         fixed_size=args.size,
+        trade_cooldown_bars=args.cooldown,
         enable_trailing_stop=not args.disable_trailing,
     )
 

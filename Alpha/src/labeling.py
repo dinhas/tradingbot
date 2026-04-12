@@ -3,11 +3,12 @@ import numpy as np
 from typing import List, Tuple, Dict
 
 class Labeler:
-    def __init__(self, upper_mult: float = 4.0, lower_mult: float = 2.0, time_barrier: int = 20, stride: int = 10):
+    def __init__(self, upper_mult: float = 3.0, lower_mult: float = 3.0, time_barrier: int = 20, stride: int = 10, warmup: int = 60):
         self.upper_mult = upper_mult
         self.lower_mult = lower_mult
         self.time_barrier = time_barrier
         self.stride = stride
+        self.warmup = warmup  # Skip first N bars where rolling normalization is unstable
 
     def label_data(self, df: pd.DataFrame, asset: str) -> pd.DataFrame:
         """
@@ -34,7 +35,7 @@ class Labeler:
         atrs = df[atr_col].values
         timestamps = df.index
 
-        for curr_idx in range(0, n - self.time_barrier, self.stride):
+        for curr_idx in range(self.warmup, n - self.time_barrier, self.stride):
             entry_price = prices_close[curr_idx]
             atr = atrs[curr_idx]
 

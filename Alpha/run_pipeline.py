@@ -189,7 +189,7 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
     os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
     
     # Configuration for large scale training
-    BATCH_SIZE = 8192  # Sequences are (50, 40)
+    BATCH_SIZE = 2048  # Smaller batch = more gradient updates per epoch
     LEARNING_RATE = 1e-3
     EPOCHS = 100 
     NUM_GPUS = torch.cuda.device_count()
@@ -248,7 +248,7 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
     scaler = torch.amp.GradScaler('cuda')
     
     best_val_loss = float('inf')
-    early_stop_patience = 5
+    early_stop_patience = 15
     epochs_no_improve = 0
     
     for epoch in range(EPOCHS):
