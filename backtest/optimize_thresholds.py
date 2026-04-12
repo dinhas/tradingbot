@@ -261,11 +261,11 @@ def optimize_thresholds_main(alpha_model, risk_model, risk_scaler, data_dir, alp
     # 4. GPU-Accelerated Grid Search
     logger.info(f"Starting Grid Search on {len(pred_dirs)} predictions...")
 
-    # Grid search ranges
-    meta_thresholds = torch.linspace(0.7, 0.98, 12).to(DEVICE)
-    qual_thresholds = torch.linspace(0.2, 0.6, 10).to(DEVICE)
-    # Risk size thresholds (only relevant for combined model)
-    risk_thresholds = torch.linspace(0.1, 0.25, 8).to(DEVICE) if not alpha_only else torch.tensor([0.0]).to(DEVICE)
+    # Grid search ranges (Updated to match actual model output distributions)
+    meta_thresholds = torch.linspace(0.8, 0.99, 20).to(DEVICE)
+    qual_thresholds = torch.linspace(0.6, 0.98, 20).to(DEVICE)
+    # Risk size thresholds
+    risk_thresholds = torch.linspace(0.1, 0.28, 10).to(DEVICE) if not alpha_only else torch.tensor([0.0]).to(DEVICE)
 
     best_expectancy = -np.inf
     best_params = None
