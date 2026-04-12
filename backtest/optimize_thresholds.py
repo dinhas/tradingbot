@@ -107,7 +107,7 @@ def optimize_thresholds_main(alpha_model, risk_model, risk_scaler, data_dir, alp
         return
 
     logger.info(f"Loading Alpha model from {alpha_path}...")
-    alpha_model = AlphaSLModel(input_dim=40, hidden_dim=256, num_layers=2).to(DEVICE)
+    alpha_model = AlphaSLModel(input_dim=40, hidden_dim=128, num_layers=2).to(DEVICE)
     alpha_model.load_state_dict(torch.load(alpha_path, map_location=DEVICE))
     alpha_model.eval()
 
@@ -296,10 +296,10 @@ def optimize_thresholds_main(alpha_model, risk_model, risk_scaler, data_dir, alp
                 is_loss = (~is_win) & (~is_time_exit)
 
                 r_returns = torch.zeros_like(t_actual, dtype=torch.float32)
-                # If TP hit, reward is 4.0 ATR. If SL hit, loss is 2.0 ATR.
-                # In terms of 'R' where 1R = SL (2.0 ATR), win = 2.0R, loss = -1.0R.
-                r_returns[is_win] = 2.0  
-                r_returns[is_time_exit] = -0.2 # Small average timeout cost
+                # Symmetric 3x/3x barriers => Reward/Risk = 1.0
+                # 1R = SL distance (3.0 ATR). Win = 1.0R, Loss = -1.0R.
+                r_returns[is_win] = 1.0  
+                r_returns[is_time_exit] = -0.3 # Average timeout cost
                 r_returns[is_loss] = -1.0 
 
                 avg_r = r_returns.mean().item()

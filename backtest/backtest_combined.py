@@ -587,7 +587,7 @@ def run_combined_backtest(args):
 
     # ── Alpha Model (SL) ──
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    alpha_model = AlphaSLModel(input_dim=40, hidden_dim=256, num_layers=2).to(device)
+    alpha_model = AlphaSLModel(input_dim=40, hidden_dim=128, num_layers=2).to(device)
     alpha_model.load_state_dict(torch.load(alpha_model_path, map_location=device))
     alpha_model.eval()
     logger.info(f"Alpha model loaded from {alpha_model_path}")

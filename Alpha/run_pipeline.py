@@ -190,7 +190,7 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
     
     # Configuration for large scale training
     BATCH_SIZE = 2048  # Smaller batch = more gradient updates per epoch
-    LEARNING_RATE = 1e-3
+    LEARNING_RATE = 5e-4
     EPOCHS = 100 
     NUM_GPUS = torch.cuda.device_count()
     
@@ -231,12 +231,12 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
     )
     
     # 2. Initialize Model and Multi-GPU
-    model = AlphaSLModel(input_dim=40, hidden_dim=256, num_layers=2).to(DEVICE)
+    model = AlphaSLModel(input_dim=40, hidden_dim=128, num_layers=2).to(DEVICE)
     if NUM_GPUS > 1:
         logger.info(f"Using {NUM_GPUS} GPUs for training.")
         model = torch.nn.DataParallel(model)
         
-    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=5e-4)
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer, 
         max_lr=LEARNING_RATE, 

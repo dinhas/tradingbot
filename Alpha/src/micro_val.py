@@ -80,7 +80,7 @@ def run_micro_validation():
     dataset = TensorDataset(X, y_dir, y_qual, y_meta)
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-    model = AlphaSLModel(input_dim=40, hidden_dim=256, num_layers=2)
+    model = AlphaSLModel(input_dim=40, hidden_dim=128, num_layers=2)
     optimizer = optim.Adam(model.parameters(), lr=0.01) # Higher LR for 1 epoch test
 
     logger.info("\nRunning 1 training epoch...")
