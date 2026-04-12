@@ -78,7 +78,7 @@ def load_data(data_dir):
         if not file_path.exists():
             # Fallback to 2025 legacy
             file_path = data_dir / f"{asset}_5m_2025.parquet"
-            
+
         if file_path.exists():
             df = pd.read_parquet(file_path)
             # Ensure index is datetime
@@ -137,25 +137,35 @@ def optimize_thresholds_main(alpha_model, risk_model, risk_scaler, data_dir):
 
     for asset in data_dict.keys():
         logger.info(f"Generating signals for {asset}...")
+        # Get raw per-step features from the DENSE normalized_df
+        X_dense = engine.get_observation_vectorized(normalized_df, asset).astype(np.float32)
+
         labels_df = labeler.label_data(aligned_df, asset)
         common_indices = labels_df.index.intersection(normalized_df.index)
-        filtered_norm_df = normalized_df.loc[common_indices]
-        filtered_labels_df = labels_df.loc[common_indices]
 
-        # Get raw per-step features and convert to LSTM sequences
-        X = engine.get_observation_vectorized(filtered_norm_df, asset).astype(np.float32)  # (N, 40)
-        X_seq, valid_idx = _build_sequence_windows(X, seq_len=SEQ_LEN)  # (N-SEQ_LEN, 50, 40)
-        if len(X_seq) == 0:
-            logger.warning(f"Skipping {asset}: not enough rows for SEQ_LEN={SEQ_LEN}")
+        # Get integer position of each label in the dense matrix
+        label_full_idx = normalized_df.index.get_indexer(common_indices)
+
+        # Filter for valid lookback
+        valid_mask = (label_full_idx >= SEQ_LEN)
+        target_indices = label_full_idx[valid_mask]
+
+        if len(target_indices) == 0:
+            logger.warning(f"Skipping {asset}: not enough rows with SEQ_LEN={SEQ_LEN} lookback")
             continue
 
-        # Risk model stays per-step (40-dim), aligned to sequence target index
-        X_risk = risk_scaler.transform(X[valid_idx]).astype(np.float32)
+        # Build windows from DENSE features
+        X_seq = np.stack([X_dense[i - SEQ_LEN : i] for i in target_indices], axis=0).astype(np.float32)
+
+        # Risk model stays per-step (40-dim), aligned to target index
+        X_risk = risk_scaler.transform(X_dense[target_indices]).astype(np.float32)
 
         X_tensor = torch.from_numpy(X_seq).to(DEVICE)
         X_risk_tensor = torch.from_numpy(X_risk).to(DEVICE)
 
-        actual_dirs = torch.from_numpy(filtered_labels_df["direction"].values[valid_idx]).to(DEVICE).long()
+        # Align actual labels
+        filtered_labels_df = labels_df.loc[common_indices].iloc[valid_mask]
+        actual_dirs = torch.from_numpy(filtered_labels_df["direction"].values).to(DEVICE).long()
 
         batch_size = 8192
         with torch.no_grad():
@@ -172,7 +182,7 @@ def optimize_thresholds_main(alpha_model, risk_model, risk_scaler, data_dir):
                 # or just use the sizing action from predict if we want deterministic
                 actions, _ = risk_model.predict(b_X_risk.cpu().numpy(), deterministic=True)
                 actions = torch.from_numpy(actions).to(DEVICE)
-                
+
                 # size_raw is index 2 in our action space [-1, 1]
                 size_raw = actions[:, 2]
                 # Convert from [-1, 1] to actual values [0.1, 0.3] matching risk_ppo_env

@@ -168,6 +168,7 @@ class CombinedBacktest:
             # Re-process and re-cache if we loaded new data
             self.env.raw_data, self.env.processed_data = self.env.feature_engine.preprocess_data(self.env.data)
             self.env._cache_data_arrays()
+            self.env._create_master_obs_matrix()
             self.env.max_steps = len(self.env.processed_data) - 1
 
         self.env.equity = initial_equity
