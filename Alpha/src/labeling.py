@@ -8,9 +8,9 @@ logger = logging.getLogger(__name__)
 class Labeler:
     def __init__(
         self,
-        sl_mult: float = 2.0,
-        tp_mult: float = 4.0,
-        time_barrier: int = 35,
+        sl_mult: float = 1.0,
+        tp_mult: float = 2.0,
+        time_barrier: int = 60,
         stride: int = 10,
         warmup: int = 60,
         cusum_threshold_mult: float = 0.5,
@@ -126,6 +126,7 @@ class Labeler:
             candidate_indices = list(range(self.warmup, n - self.time_barrier, self.stride))
 
         n_trending_regime = 0
+        n_skipped_ranging = 0
         n_directional = 0
 
         for curr_idx in candidate_indices:
@@ -212,15 +213,6 @@ class Labeler:
                     else:
                         n_skipped_ranging += 1
                         continue
-
-            if adx_values is not None:
-                current_adx = adx_values[curr_idx]
-                if not np.isnan(current_adx):
-                    if current_adx >= self.adx_trend_threshold:
-                        n_trending_regime += 1
-                    else:
-                        direction = 0
-                        barrier_hit = 0
 
             exit_idx = curr_idx + 1 + exit_bar
             exit_idx = min(exit_idx, n - 1)

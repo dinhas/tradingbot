@@ -2,6 +2,8 @@ ctrader-open-api
 twisted
 pandas
 numpy
+pyarrow
+fastparquet
 ta
 gymnasium
 stable-baselines3

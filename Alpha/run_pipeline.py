@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEVICE = torch.device("cpu")
-SEQ_LEN = 30
+SEQ_LEN = 50
 
 class AlphaDataset(Dataset):
     def __init__(self, features_full_path, labels_path, indices=None, seq_len=SEQ_LEN):

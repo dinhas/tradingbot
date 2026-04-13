@@ -11,10 +11,12 @@ import numpy as np
 import torch
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from Alpha.src.feature_engine import NUM_FEATURES
+from Alpha.run_pipeline import SEQ_LEN
+
 DATASET_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "training_set")
 FULL_PATH   = os.path.join(DATASET_DIR, "features_full.npy")
 LABELS_PATH = os.path.join(DATASET_DIR, "labels.npz")
-SEQ_LEN     = 50
 PASS = "✅ PASS"
 FAIL = "❌ FAIL"
 
@@ -84,16 +86,16 @@ for label_pos in sample_label_positions:
     full_row = full_idx[label_pos]
     a_idx    = asset_idx[label_pos]
 
-    start_col = a_idx * 40
-    end_col   = start_col + 40
+    start_col = a_idx * NUM_FEATURES
+    end_col   = start_col + NUM_FEATURES
     window    = features_full[full_row - SEQ_LEN : full_row, start_col : end_col]
 
     # Check: the rows in the window should be drawn from the dense matrix.
     if len(window) != SEQ_LEN:
         print(f"  {FAIL}  label_pos={label_pos}: window has {len(window)} rows, expected {SEQ_LEN}")
         gap_bug_detected = True
-    elif window.shape[1] != 40:
-        print(f"  {FAIL}  label_pos={label_pos}: window has {window.shape[1]} cols, expected 40")
+    elif window.shape[1] != NUM_FEATURES:
+        print(f"  {FAIL}  label_pos={label_pos}: window has {window.shape[1]} cols, expected {NUM_FEATURES}")
         gap_bug_detected = True
     else:
         # full_row should be >> pos_in_asset (the index in the sparse labels for this asset)
@@ -143,14 +145,14 @@ try:
     ds = AlphaDataset(FULL_PATH, LABELS_PATH, seq_len=SEQ_LEN)
     sample = ds[0]
     x, d, q, m = sample
-    print(f"  x shape:  {x.shape}   (expect torch.Size([{SEQ_LEN}, 40]))")
+    print(f"  x shape:  {x.shape}   (expect torch.Size([{SEQ_LEN}, {NUM_FEATURES}]))")
     print(f"  dir:      {d.item():.0f}")
     print(f"  quality:  {q.item():.4f}")
     print(f"  meta:     {m.item():.0f}")
-    if x.shape == torch.Size([SEQ_LEN, 40]):
+    if x.shape == torch.Size([SEQ_LEN, NUM_FEATURES]):
         print(f"  {PASS}  Tensor shape correct — LSTM-ready")
     else:
-        print(f"  {FAIL}  Wrong shape. Got {x.shape}, expected [{SEQ_LEN}, 40]")
+        print(f"  {FAIL}  Wrong shape. Got {x.shape}, expected [{SEQ_LEN}, {NUM_FEATURES}]")
         all_passed = False
 except Exception as e:
     print(f"  {FAIL}  AlphaDataset raised: {e}")
