@@ -19,7 +19,7 @@ sys.path.append(PROJECT_ROOT)
 from Alpha.src.data_loader import DataLoader as MyDataLoader
 from Alpha.src.labeling import Labeler
 from Alpha.src.model import AlphaSLModel, multi_head_loss
-from Alpha.src.feature_engine import FeatureEngine
+from Alpha.src.feature_engine import FeatureEngine, NUM_FEATURES
 
 # Configure logging
 logging.basicConfig(
@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-SEQ_LEN = 50
+SEQ_LEN = 30
 
 class AlphaDataset(Dataset):
     def __init__(self, features_full_path, labels_path, indices=None, seq_len=SEQ_LEN):
@@ -70,8 +70,8 @@ class AlphaDataset(Dataset):
         a_idx     = self.asset_idx[label_idx]  # asset index
 
         # Slice 50 REAL consecutive M5 bars from the full matrix for the specific asset
-        start_col = a_idx * 40
-        end_col   = start_col + 40
+        start_col = a_idx * NUM_FEATURES
+        end_col   = start_col + NUM_FEATURES
         window = self.features_full[full_row - self.seq_len : full_row, start_col : end_col].copy()
 
         return (
@@ -97,12 +97,12 @@ def generate_dataset(data_dir, output_dir, smoke_test=False):
     if not os.path.exists(full_features_path):
         logger.info(f"Saving full bar matrix: {normalized_df.shape}")
 
-        # Create master observation matrix (N, num_assets * 40)
+        # Create master observation matrix (N, num_assets * NUM_FEATURES)
         n_steps = len(normalized_df)
         num_assets = len(loader.assets)
-        master_obs = np.zeros((n_steps, num_assets * 40), dtype=np.float32)
+        master_obs = np.zeros((n_steps, num_assets * NUM_FEATURES), dtype=np.float32)
         for i, asset in enumerate(loader.assets):
-            master_obs[:, i*40:(i+1)*40] = engine.get_observation_vectorized(normalized_df, asset)
+            master_obs[:, i*NUM_FEATURES:(i+1)*NUM_FEATURES] = engine.get_observation_vectorized(normalized_df, asset)
 
         np.save(full_features_path, master_obs)
         logger.info(f"Full bar matrix saved: {master_obs.shape[0]} rows x {master_obs.shape[1]} cols")
@@ -190,7 +190,7 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
     
     # Configuration for large scale training
     BATCH_SIZE = 2048  # Smaller batch = more gradient updates per epoch
-    LEARNING_RATE = 5e-4
+    LEARNING_RATE = 1e-3
     EPOCHS = 100 
     NUM_GPUS = torch.cuda.device_count()
     
@@ -231,12 +231,12 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
     )
     
     # 2. Initialize Model and Multi-GPU
-    model = AlphaSLModel(input_dim=40, hidden_dim=128, num_layers=2).to(DEVICE)
+    model = AlphaSLModel(input_dim=NUM_FEATURES, hidden_dim=256, num_layers=2).to(DEVICE)
     if NUM_GPUS > 1:
         logger.info(f"Using {NUM_GPUS} GPUs for training.")
         model = torch.nn.DataParallel(model)
         
-    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=5e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer, 
         max_lr=LEARNING_RATE, 

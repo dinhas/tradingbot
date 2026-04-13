@@ -13,7 +13,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from Alpha.src.data_loader import DataLoader as MyDataLoader
 from Alpha.src.labeling import Labeler
 from Alpha.src.model import AlphaSLModel, multi_head_loss
-from Alpha.src.feature_engine import FeatureEngine
+from Alpha.src.feature_engine import FeatureEngine, NUM_FEATURES
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ def run_micro_validation():
     y_meta = []
 
     logger.info("\nPreparing features for micro-training...")
-    SEQ_LEN = 50
+    SEQ_LEN = 30
     valid_indices = [i for i, idx in enumerate(labels_500.index) if normalized_df.index.get_loc(idx) >= SEQ_LEN]
     labels_500 = labels_500.iloc[valid_indices]
 
@@ -80,7 +80,7 @@ def run_micro_validation():
     dataset = TensorDataset(X, y_dir, y_qual, y_meta)
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-    model = AlphaSLModel(input_dim=40, hidden_dim=128, num_layers=2)
+    model = AlphaSLModel(input_dim=NUM_FEATURES, hidden_dim=256, num_layers=2)
     optimizer = optim.Adam(model.parameters(), lr=0.01) # Higher LR for 1 epoch test
 
     logger.info("\nRunning 1 training epoch...")

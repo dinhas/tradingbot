@@ -35,6 +35,7 @@ import torch
 # Absolute imports from project root
 from Alpha.src.trading_env import TradingEnv
 from Alpha.src.model import AlphaSLModel
+from Alpha.src.feature_engine import NUM_FEATURES
 from backtest.rl_backtest import BacktestMetrics, NumpyEncoder, generate_all_charts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -59,7 +60,7 @@ PIP_SIZE = {
     "XAUUSD": 0.1,
 }
 
-SEQ_LEN = 50
+SEQ_LEN = 30
 INITIAL_EQUITY = 10.0
 
 
@@ -84,8 +85,8 @@ class AlphaSoloBacktest:
         env=None,
         meta_thresh=0.85,
         qual_thresh=0.45,
-        fixed_sl=3.0,
-        fixed_tp=3.0,
+        fixed_sl=2.0,
+        fixed_tp=4.0,
         fixed_size=0.25,
         trade_cooldown_bars=6,  # Minimum bars between trades per asset
         enable_trailing_stop=True,
@@ -192,10 +193,10 @@ class AlphaSoloBacktest:
         """Pre-calculate Alpha signals via batched inference."""
         logger.info("Pre-calculating Alpha signals for all assets and steps...")
 
-        master_obs = self.env.master_obs_matrix  # (N, num_assets * 40)
+        master_obs = self.env.master_obs_matrix  # (N, num_assets * NUM_FEATURES)
         N, total_dims = master_obs.shape
         num_assets = len(self.env.assets)
-        obs_by_asset = master_obs.reshape(N, num_assets, 40)
+        obs_by_asset = master_obs.reshape(N, num_assets, NUM_FEATURES)
 
         # Alpha Batch Inference
         logger.info(f"Running Alpha sequence inference on {N} timesteps x {num_assets} assets...")
@@ -323,8 +324,8 @@ def main():
     parser.add_argument("--initial-equity", type=float, default=10.0)
     parser.add_argument("--meta-thresh", type=float, default=0.85)
     parser.add_argument("--qual-thresh", type=float, default=0.45)
-    parser.add_argument("--sl", type=float, default=3.0, help="Fixed SL ATR multiplier")
-    parser.add_argument("--tp", type=float, default=3.0, help="Fixed TP ATR multiplier")
+    parser.add_argument("--sl", type=float, default=2.0, help="Fixed SL ATR multiplier")
+    parser.add_argument("--tp", type=float, default=4.0, help="Fixed TP ATR multiplier")
     parser.add_argument("--cooldown", type=int, default=6, help="Min bars between trades per asset")
     parser.add_argument("--size", type=float, default=0.25, help="Fixed position size multiplier")
     parser.add_argument("--disable-trailing", action="store_true", help="Disable trailing stop")
@@ -354,7 +355,7 @@ def main():
             logger.warning(f"Failed to load optimized thresholds: {e}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    alpha_model = AlphaSLModel(input_dim=40, hidden_dim=128, num_layers=2).to(device)
+    alpha_model = AlphaSLModel(input_dim=NUM_FEATURES, hidden_dim=256, num_layers=2).to(device)
     alpha_model.load_state_dict(torch.load(alpha_model_path, map_location=device))
     alpha_model.eval()
     logger.info(f"Alpha model loaded from {alpha_model_path}")

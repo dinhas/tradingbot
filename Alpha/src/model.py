@@ -23,7 +23,7 @@ class FocalLoss(nn.Module):
             return focal_loss
 
 class ResidualBlock(nn.Module):
-    def __init__(self, dim, dropout=0.4):
+    def __init__(self, dim, dropout=0.25):
         super(ResidualBlock, self).__init__()
         self.ln1 = nn.LayerNorm(dim)
         self.fc1 = nn.Linear(dim, dim * 2)
@@ -41,7 +41,7 @@ class ResidualBlock(nn.Module):
         return residual + out
 
 class AlphaSLModel(nn.Module):
-    def __init__(self, input_dim: int = 40, hidden_dim: int = 128, num_layers: int = 2, dropout: float = 0.4):
+    def __init__(self, input_dim: int = 28, hidden_dim: int = 256, num_layers: int = 2, dropout: float = 0.25):
         super(AlphaSLModel, self).__init__()
 
         # Per-timestep input projection (applied across the sequence dimension)
@@ -113,7 +113,7 @@ def multi_head_loss(outputs, targets, weights=(2.0, 0.5, 1.0), alpha_dir=None):
     return total_loss, (loss_dir, loss_qual, loss_meta)
 
 if __name__ == "__main__":
-    model = AlphaSLModel(input_dim=40, hidden_dim=128, num_layers=2)
+    model = AlphaSLModel(input_dim=28, hidden_dim=256, num_layers=2)
     x = torch.randn(16, 50, 40)  # (batch, seq_len, input_dim)
     dir_logits, qual, meta = model(x)
     print(f"Direction logits shape: {dir_logits.shape}")  # expect (16, 3)

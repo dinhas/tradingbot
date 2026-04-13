@@ -22,7 +22,7 @@ if str(_risklayer_src) not in sys.path:
     sys.path.insert(0, str(_risklayer_src))
 
 from Alpha.src.model import AlphaSLModel
-from Alpha.src.feature_engine import FeatureEngine
+from Alpha.src.feature_engine import FeatureEngine, NUM_FEATURES
 from Alpha.src.labeling import Labeler
 from backtest.data_fetcher_backtest import DataFetcherBacktest, SYMBOL_IDS
 
@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-SEQ_LEN = 50
+SEQ_LEN = 30
 
 
 def _build_sequence_windows(features_2d: np.ndarray, seq_len: int = SEQ_LEN):
@@ -107,7 +107,7 @@ def optimize_thresholds_main(alpha_model, risk_model, risk_scaler, data_dir, alp
         return
 
     logger.info(f"Loading Alpha model from {alpha_path}...")
-    alpha_model = AlphaSLModel(input_dim=40, hidden_dim=128, num_layers=2).to(DEVICE)
+    alpha_model = AlphaSLModel(input_dim=NUM_FEATURES, hidden_dim=256, num_layers=2).to(DEVICE)
     alpha_model.load_state_dict(torch.load(alpha_path, map_location=DEVICE))
     alpha_model.eval()
 
@@ -296,9 +296,9 @@ def optimize_thresholds_main(alpha_model, risk_model, risk_scaler, data_dir, alp
                 is_loss = (~is_win) & (~is_time_exit)
 
                 r_returns = torch.zeros_like(t_actual, dtype=torch.float32)
-                # Symmetric 3x/3x barriers => Reward/Risk = 1.0
-                # 1R = SL distance (3.0 ATR). Win = 1.0R, Loss = -1.0R.
-                r_returns[is_win] = 1.0  
+                # Dual-trade labels: SL=2x ATR, TP=4x ATR => RR = 2.0
+                # 1R = SL distance (2.0 ATR). Win = 2.0R, Loss = -1.0R.
+                r_returns[is_win] = 2.0  
                 r_returns[is_time_exit] = -0.3 # Average timeout cost
                 r_returns[is_loss] = -1.0 
 

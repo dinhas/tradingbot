@@ -83,7 +83,7 @@ TP_LOW, TP_HIGH = 1.2, 8.0
 SIZE_LOW, SIZE_HIGH = 0.1, 0.3
 
 initial_equity = 10.0
-SEQ_LEN = 50
+SEQ_LEN = 30
 
 
 def _map_actions(raw_actions, sl_low=SL_LOW, sl_high=SL_HIGH, tp_low=TP_LOW, tp_high=TP_HIGH, size_low=SIZE_LOW, size_high=SIZE_HIGH):
@@ -279,7 +279,7 @@ class CombinedBacktest:
         master_obs = self.env.master_obs_matrix  # (N, num_assets * 40)
         N, total_dims = master_obs.shape
         num_assets = len(self.env.assets)
-        obs_by_asset = master_obs.reshape(N, num_assets, 40)
+        obs_by_asset = master_obs.reshape(N, num_assets, 28)
 
         # ── 1. Alpha Batch Inference (sequence model) ──
         logger.info(f"Running Alpha sequence inference on {N} timesteps x {num_assets} assets...")
@@ -587,7 +587,7 @@ def run_combined_backtest(args):
 
     # ── Alpha Model (SL) ──
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    alpha_model = AlphaSLModel(input_dim=40, hidden_dim=128, num_layers=2).to(device)
+    alpha_model = AlphaSLModel(input_dim=28, hidden_dim=256, num_layers=2).to(device)
     alpha_model.load_state_dict(torch.load(alpha_model_path, map_location=device))
     alpha_model.eval()
     logger.info(f"Alpha model loaded from {alpha_model_path}")

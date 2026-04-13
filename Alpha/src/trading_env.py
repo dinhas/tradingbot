@@ -3,7 +3,7 @@ from gymnasium import spaces
 import numpy as np
 import pandas as pd
 import logging
-from .feature_engine import FeatureEngine
+from .feature_engine import FeatureEngine, NUM_FEATURES
 
 class TradingEnv(gym.Env):
     """
@@ -57,7 +57,7 @@ class TradingEnv(gym.Env):
             self.action_dim = 20  
             
         self.action_space = spaces.Box(low=-1, high=1, shape=(self.action_dim,), dtype=np.float32)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(40,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(NUM_FEATURES,), dtype=np.float32)
         
         # State Variables
         self.current_step = 0
@@ -81,12 +81,12 @@ class TradingEnv(gym.Env):
     def _create_master_obs_matrix(self):
         """Creates a single matrix containing all asset observations for batch inference."""
         n_steps = len(self.processed_data)
-        self.master_obs_matrix = np.zeros((n_steps, len(self.assets) * 40), dtype=np.float32)
+        self.master_obs_matrix = np.zeros((n_steps, len(self.assets) * NUM_FEATURES), dtype=np.float32)
         
         # Use vectorized extraction for each asset
         for i, asset in enumerate(self.assets):
             obs_matrix = self.feature_engine.get_observation_vectorized(self.processed_data, asset)
-            self.master_obs_matrix[:, i*40:(i+1)*40] = obs_matrix
+            self.master_obs_matrix[:, i*NUM_FEATURES:(i+1)*NUM_FEATURES] = obs_matrix
 
     def _cache_data_arrays(self):
         self.open_arrays = {a: self.raw_data[f"{a}_open"].values.astype(np.float32) for a in self.assets}
