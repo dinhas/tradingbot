@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cpu")
 SEQ_LEN = 30
 
 class AlphaDataset(Dataset):
@@ -192,7 +192,8 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
     BATCH_SIZE = 2048  # Smaller batch = more gradient updates per epoch
     LEARNING_RATE = 1e-3
     EPOCHS = 100 
-    NUM_GPUS = torch.cuda.device_count()
+    NUM_GPUS = torch.cuda.device_count() if DEVICE.type == "cuda" else 0
+    use_amp = DEVICE.type == "cuda"
     
     # 1. Dataset Split
     total_samples = len(np.load(features_path, mmap_mode='r'))
@@ -219,7 +220,7 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
         batch_size=BATCH_SIZE, 
         shuffle=True, 
         num_workers=4,
-        pin_memory=True,
+        pin_memory=use_amp,
         prefetch_factor=2
     )
     val_loader = DataLoader(
@@ -227,7 +228,7 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
         batch_size=BATCH_SIZE, 
         shuffle=False, 
         num_workers=4,
-        pin_memory=True
+        pin_memory=use_amp
     )
     
     # 2. Initialize Model and Multi-GPU
@@ -245,7 +246,7 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
         pct_start=0.3
     )
     
-    scaler = torch.amp.GradScaler('cuda')
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
     
     best_val_loss = float('inf')
     early_stop_patience = 15
@@ -261,7 +262,7 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
             
             optimizer.zero_grad(set_to_none=True)
             
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda', enabled=use_amp):
                 outputs = model(b_X)
                 loss, _ = multi_head_loss(
                     outputs, (b_dir, b_qual, b_meta), alpha_dir=alpha_dir_tensor
@@ -283,7 +284,7 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
         with torch.no_grad():
             for batch in val_loader:
                 b_X, b_dir, b_qual, b_meta = [t.to(DEVICE, non_blocking=True) for t in batch]
-                with torch.amp.autocast('cuda'):
+                with torch.amp.autocast('cuda', enabled=use_amp):
                     outputs = model(b_X)
                     loss, _ = multi_head_loss(outputs, (b_dir, b_qual, b_meta), alpha_dir=alpha_dir_tensor)
                     val_loss += loss.item()
