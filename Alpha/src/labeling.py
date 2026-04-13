@@ -126,7 +126,6 @@ class Labeler:
             candidate_indices = list(range(self.warmup, n - self.time_barrier, self.stride))
 
         n_trending_regime = 0
-        n_skipped_ranging = 0
         n_directional = 0
 
         for curr_idx in candidate_indices:
@@ -214,6 +213,15 @@ class Labeler:
                         n_skipped_ranging += 1
                         continue
 
+            if adx_values is not None:
+                current_adx = adx_values[curr_idx]
+                if not np.isnan(current_adx):
+                    if current_adx >= self.adx_trend_threshold:
+                        n_trending_regime += 1
+                    else:
+                        direction = 0
+                        barrier_hit = 0
+
             exit_idx = curr_idx + 1 + exit_bar
             exit_idx = min(exit_idx, n - 1)
 
@@ -269,8 +277,7 @@ class Labeler:
         logger.info(
             f"{asset}: {n_cusum_events} CUSUM events, "
             f"{n_directional} directional labels ({pct_dir:.1f}%), "
-            f"{n_trending_regime} in trending regime ({pct_trend:.1f}%), "
-            f"{n_skipped_ranging} ranging samples skipped"
+            f"{n_trending_regime} in trending regime ({pct_trend:.1f}%)"
         )
 
         return pd.DataFrame(labels, index=indices)

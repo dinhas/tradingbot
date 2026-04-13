@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cpu")
 SEQ_LEN = 30
 
 class AlphaDataset(Dataset):
@@ -221,18 +221,16 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
         train_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=True, 
-        num_workers=num_workers,
+        num_workers=4,
         pin_memory=use_amp,
-        prefetch_factor=2,
-        persistent_workers=num_workers > 0
+        prefetch_factor=2
     )
     val_loader = DataLoader(
         val_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=False, 
-        num_workers=num_workers,
-        pin_memory=use_amp,
-        persistent_workers=num_workers > 0
+        num_workers=4,
+        pin_memory=use_amp
     )
     
     # 2. Initialize Model and Multi-GPU
