@@ -83,13 +83,13 @@ class AlphaSoloBacktest:
         data_dir,
         initial_equity=INITIAL_EQUITY,
         env=None,
-        meta_thresh=0.55,
+        meta_thresh=0.65,
         qual_thresh=0.90,
         fixed_sl=2.0,
         fixed_tp=4.0,
-        fixed_size=0.25,
-        trade_cooldown_bars=6,  # Minimum bars between trades per asset
-        enable_trailing_stop=True,
+        fixed_size=0.10,
+        trade_cooldown_bars=24,  # Minimum bars between trades per asset (~2 hours)
+        enable_trailing_stop=False,
         breakeven_trigger_r=0.9,
         breakeven_buffer_atr=0.10,
         trailing_trigger_r=1.25,
@@ -322,13 +322,13 @@ def main():
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--initial-equity", type=float, default=10.0)
-    parser.add_argument("--meta-thresh", type=float, default=0.55)
+    parser.add_argument("--meta-thresh", type=float, default=0.65)
     parser.add_argument("--qual-thresh", type=float, default=0.90)
     parser.add_argument("--sl", type=float, default=2.0, help="Fixed SL ATR multiplier")
     parser.add_argument("--tp", type=float, default=4.0, help="Fixed TP ATR multiplier")
-    parser.add_argument("--cooldown", type=int, default=6, help="Min bars between trades per asset")
-    parser.add_argument("--size", type=float, default=0.25, help="Fixed position size multiplier")
-    parser.add_argument("--disable-trailing", action="store_true", help="Disable trailing stop")
+    parser.add_argument("--cooldown", type=int, default=24, help="Min bars between trades per asset")
+    parser.add_argument("--size", type=float, default=0.10, help="Fixed position size multiplier")
+    parser.add_argument("--disable-trailing", action="store_true", default=True, help="Disable trailing stop")
     
     args = parser.parse_args()
     
