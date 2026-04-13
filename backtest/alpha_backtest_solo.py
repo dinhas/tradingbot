@@ -83,8 +83,8 @@ class AlphaSoloBacktest:
         data_dir,
         initial_equity=INITIAL_EQUITY,
         env=None,
-        meta_thresh=0.85,
-        qual_thresh=0.45,
+        meta_thresh=0.55,
+        qual_thresh=0.90,
         fixed_sl=2.0,
         fixed_tp=4.0,
         fixed_size=0.25,
@@ -322,8 +322,8 @@ def main():
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--initial-equity", type=float, default=10.0)
-    parser.add_argument("--meta-thresh", type=float, default=0.85)
-    parser.add_argument("--qual-thresh", type=float, default=0.45)
+    parser.add_argument("--meta-thresh", type=float, default=0.55)
+    parser.add_argument("--qual-thresh", type=float, default=0.90)
     parser.add_argument("--sl", type=float, default=2.0, help="Fixed SL ATR multiplier")
     parser.add_argument("--tp", type=float, default=4.0, help="Fixed TP ATR multiplier")
     parser.add_argument("--cooldown", type=int, default=6, help="Min bars between trades per asset")

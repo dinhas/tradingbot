@@ -262,8 +262,8 @@ def optimize_thresholds_main(alpha_model, risk_model, risk_scaler, data_dir, alp
     logger.info(f"Starting Grid Search on {len(pred_dirs)} predictions...")
 
     # Grid search ranges (Updated to match actual model output distributions)
-    meta_thresholds = torch.linspace(0.8, 0.99, 20).to(DEVICE)
-    qual_thresholds = torch.linspace(0.6, 0.98, 20).to(DEVICE)
+    meta_thresholds = torch.linspace(0.40, 0.75, 20).to(DEVICE)
+    qual_thresholds = torch.linspace(0.85, 0.98, 20).to(DEVICE)
     # Risk size thresholds
     risk_thresholds = torch.linspace(0.1, 0.28, 10).to(DEVICE) if not alpha_only else torch.tensor([0.0]).to(DEVICE)
 
