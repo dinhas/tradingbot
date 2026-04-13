@@ -125,11 +125,8 @@ class Labeler:
             )
             candidate_indices = list(range(self.warmup, n - self.time_barrier, self.stride))
 
-        stats = {
-            "trending_regime": 0,
-            "skipped_ranging": 0,
-            "directional": 0,
-        }
+        n_trending_regime = 0
+        n_directional = 0
 
         for curr_idx in candidate_indices:
             entry_price = prices_close[curr_idx]
@@ -211,10 +208,19 @@ class Labeler:
                 current_adx = adx_values[curr_idx]
                 if not np.isnan(current_adx):
                     if current_adx >= self.adx_trend_threshold:
-                        stats["trending_regime"] += 1
+                        n_trending_regime += 1
                     else:
-                        stats["skipped_ranging"] += 1
+                        n_skipped_ranging += 1
                         continue
+
+            if adx_values is not None:
+                current_adx = adx_values[curr_idx]
+                if not np.isnan(current_adx):
+                    if current_adx >= self.adx_trend_threshold:
+                        n_trending_regime += 1
+                    else:
+                        direction = 0
+                        barrier_hit = 0
 
             exit_idx = curr_idx + 1 + exit_bar
             exit_idx = min(exit_idx, n - 1)
@@ -222,7 +228,7 @@ class Labeler:
             # ── Meta label ──
             meta = 1 if direction != 0 else 0
             if meta == 1:
-                stats["directional"] += 1
+                n_directional += 1
 
             # ── Quality score ──
             # Based on the winning trade's price action cleanliness
@@ -266,16 +272,12 @@ class Labeler:
             })
             indices.append(timestamps[curr_idx])
 
-        n_directional = stats["directional"]
-        n_trending_regime = stats["trending_regime"]
-        n_skipped_ranging = stats["skipped_ranging"]
         pct_dir = (100.0 * n_directional / len(labels)) if labels else 0.0
         pct_trend = (100.0 * n_trending_regime / len(labels)) if labels else 0.0
         logger.info(
             f"{asset}: {n_cusum_events} CUSUM events, "
             f"{n_directional} directional labels ({pct_dir:.1f}%), "
-            f"{n_trending_regime} in trending regime ({pct_trend:.1f}%), "
-            f"{n_skipped_ranging} ranging samples skipped"
+            f"{n_trending_regime} in trending regime ({pct_trend:.1f}%)"
         )
 
         return pd.DataFrame(labels, index=indices)
