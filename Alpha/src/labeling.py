@@ -186,9 +186,32 @@ class Labeler:
                 exit_bar = sell_tp_bar
                 barrier_hit = -1
             else:
-                direction = 0
-                exit_bar = self.time_barrier
-                barrier_hit = 0
+                # No TP winner; infer directional move from which stop was hit first.
+                # This keeps labels informative without admitting low-volatility noise.
+                buy_sl_hit = buy_sl_bar < self.time_barrier
+                sell_sl_hit = sell_sl_bar < self.time_barrier
+
+                if buy_sl_hit and (not sell_sl_hit or buy_sl_bar <= sell_sl_bar):
+                    direction = -1
+                    exit_bar = buy_sl_bar
+                    barrier_hit = -1
+                elif sell_sl_hit and (not buy_sl_hit or sell_sl_bar < buy_sl_bar):
+                    direction = 1
+                    exit_bar = sell_sl_bar
+                    barrier_hit = 1
+                else:
+                    direction = 0
+                    exit_bar = self.time_barrier
+                    barrier_hit = 0
+
+            if adx_values is not None:
+                current_adx = adx_values[curr_idx]
+                if not np.isnan(current_adx):
+                    if current_adx >= self.adx_trend_threshold:
+                        n_trending_regime += 1
+                    else:
+                        n_skipped_ranging += 1
+                        continue
 
             if adx_values is not None:
                 current_adx = adx_values[curr_idx]

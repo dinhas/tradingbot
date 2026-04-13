@@ -215,6 +215,8 @@ def train_model(features_path, labels_path, features_full_path, model_save_path)
     train_dataset = AlphaDataset(features_full_path, labels_path, indices=train_indices)
     val_dataset = AlphaDataset(features_full_path, labels_path, indices=val_indices)
     
+    num_workers = min(8, os.cpu_count() or 4)
+
     train_loader = DataLoader(
         train_dataset, 
         batch_size=BATCH_SIZE, 
