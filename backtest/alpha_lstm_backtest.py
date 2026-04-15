@@ -1,3 +1,4 @@
+
 import os
 import sys
 import json
@@ -9,7 +10,6 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import torch
-from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -65,6 +65,8 @@ class AlphaLSTMBacktester:
             asset: self.feature_engine.get_observation_vectorized(self.normalized_df, asset)
             for asset in self.assets
         }
+        self.session_mask = self.normalized_df[self.session_col] == 1
+        self.session_indices = np.where(self.session_mask.values)[0]
 
     def _open_position(self, asset, direction, entry_price, atr, timestamp):
         size = self.position_size * self.max_pos_size_pct * self.equity
@@ -121,69 +123,87 @@ class AlphaLSTMBacktester:
     def run(self, max_steps: int | None = None) -> BacktestMetrics:
         metrics = BacktestMetrics()
 
-        n = len(self.normalized_df)
-        start_idx = self.sequence_length - 1
-        end_idx = n - 1 if max_steps is None else min(n - 1, start_idx + max_steps)
+        if len(self.session_indices) == 0:
+            logger.warning("No session candles found in dataset.")
+            return metrics
 
-        for idx in tqdm(range(start_idx, end_idx), desc="Alpha LSTM Backtest"):
-            ts = self.normalized_df.index[idx]
-            is_late_session = int(self.normalized_df.iloc[idx].get(self.session_col, 0)) == 1
-
-            for asset in self.assets:
-                entry_price = float(self.aligned_df.iloc[idx][f"{asset}_close"])
-                atr = float(self.aligned_df.iloc[idx][f"{asset}_atr"])
-
-                seq = self.asset_obs[asset][idx - self.sequence_length + 1: idx + 1]
-                seq_tensor = torch.from_numpy(seq).unsqueeze(0).to(DEVICE)
-
-                with torch.no_grad():
-                    logits = self.model(seq_tensor)
-                    probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
-
-                direction = int(np.argmax(probs) - 1)
-                confidence = float(np.max(probs))
-
-                current_pos = self.positions[asset]
-
-                if current_pos is None:
-                    if is_late_session and direction != 0 and confidence >= self.confidence_thresh:
-                        self._open_position(asset, direction, entry_price, atr, ts)
-                else:
-                    # Optional explicit close signal if model flips/neutral.
-                    if direction == 0 or np.sign(direction) != np.sign(current_pos['direction']):
-                        self._close_position(asset, entry_price, ts)
-                        if is_late_session and direction != 0 and confidence >= self.confidence_thresh:
-                            self._open_position(asset, direction, entry_price, atr, ts)
-
-            # Advance one candle and evaluate SL/TP on next close.
-            next_idx = idx + 1
-            next_ts = self.normalized_df.index[next_idx]
-            for asset, pos in list(self.positions.items()):
-                if pos is None:
-                    continue
-                next_price = float(self.aligned_df.iloc[next_idx][f"{asset}_close"])
-                if pos['direction'] == 1:
-                    if next_price <= pos['sl']:
-                        self._close_position(asset, pos['sl'], next_ts)
-                    elif next_price >= pos['tp']:
-                        self._close_position(asset, pos['tp'], next_ts)
-                else:
-                    if next_price >= pos['sl']:
-                        self._close_position(asset, pos['sl'], next_ts)
-                    elif next_price <= pos['tp']:
-                        self._close_position(asset, pos['tp'], next_ts)
-
-            while self.completed_trades:
-                metrics.add_trade(self.completed_trades.pop(0))
-
-            metrics.add_equity_point(next_ts, float(self.equity))
-
-        # force-close any remaining open positions at final price
-        final_ts = self.normalized_df.index[end_idx]
-        for asset, pos in list(self.positions.items()):
-            if pos is None:
+        # Model receives ONLY session candles, grouped by date so windows never cross sessions.
+        steps_run = 0
+        session_rows = self.normalized_df.index[self.session_mask]
+        for session_date, _ in pd.Series(1, index=session_rows).groupby(session_rows.date):
+            day_mask = self.session_mask & (self.normalized_df.index.date == session_date)
+            day_indices = np.where(day_mask.values)[0]
+            if len(day_indices) < self.sequence_length + 1:
                 continue
-            last_price = float(self.aligned_df.iloc[end_idx][f"{asset}_close"])
+
+            for pos in range(self.sequence_length - 1, len(day_indices) - 1):
+                if max_steps is not None and steps_run >= max_steps:
+                    break
+
+                idx = day_indices[pos]
+                next_idx = day_indices[pos + 1]
+                seq_indices = day_indices[pos - self.sequence_length + 1: pos + 1]
+                ts = self.normalized_df.index[idx]
+                next_ts = self.normalized_df.index[next_idx]
+                steps_run += 1
+
+                for asset in self.assets:
+                    entry_price = float(self.aligned_df.iloc[idx][f"{asset}_close"])
+                    atr = float(self.aligned_df.iloc[idx][f"{asset}_atr"])
+
+                    seq = self.asset_obs[asset][seq_indices]
+                    seq_tensor = torch.from_numpy(seq).unsqueeze(0).to(DEVICE)
+
+                    with torch.no_grad():
+                        logits = self.model(seq_tensor)
+                        probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+
+                    direction = int(np.argmax(probs) - 1)
+                    confidence = float(np.max(probs))
+
+                    current_pos = self.positions[asset]
+
+                    if current_pos is None:
+                        if direction != 0 and confidence >= self.confidence_thresh:
+                            self._open_position(asset, direction, entry_price, atr, ts)
+                    else:
+                        # Optional explicit close signal if model flips/neutral.
+                        if direction == 0 or np.sign(direction) != np.sign(current_pos['direction']):
+                            self._close_position(asset, entry_price, ts)
+                            if direction != 0 and confidence >= self.confidence_thresh:
+                                self._open_position(asset, direction, entry_price, atr, ts)
+
+                # Advance one SESSION candle and evaluate SL/TP on next session close.
+                for asset, pos_data in list(self.positions.items()):
+                    if pos_data is None:
+                        continue
+                    next_price = float(self.aligned_df.iloc[next_idx][f"{asset}_close"])
+                    if pos_data['direction'] == 1:
+                        if next_price <= pos_data['sl']:
+                            self._close_position(asset, pos_data['sl'], next_ts)
+                        elif next_price >= pos_data['tp']:
+                            self._close_position(asset, pos_data['tp'], next_ts)
+                    else:
+                        if next_price >= pos_data['sl']:
+                            self._close_position(asset, pos_data['sl'], next_ts)
+                        elif next_price <= pos_data['tp']:
+                            self._close_position(asset, pos_data['tp'], next_ts)
+
+                while self.completed_trades:
+                    metrics.add_trade(self.completed_trades.pop(0))
+
+                metrics.add_equity_point(next_ts, float(self.equity))
+
+            if max_steps is not None and steps_run >= max_steps:
+                break
+
+        # Force-close any remaining open positions at the latest available session candle.
+        final_idx = self.session_indices[-1]
+        final_ts = self.normalized_df.index[final_idx]
+        for asset, pos_data in list(self.positions.items()):
+            if pos_data is None:
+                continue
+            last_price = float(self.aligned_df.iloc[final_idx][f"{asset}_close"])
             self._close_position(asset, last_price, final_ts)
 
         while self.completed_trades:
