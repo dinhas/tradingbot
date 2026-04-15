@@ -211,7 +211,7 @@ def main():
     parser.add_argument("--confidence-thresh", type=float, default=0.45)
     parser.add_argument("--initial-equity", type=float, default=10000.0)
     parser.add_argument("--position-size", type=float, default=0.2)
-    parser.add_argument("--sl-mult", type=float, default=1.5)
+    parser.add_argument("--sl-mult", type=float, default=2.0)
     parser.add_argument("--tp-mult", type=float, default=4.0)
     args = parser.parse_args()
 
