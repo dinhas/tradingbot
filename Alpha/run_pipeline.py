@@ -17,7 +17,7 @@ sys.path.append(PROJECT_ROOT)
 
 from Alpha.src.data_loader import DataLoader as MyDataLoader
 from Alpha.src.labeling import Labeler
-from Alpha.src.model import AlphaSLModel, multi_head_loss
+from Alpha.src.model import AlphaSLModel, direction_loss
 from Alpha.src.feature_engine import FeatureEngine
 
 # Configure logging
@@ -33,240 +33,159 @@ logger = logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# BEST-PRACTICE SETTINGS
+SEQUENCE_LENGTH = 50 
+BATCH_SIZE = 64
+LEARNING_RATE = 1e-3
+DROPOUT = 0.3
+
 class AlphaDataset(Dataset):
-    def __init__(self, features_path, labels_path, indices=None):
-        # Use memory mapping to avoid loading 2.5M rows into RAM
+    def __init__(self, features_path, labels_path, indices=None, seq_len=SEQUENCE_LENGTH):
         self.features = np.load(features_path, mmap_mode='r')
         labels_data = np.load(labels_path)
         self.directions = labels_data['direction']
-        self.qualities = labels_data['quality']
-        self.metas = labels_data['meta']
+        self.seq_len = seq_len
         
-        self.indices = indices if indices is not None else np.arange(len(self.features))
+        if indices is not None:
+            self.indices = [idx for idx in indices if idx >= seq_len - 1]
+        else:
+            self.indices = np.arange(seq_len - 1, len(self.features))
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
         real_idx = self.indices[idx]
-        return (
-            torch.from_numpy(self.features[real_idx].copy()), # .copy() to make it writable for torch
-            torch.tensor(self.directions[real_idx], dtype=torch.float32),
-            torch.tensor(self.qualities[real_idx], dtype=torch.float32),
-            torch.tensor(self.metas[real_idx], dtype=torch.float32)
-        )
+        x_seq = self.features[real_idx - self.seq_len + 1 : real_idx + 1].copy()
+        y_dir = self.directions[real_idx]
+        return (torch.from_numpy(x_seq), torch.tensor(y_dir, dtype=torch.float32))
 
 def generate_dataset(data_dir, output_dir, smoke_test=False):
-    """Generates labeled dataset for all assets efficiently using vectorization."""
     logger.info(f"Generating dataset from {data_dir}...")
     loader = MyDataLoader(data_dir=data_dir)
     labeler = Labeler()
     engine = FeatureEngine()
 
-    # 1. Get raw and normalized features
     aligned_df, normalized_df = loader.get_features()
     
     all_X_list = []
     all_y_dir_list = []
-    all_y_qual_list = []
-    all_y_meta_list = []
 
     for asset in loader.assets:
         logger.info(f"Processing labels for {asset}...")
         labels_df = labeler.label_data(aligned_df, asset)
-        
-        if smoke_test:
-            labels_df = labels_df.head(1000)
+        if smoke_test: labels_df = labels_df.head(1000)
             
-        # Efficiently filter normalized_df to match labels_df indices
         common_indices = labels_df.index.intersection(normalized_df.index)
-        if len(common_indices) == 0:
-            logger.warning(f"No common indices found for {asset}")
-            continue
+        if len(common_indices) == 0: continue
             
         filtered_norm_df = normalized_df.loc[common_indices]
         filtered_labels_df = labels_df.loc[common_indices]
         
-        logger.info(f"Extracting vectorized features for {len(filtered_labels_df)} samples of {asset}...")
-        
-        # VECTORIZED EXTRACTION
         asset_X = engine.get_observation_vectorized(filtered_norm_df, asset)
-        
         all_X_list.append(asset_X)
         all_y_dir_list.append(filtered_labels_df['direction'].values)
-        all_y_qual_list.append(filtered_labels_df['quality'].values)
-        all_y_meta_list.append(filtered_labels_df['meta'].values)
             
-    # 2. Convert to numpy efficiently
     X_np = np.concatenate(all_X_list, axis=0).astype(np.float32)
     y_dir_np = np.concatenate(all_y_dir_list).astype(np.float32)
-    y_qual_np = np.concatenate(all_y_qual_list).astype(np.float32)
-    y_meta_np = np.concatenate(all_y_meta_list).astype(np.float32)
     
-    # Clear lists to free RAM
-    del all_X_list, all_y_dir_list, all_y_qual_list, all_y_meta_list
-    gc.collect()
-    
-    # 3. Save as binary numpy files
     os.makedirs(output_dir, exist_ok=True)
-    features_path = os.path.join(output_dir, "features.npy")
-    labels_path = os.path.join(output_dir, "labels.npz")
+    np.save(os.path.join(output_dir, "features.npy"), X_np)
+    np.savez(os.path.join(output_dir, "labels.npz"), direction=y_dir_np)
     
-    np.save(features_path, X_np)
-    np.savez(labels_path, direction=y_dir_np, quality=y_qual_np, meta=y_meta_np)
-    
-    logger.info(f"Dataset saved to {output_dir}. Total samples: {len(X_np)}")
-    
-    return features_path, labels_path
+    logger.info(f"Dataset generated. Total rows: {len(X_np)}")
+    return os.path.join(output_dir, "features.npy"), os.path.join(output_dir, "labels.npz")
 
 def train_model(features_path, labels_path, model_save_path):
-    """Trains the AlphaSLModel with optimizations for large datasets (2.5M rows)."""
-    logger.info(f"Starting optimized large-scale training...")
-    
-    # Ensure models directory exists
+    logger.info("Starting optimized LSTM training...")
     os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
     
-    # Configuration for large scale training
-    BATCH_SIZE = 16384 # Increased for 2.5M rows and multi-GPU throughput
-    LEARNING_RATE = 1e-3
-    EPOCHS = 100 # Increased to 100 epochs
-    NUM_GPUS = torch.cuda.device_count()
-    
-    # 1. Dataset Split
-    # Peek at features to get total length
+    # 1. TIME-SERIES AWARE SPLIT (No random shuffle for validation)
     total_samples = len(np.load(features_path, mmap_mode='r'))
-    indices = np.arange(total_samples)
-    np.random.shuffle(indices)
-    split = int(0.95 * total_samples) # 5% val is plenty for 2.5M (125k samples)
-    train_indices, val_indices = indices[:split], indices[split:]
+    all_indices = np.arange(total_samples)
+    valid_indices = all_indices[SEQUENCE_LENGTH - 1:]
+    
+    split = int(0.90 * len(valid_indices))
+    train_indices = valid_indices[:split]
+    val_indices = valid_indices[split:] # Last 10% is validation (forward-walk style)
+    
+    # We shuffle training, but NOT validation
+    np.random.shuffle(train_indices)
     
     train_dataset = AlphaDataset(features_path, labels_path, indices=train_indices)
     val_dataset = AlphaDataset(features_path, labels_path, indices=val_indices)
     
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=BATCH_SIZE, 
-        shuffle=True, 
-        num_workers=4, # Reduced to match system suggestion
-        pin_memory=True,
-        prefetch_factor=2
-    )
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=BATCH_SIZE, 
-        shuffle=False, 
-        num_workers=4, # Reduced to match system suggestion
-        pin_memory=True
-    )
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     
-    # 2. Initialize Model and Multi-GPU
-    model = AlphaSLModel(input_dim=40, hidden_dim=256, num_res_blocks=4).to(DEVICE)
-    if NUM_GPUS > 1:
-        logger.info(f"Using {NUM_GPUS} GPUs for training.")
-        model = torch.nn.DataParallel(model)
-        
+    model = AlphaSLModel(input_dim=17, lstm_units=64, dense_units=32, dropout=DROPOUT).to(DEVICE)
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-    # OneCycleLR with optimized pct_start for large data
-    scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer, 
-        max_lr=LEARNING_RATE, 
-        steps_per_epoch=len(train_loader), 
-        epochs=EPOCHS,
-        pct_start=0.3 # Longer warm-up
-    )
-    
-    # Modern FP16 Mixed Precision API
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5)
     scaler = torch.amp.GradScaler('cuda')
     
     best_val_loss = float('inf')
-    early_stop_patience = 5
+    early_stop_patience = 10
     epochs_no_improve = 0
     
-    for epoch in range(EPOCHS):
+    for epoch in range(100): # Max 100 epochs
         model.train()
         train_loss = 0
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
         
         for batch in pbar:
-            b_X, b_dir, b_qual, b_meta = [t.to(DEVICE, non_blocking=True) for t in batch]
-            
+            b_X, b_dir = [t.to(DEVICE, non_blocking=True) for t in batch]
             optimizer.zero_grad(set_to_none=True)
-            
-            # Use modern autocast API
             with torch.amp.autocast('cuda'):
-                outputs = model(b_X)
-                # Task weighting: Direction and Meta are critical
-                loss, _ = multi_head_loss(
-                    outputs, (b_dir, b_qual, b_meta)
-                )
-            
+                logits = model(b_X)
+                loss = direction_loss(logits, b_dir)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
-            scheduler.step()
-            
             train_loss += loss.item()
-            pbar.set_postfix({'loss': f"{loss.item():.4f}"})
             
-        # 3. Validation
         model.eval()
         val_loss = 0
         with torch.no_grad():
             for batch in val_loader:
-                b_X, b_dir, b_qual, b_meta = [t.to(DEVICE, non_blocking=True) for t in batch]
-                with torch.amp.autocast('cuda'):
-                    outputs = model(b_X)
-                    loss, _ = multi_head_loss(outputs, (b_dir, b_qual, b_meta))
-                    val_loss += loss.item()
+                b_X, b_dir = [t.to(DEVICE, non_blocking=True) for t in batch]
+                logits = model(b_X)
+                loss = direction_loss(logits, b_dir)
+                val_loss += loss.item()
         
         avg_val_loss = val_loss / len(val_loader)
+        scheduler.step(avg_val_loss)
         logger.info(f"Epoch {epoch+1}: Val Loss = {avg_val_loss:.4f}")
         
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            unwrapped_model = model.module if NUM_GPUS > 1 else model
-            torch.save(unwrapped_model.state_dict(), model_save_path)
-            logger.info(f"Saved best model with Val Loss: {avg_val_loss:.4f}")
+            torch.save(model.state_dict(), model_save_path)
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= early_stop_patience:
-                logger.info(f"Early stopping triggered at epoch {epoch+1}")
+                logger.info("Early stopping triggered.")
                 break
 
-    logger.info("Optimized large-scale training complete.")
-
-    logger.info("Optimized training complete.")
+    logger.info("Training complete.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Alpha Layer Training Pipeline")
-    parser.add_argument("--data-dir", type=str, default="../data", help="Directory containing OHLCV parquet files")
-    parser.add_argument("--skip-gen", action="store_true", help="Skip dataset generation")
-    parser.add_argument("--smoke-test", action="store_true", help="Run with limited samples")
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", type=str, default="../data")
+    parser.add_argument("--skip-gen", action="store_true")
+    parser.add_argument("--smoke-test", action="store_true")
     args = parser.parse_args()
     
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    # Ensure data_dir is absolute
-    if not os.path.isabs(args.data_dir):
-        args.data_dir = os.path.abspath(os.path.join(base_dir, args.data_dir))
-
+    data_dir = os.path.abspath(os.path.join(base_dir, args.data_dir))
     dataset_dir = os.path.join(base_dir, "data", "training_set")
     model_path = os.path.join(base_dir, "models", "alpha_model.pth")
     
     if not args.skip_gen:
-        if not os.path.exists(args.data_dir):
-            logger.error(f"Data directory not found at {args.data_dir}")
-            return
-        generate_dataset(args.data_dir, dataset_dir, smoke_test=args.smoke_test)
+        generate_dataset(data_dir, dataset_dir, smoke_test=args.smoke_test)
     
-    features_path = os.path.join(dataset_dir, "features.npy")
-    labels_path = os.path.join(dataset_dir, "labels.npz")
-    
-    if os.path.exists(features_path) and os.path.exists(labels_path):
-        train_model(features_path, labels_path, model_path)
-    else:
-        logger.error(f"Dataset not found in {dataset_dir}. Cannot train.")
+    train_model(os.path.join(dataset_dir, "features.npy"), 
+                os.path.join(dataset_dir, "labels.npz"), 
+                model_path)
 
 if __name__ == "__main__":
     main()
