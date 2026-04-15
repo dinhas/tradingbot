@@ -151,7 +151,15 @@ class AlphaLSTMBacktester:
                     logits = self.model(seq_tensor)
                     probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
 
-                direction = int(np.argmax(probs) - 1)
+                # Direction selection: Use threshold if provided (>0), otherwise use standard argmax
+                max_prob = np.max(probs)
+                if self.confidence_thresh > 0:
+                    if max_prob >= self.confidence_thresh:
+                        direction = int(np.argmax(probs) - 1)
+                    else:
+                        direction = 0  # Below threshold: Stay Neutral
+                else:
+                    direction = int(np.argmax(probs) - 1)
                 
                 current_pos = self.positions[asset]
 
