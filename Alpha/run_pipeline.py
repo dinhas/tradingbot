@@ -95,37 +95,20 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
         filtered_norm_df = normalized_df.loc[common_indices]
         filtered_labels_df = labels_df.loc[common_indices]
 
-        # Session-only training: keep only the last candles of the session.
-        if SESSION_COL not in filtered_norm_df.columns:
-            raise ValueError(f"Missing required session filter column: {SESSION_COL}")
-
-        session_mask = filtered_norm_df[SESSION_COL] == 1
-        filtered_norm_df = filtered_norm_df.loc[session_mask]
-        filtered_labels_df = filtered_labels_df.loc[session_mask]
-
         if filtered_norm_df.empty:
-            logger.warning(f"No late-session rows after filtering for {asset}; skipping.")
+            logger.warning(f"No rows after filtering for {asset}; skipping.")
             continue
 
-        # Keep sequences within each trading day/session to prevent cross-session leakage.
-        session_groups = filtered_norm_df.groupby(filtered_norm_df.index.date)
+        asset_X = engine.get_observation_vectorized(filtered_norm_df, asset)
+        asset_y = filtered_labels_df['direction'].values.astype(np.float32)
 
-        asset_total = 0
-        for session_date, session_features_df in session_groups:
-            session_labels_df = filtered_labels_df.loc[session_features_df.index]
-            if len(session_features_df) < seq_len:
-                continue
+        X_seq, y_seq = _build_sequences_for_asset(asset_X, asset_y, seq_len)
+        if len(y_seq) == 0:
+            continue
 
-            session_X = engine.get_observation_vectorized(session_features_df, asset)
-            session_y = session_labels_df['direction'].values.astype(np.float32)
-
-            X_seq, y_seq = _build_sequences_for_asset(session_X, session_y, seq_len)
-            if len(y_seq) == 0:
-                continue
-
-            all_sequences.append(X_seq)
-            all_labels.append(y_seq)
-            asset_total += len(y_seq)
+        all_sequences.append(X_seq)
+        all_labels.append(y_seq)
+        asset_total = len(y_seq)
 
         total_rows += asset_total
         logger.info(f"{asset}: generated {asset_total} sequences.")
