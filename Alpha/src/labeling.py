@@ -19,8 +19,8 @@ class Labeler:
         """Calculates the 1H Trend using 100 EMA on resampled 1H data."""
         close_5m = df[f"{asset}_close"]
         
-        # Resample to 1H to calculate the HTF Trend
-        close_1h = close_5m.resample('1H').last().ffill()
+        # Resample to 1h to calculate the HTF Trend
+        close_1h = close_5m.resample('1h').last().ffill()
         ema_1h = EMAIndicator(close_1h, window=self.ema_window).ema_indicator()
         
         # Determine Trend: 1 (Bullish), -1 (Bearish)

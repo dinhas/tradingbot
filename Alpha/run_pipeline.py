@@ -48,7 +48,7 @@ class AlphaSequenceDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        x_seq = self.sequences[idx]
+        x_seq = self.sequences[idx].copy()
         y_dir = self.labels[idx]
         return torch.from_numpy(x_seq), torch.tensor(y_dir, dtype=torch.float32)
 
