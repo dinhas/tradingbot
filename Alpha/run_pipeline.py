@@ -215,6 +215,7 @@ def train_model(sequences_path, labels_path, model_save_path):
         logger.info(f"Epoch {epoch + 1}: Val Loss = {avg_val_loss:.4f}")
 
         if avg_val_loss < best_val_loss:
+            logger.info(f"✨ New best Val Loss ({avg_val_loss:.4f})! Saving model to {model_save_path}")
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), model_save_path)
             epochs_no_improve = 0
