@@ -21,9 +21,15 @@ class DataLoader:
         """
         data_dict = {}
         for asset in self.assets:
-            file_path = self.data_dir / f"{asset}_5m.parquet"
-            if not file_path.exists():
-                print(f"Warning: Data file for {asset} not found at {file_path}")
+            candidate_paths = [
+                self.data_dir / f"{asset}_5m.parquet",
+                self.data_dir / f"{asset}_5m_2025.parquet",
+                self.data_dir / asset / f"{asset}_5m.parquet",
+            ]
+
+            file_path = next((p for p in candidate_paths if p.exists()), None)
+            if file_path is None:
+                print(f"Warning: Data file for {asset} not found in {[str(p) for p in candidate_paths]}")
                 continue
 
             df = pd.read_parquet(file_path)
@@ -53,6 +59,11 @@ class DataLoader:
         Returns (aligned_df, normalized_df).
         """
         data_dict = self.load_raw_data()
+        if not data_dict:
+            raise FileNotFoundError(
+                f"No parquet files found under data_dir={self.data_dir}. Expected files like EURUSD_5m.parquet."
+            )
+
         engine = FeatureEngine()
         aligned_df, normalized_df = engine.preprocess_data(data_dict)
         return aligned_df, normalized_df
