@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import time
 import argparse
 import logging
 from pathlib import Path
@@ -128,7 +129,10 @@ class AlphaLSTMBacktester:
         self.equity -= pos['size'] * 0.00002  # exit fee
         equity_after = self.equity
 
-        hold_minutes = max(0.0, (timestamp - pos['entry_timestamp']).total_seconds() / 60.0)
+        # Convert numpy timedelta64 to seconds
+        diff = timestamp - pos['entry_timestamp']
+        hold_seconds = diff.astype('timedelta64[s]').astype(float)
+        hold_minutes = max(0.0, hold_seconds / 60.0)
         fees = pos['size'] * 0.00004
 
         self.completed_trades.append({
@@ -147,7 +151,36 @@ class AlphaLSTMBacktester:
         })
         self.positions[asset] = None
 
+    def _precalculate_all_predictions(self, n_steps):
+        logger.info(f"Pre-calculating model predictions for {n_steps} steps...")
+        all_probs = np.zeros((n_steps, len(self.assets), 3), dtype=np.float32)
+
+        num_windows = n_steps - self.sequence_length + 1
+        if num_windows <= 0:
+            return all_probs
+
+        for asset_i, asset in enumerate(self.assets):
+            obs = self.asset_obs[asset][:n_steps]
+            # Create sliding windows: (num_windows, sequence_length, features)
+            windows = np.lib.stride_tricks.sliding_window_view(
+                obs, (self.sequence_length, obs.shape[1])
+            ).squeeze(axis=1)
+
+            # Inference in large batches
+            batch_size = 4096
+            for i in range(0, num_windows, batch_size):
+                end_idx = min(i + batch_size, num_windows)
+                # Copy to avoid non-writable tensor warning from sliding_window_view
+                batch_windows = torch.as_tensor(windows[i:end_idx].copy(), device=DEVICE)
+                with torch.inference_mode():
+                    logits = self.model(batch_windows)
+                    probs = torch.softmax(logits, dim=1).cpu().numpy()
+                    all_probs[self.sequence_length - 1 + i : self.sequence_length - 1 + end_idx, asset_i, :] = probs
+
+        return all_probs
+
     def run(self, max_steps: int | None = None) -> BacktestMetrics:
+        start_time = time.time()
         metrics = BacktestMetrics()
 
         n_steps = len(self.normalized_df)
@@ -155,87 +188,167 @@ class AlphaLSTMBacktester:
             logger.warning("Dataset too small for sequence length.")
             return metrics
 
+        total_steps = n_steps
+        if max_steps is not None:
+            total_steps = min(n_steps, self.sequence_length + max_steps)
+
+        # Pre-calculate all predictions at once
+        pre_calc_start = time.time()
+        all_probs = self._precalculate_all_predictions(total_steps)
+        pre_calc_end = time.time()
+        logger.info(f"Pre-calculation took {pre_calc_end - pre_calc_start:.4f} seconds.")
+
+        # Pre-calculate directions based on confidence threshold
+        max_probs = all_probs.max(axis=2)
+        best_classes = all_probs.argmax(axis=2) - 1 # Map [0,1,2] to [-1,0,1]
+
+        if self.confidence_thresh > 0:
+            all_directions = np.where(max_probs >= self.confidence_thresh, best_classes, 0)
+        else:
+            all_directions = best_classes
+
+        # Pre-fetch data into arrays for much faster access
+        asset_names = self.assets
+        num_assets = len(asset_names)
+        close_data_arr = np.stack([self.close_data[a][:total_steps] for a in asset_names])
+        atr_data_arr = np.stack([self.atr_data[a][:total_steps] for a in asset_names])
+        adx_arr = np.stack([self.adx_np[a][:total_steps] for a in asset_names])
+        timestamps = self.timestamps[:total_steps]
+        all_directions_T = all_directions.T  # (num_assets, total_steps)
+
+        # Pre-calculate constant values
+        pos_size_base = self.position_size * self.max_pos_size_pct
+        leverage = float(self.leverage)
+        min_atr_multiplier = self.min_atr_multiplier
+        sl_mult = self.sl_mult
+        tp_mult = self.tp_mult
+        rr_ratio = float(tp_mult / max(sl_mult, 1e-8))
+
+        # Re-initialize positions for the run
+        self.positions = {asset: None for asset in asset_names}
+        self.completed_trades = []
+
+        # Localize variables for the loop
+        equity = float(self.initial_equity)
+        positions = [self.positions[a] for a in asset_names]
+
         # Iterate through all available steps
+        loop_start = time.time()
         steps_run = 0
-        probs_buffer = np.empty((self._asset_count, 3), dtype=np.float32)
-        for idx in range(self.sequence_length - 1, n_steps - 1):
-            if max_steps is not None and steps_run >= max_steps:
-                break
-            
+        for idx in range(self.sequence_length - 1, total_steps - 1):
             next_idx = idx + 1
-            seq_start = idx - self.sequence_length + 1
-            ts = self.timestamps[idx]
-            next_ts = self.timestamps[next_idx]
+            ts = timestamps[idx]
+            next_ts = timestamps[next_idx]
             steps_run += 1
 
-            # Batch all assets through model in one forward pass (much faster than per-asset inference).
-            seq_batch = np.stack(
-                [self.asset_obs[asset][seq_start:idx + 1] for asset in self.assets],
-                axis=0,
-            ).astype(np.float32, copy=False)
-            seq_tensor = torch.as_tensor(seq_batch, device=DEVICE)
-            with torch.inference_mode():
-                logits = self.model(seq_tensor)
-                probs_buffer[:] = torch.softmax(logits, dim=1).cpu().numpy()
+            # Process signals for all assets
+            for i in range(num_assets):
+                direction = all_directions_T[i, idx]
+                pos = positions[i]
 
-            for asset_i, asset in enumerate(self.assets):
-                entry_price = float(self.close_data[asset][idx])
-                atr = float(self.atr_data[asset][idx])
-                probs = probs_buffer[asset_i]
+                if pos is None:
+                    if direction != 0 and adx_arr[i, idx] >= 20.0:
+                        # Open position
+                        entry_price = float(close_data_arr[i, idx])
+                        atr = max(float(atr_data_arr[i, idx]), entry_price * min_atr_multiplier)
+                        size = pos_size_base * equity
+                        sl = entry_price - (direction * sl_mult * atr)
+                        tp = entry_price + (direction * tp_mult * atr)
 
-                # Direction selection: Use threshold if provided (>0), otherwise use standard argmax
-                max_prob = float(probs.max())
-                if self.confidence_thresh > 0:
-                    if max_prob >= self.confidence_thresh:
-                        direction = int(probs.argmax() - 1)
-                    else:
-                        direction = 0  # Below threshold: Stay Neutral
+                        equity_before = equity
+                        equity -= size * 0.00002  # entry fee
+
+                        pos = {
+                            'direction': int(direction), 'entry_price': entry_price, 'size': size,
+                            'sl': sl, 'tp': tp, 'entry_timestamp': ts, 'entry_idx': idx,
+                            'equity_before': equity_before
+                        }
+                        positions[i] = pos
                 else:
-                    direction = int(probs.argmax() - 1)
+                    if direction == 0 or (direction ^ pos['direction'] < 0): # Check if flip (sign bit different)
+                        # Close position
+                        exit_price = float(close_data_arr[i, idx])
+                        price_change_pct = (exit_price - pos['entry_price']) / pos['entry_price'] * pos['direction']
+                        pnl = price_change_pct * (pos['size'] * leverage)
+                        equity += pnl
+                        fee = pos['size'] * 0.00002
+                        equity -= fee
 
-                current_pos = self.positions[asset]
-                current_adx = float(self.adx_np[asset][idx])
+                        hold_seconds = (ts - pos['entry_timestamp']).astype('timedelta64[s]').astype(float)
+                        self.completed_trades.append({
+                            'timestamp': ts, 'asset': asset_names[i], 'pnl': pnl, 'fees': fee + (pos['size'] * 0.00002),
+                            'net_pnl': pnl - (fee + pos['size'] * 0.00002), 'entry_price': pos['entry_price'],
+                            'exit_price': exit_price, 'size': pos['size'], 'equity_before': pos['equity_before'],
+                            'equity_after': equity, 'hold_time': max(0.0, hold_seconds / 60.0), 'rr_ratio': rr_ratio
+                        })
 
-                if current_pos is None:
-                    # Enforce ADX Training Parity (Must be > 20 to trade)
-                    if direction != 0 and current_adx >= 20.0:
-                        self._open_position(asset, direction, entry_price, atr, ts, idx)
-                else:
-                    # Optional explicit close signal if model flips/neutral.
-                    if direction == 0 or np.sign(direction) != np.sign(current_pos['direction']):
-                        self._close_position(asset, entry_price, ts)
-                        if direction != 0 and current_adx >= 20.0:
-                            self._open_position(asset, direction, entry_price, atr, ts, idx)
+                        if direction != 0 and adx_arr[i, idx] >= 20.0:
+                            # Re-open position
+                            entry_price = float(close_data_arr[i, idx])
+                            atr = max(float(atr_data_arr[i, idx]), entry_price * min_atr_multiplier)
+                            size = pos_size_base * equity
+                            sl = entry_price - (direction * sl_mult * atr)
+                            tp = entry_price + (direction * tp_mult * atr)
+                            equity_before = equity
+                            equity -= size * 0.00002  # entry fee
+                            pos = {
+                                'direction': int(direction), 'entry_price': entry_price, 'size': size,
+                                'sl': sl, 'tp': tp, 'entry_timestamp': ts, 'entry_idx': idx,
+                                'equity_before': equity_before
+                            }
+                            positions[i] = pos
+                        else:
+                            positions[i] = None
 
-            # Advance one candle and evaluate SL/TP on next close.
-            for asset, pos_data in list(self.positions.items()):
-                if pos_data is None:
+            # Evaluate SL/TP/Time barriers for open positions
+            for i in range(num_assets):
+                pos = positions[i]
+                if pos is None:
                     continue
                 
-                next_price = float(self.close_data[asset][next_idx])
+                next_price = float(close_data_arr[i, next_idx])
+                exit_price = -1.0
                 
-                # Check Vertical Barrier Timeout (2 Hours = 24 Bars)
-                if (next_idx - pos_data['entry_idx']) >= 24:
-                    self._close_position(asset, next_price, next_ts)
-                    continue
-                    
-                if pos_data['direction'] == 1:
-                    if next_price <= pos_data['sl']:
-                        self._close_position(asset, pos_data['sl'], next_ts)
-                    elif next_price >= pos_data['tp']:
-                        self._close_position(asset, pos_data['tp'], next_ts)
+                if (next_idx - pos['entry_idx']) >= 24:
+                    exit_price = next_price
+                elif pos['direction'] == 1:
+                    if next_price <= pos['sl']: exit_price = pos['sl']
+                    elif next_price >= pos['tp']: exit_price = pos['tp']
                 else:
-                    if next_price >= pos_data['sl']:
-                        self._close_position(asset, pos_data['sl'], next_ts)
-                    elif next_price <= pos_data['tp']:
-                        self._close_position(asset, pos_data['tp'], next_ts)
+                    if next_price >= pos['sl']: exit_price = pos['sl']
+                    elif next_price <= pos['tp']: exit_price = pos['tp']
+
+                if exit_price != -1.0:
+                    # Close position
+                    price_change_pct = (exit_price - pos['entry_price']) / pos['entry_price'] * pos['direction']
+                    pnl = price_change_pct * (pos['size'] * leverage)
+                    equity += pnl
+                    fee = pos['size'] * 0.00002
+                    equity -= fee
+
+                    hold_seconds = (next_ts - pos['entry_timestamp']).astype('timedelta64[s]').astype(float)
+                    self.completed_trades.append({
+                        'timestamp': next_ts, 'asset': asset_names[i], 'pnl': pnl, 'fees': fee + (pos['size'] * 0.00002),
+                        'net_pnl': pnl - (fee + pos['size'] * 0.00002), 'entry_price': pos['entry_price'],
+                        'exit_price': exit_price, 'size': pos['size'], 'equity_before': pos['equity_before'],
+                        'equity_after': equity, 'hold_time': max(0.0, hold_seconds / 60.0), 'rr_ratio': rr_ratio
+                    })
+                    positions[i] = None
 
             if self.completed_trades:
-                for trade in self.completed_trades:
-                    metrics.add_trade(trade)
+                metrics.trades.extend(self.completed_trades)
                 self.completed_trades.clear()
 
-            metrics.add_equity_point(next_ts, float(self.equity))
+            metrics.add_equity_point(next_ts, equity)
+
+        # Update final state
+        self.equity = equity
+        for i, a in enumerate(asset_names):
+            self.positions[a] = positions[i]
+
+        end_time = time.time()
+        logger.info(f"Total run() took {end_time - start_time:.4f} seconds.")
+        logger.info(f"Main loop (backtest) took {end_time - loop_start:.4f} seconds for {steps_run} steps.")
 
         # Force-close any remaining open positions at the end.
         final_idx = n_steps - 1

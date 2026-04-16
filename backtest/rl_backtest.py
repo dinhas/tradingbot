@@ -130,7 +130,12 @@ class BacktestMetrics:
             
         # Trade Frequency (trades per day)
         if self.timestamps:
-            time_span_days = (self.timestamps[-1] - self.timestamps[0]).total_seconds() / 86400
+            diff = self.timestamps[-1] - self.timestamps[0]
+            if isinstance(diff, np.timedelta64):
+                time_span_seconds = diff.astype('timedelta64[s]').astype(float)
+            else:
+                time_span_seconds = diff.total_seconds()
+            time_span_days = time_span_seconds / 86400
             trade_frequency = len(df_trades) / time_span_days if time_span_days > 0 else 0
         else:
             trade_frequency = 0
@@ -498,7 +503,13 @@ def generate_all_charts(metrics_tracker, per_asset, stage, output_dir, timestamp
     ax1.fill_between(times, equity[0], equity, where=(equity < equity[0]), alpha=0.2, color='red', label='Loss Zone')
     ax1.set_ylabel('Equity ($)', fontsize=11, fontweight='bold')
     # Determine year for title
-    year = times[0].year if times else datetime.now().year
+    if times:
+        if isinstance(times[0], np.datetime64):
+            year = pd.Timestamp(times[0]).year
+        else:
+            year = times[0].year
+    else:
+        year = datetime.now().year
     ax1.set_title(f'Stage {stage} - Equity Curve & Drawdown ({year})', fontsize=13, fontweight='bold')
     ax1.legend(loc='upper left', fontsize=9)
     ax1.grid(True, alpha=0.3)
