@@ -142,6 +142,20 @@ def train_model(sequences_path, labels_path, model_save_path):
     if total_samples == 0:
         raise RuntimeError("No sequences found for training.")
 
+    from collections import Counter
+    counts = Counter(directions.tolist())
+    
+    # Calculate Inverse Frequency Weights 
+    # Formula: Total_Samples / (Num_Classes * Class_Count)
+    # The targets are mapped to indices [0, 1, 2] corresponding to [-1, 0, 1]
+    weight_minus_1 = total_samples / (3 * max(1, counts.get(-1.0, 1)))
+    weight_0       = total_samples / (3 * max(1, counts.get(0.0, 1)))
+    weight_plus_1  = total_samples / (3 * max(1, counts.get(1.0, 1)))
+    
+    class_weights = torch.tensor([weight_minus_1, weight_0, weight_plus_1], dtype=torch.float32).to(DEVICE)
+    logger.info(f"Class Distribution [-1, 0, 1]: Sell={counts.get(-1.0,0)} | Neutral={counts.get(0.0,0)} | Buy={counts.get(1.0,0)}")
+    logger.info(f"Applied Focal Loss Weights: {class_weights.cpu().numpy()}")
+
     # Time-series-aware split.
     split = int(0.90 * total_samples)
     X_train, X_val = sequences[:split], sequences[split:]
@@ -177,7 +191,7 @@ def train_model(sequences_path, labels_path, model_save_path):
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=DEVICE.type, enabled=(DEVICE.type == "cuda")):
                 logits = model(b_X)
-                loss = direction_loss(logits, b_dir)
+                loss = direction_loss(logits, b_dir, alpha_dir=class_weights)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -190,7 +204,7 @@ def train_model(sequences_path, labels_path, model_save_path):
                 b_X = b_X.to(DEVICE, non_blocking=True)
                 b_dir = b_dir.to(DEVICE, non_blocking=True)
                 logits = model(b_X)
-                loss = direction_loss(logits, b_dir)
+                loss = direction_loss(logits, b_dir, alpha_dir=class_weights)
                 val_loss += loss.item()
 
         avg_val_loss = val_loss / max(1, len(val_loader))
