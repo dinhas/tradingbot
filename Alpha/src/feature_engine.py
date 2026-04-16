@@ -20,8 +20,8 @@ class FeatureEngine:
             # --- NORMALIZED (3) ---
             "log_return", "rolling_vol", "rolling_mean_ret",
             
-            # --- TECHNICAL (4) ---
-            "rsi", "macd_hist", "bollinger_pB", "atr",
+            # --- TECHNICAL (5) ---
+            "rsi", "macd_hist", "bollinger_pB", "atr", "adx",
             
             # --- TIME-FLAGS (3) ---
             "hour_of_day", "is_late_session", "is_friday",
@@ -95,6 +95,9 @@ class FeatureEngine:
         new_cols[f"{asset}_bollinger_pB"] = (close - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-8)
         new_cols[f"{asset}_atr"] = AverageTrueRange(high, low, close, window=14).average_true_range()
         
+        from ta.trend import ADXIndicator
+        new_cols[f"{asset}_adx"] = ADXIndicator(high, low, close, window=14).adx()
+
         # New 16 & 17
         new_cols[f"{asset}_volume_ratio"] = volume / (volume.rolling(20).mean() + 1e-8)
         new_cols[f"{asset}_relative_spread"] = (high - low) / (close + 1e-8)
@@ -113,7 +116,8 @@ class FeatureEngine:
         for asset in self.assets:
             cols_to_scale = [
                 f"{asset}_log_return", f"{asset}_rolling_vol", f"{asset}_rolling_mean_ret",
-                f"{asset}_macd_hist", f"{asset}_atr", f"{asset}_volume_ratio", f"{asset}_relative_spread"
+                f"{asset}_macd_hist", f"{asset}_atr", f"{asset}_volume_ratio", f"{asset}_relative_spread",
+                f"{asset}_adx"
             ]
             for col in cols_to_scale:
                 if col in df.columns:
@@ -136,8 +140,9 @@ class FeatureEngine:
             f"{asset}_log_return", f"{asset}_rolling_vol", f"{asset}_rolling_mean_ret",
             f"{asset}_rsi", f"{asset}_macd_hist", f"{asset}_bollinger_pB", f"{asset}_atr",
             'hour_of_day', 'is_late_session', 'is_friday',
-            f"{asset}_volume_ratio", f"{asset}_relative_spread"
+            f"{asset}_volume_ratio", f"{asset}_adx"
         ]
+
         return df.reindex(columns=obs_cols, fill_value=0).values.astype(np.float32)
 
     def get_observation(self, current_step_data, portfolio_state, asset):

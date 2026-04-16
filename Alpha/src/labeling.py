@@ -50,15 +50,16 @@ class Labeler:
         high_col = f"{asset}_high"
         low_col = f"{asset}_low"
         atr_col = f"{asset}_atr"
+        adx_col = f"{asset}_adx"
 
-        if close_col not in df.columns or atr_col not in df.columns:
+        if close_col not in df.columns or atr_col not in df.columns or adx_col not in df.columns:
             raise ValueError(f"Required columns missing for {asset}")
         
         # 1. Calculate the 1H Trend for all timestamps
         trend_1h = self._get_1h_trend(df, asset)
         
-        # 2. Calculate ADX for all timestamps
-        adx_series = self._get_adx(df, asset).fillna(0)
+        # 2. Use pre-calculated ADX
+        adx_series = df[adx_col].fillna(0)
         
         prices_close = df[close_col].values
         prices_high = df[high_col].values
@@ -79,7 +80,7 @@ class Labeler:
             if np.isnan(atr) or atr == 0 or np.isnan(current_trend):
                 continue
                 
-            # ADX Filter: Skip choppy markets
+            # ADX Filter: Only train on candles that pass the ADX threshold
             if current_adx < self.adx_threshold:
                 continue
 
