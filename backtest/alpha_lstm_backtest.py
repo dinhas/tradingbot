@@ -19,6 +19,7 @@ from Alpha.src.model import AlphaSLModel
 from Alpha.src.data_loader import DataLoader as AlphaDataLoader
 from Alpha.src.feature_engine import FeatureEngine
 from backtest.rl_backtest import BacktestMetrics, generate_all_charts, NumpyEncoder
+from ta.trend import ADXIndicator
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -65,10 +66,19 @@ class AlphaLSTMBacktester:
             asset: self.feature_engine.get_observation_vectorized(self.normalized_df, asset)
             for asset in self.assets
         }
+        
+        # Pre-calculate ADX for regime filtering in backtest parity
+        self.adx_data = {}
+        for asset in self.assets:
+            high = self.aligned_df[f"{asset}_high"]
+            low = self.aligned_df[f"{asset}_low"]
+            close = self.aligned_df[f"{asset}_close"]
+            self.adx_data[asset] = ADXIndicator(high, low, close, window=14).adx().fillna(0)
+            
         self.session_mask = self.normalized_df[self.session_col] == 1
         self.session_indices = np.where(self.session_mask.values)[0]
 
-    def _open_position(self, asset, direction, entry_price, atr, timestamp):
+    def _open_position(self, asset, direction, entry_price, atr, timestamp, idx):
         size = self.position_size * self.max_pos_size_pct * self.equity
         atr = max(float(atr), float(entry_price) * self.min_atr_multiplier)
         sl_dist = self.sl_mult * atr
@@ -86,6 +96,7 @@ class AlphaLSTMBacktester:
             'sl': float(sl),
             'tp': float(tp),
             'entry_timestamp': timestamp,
+            'entry_idx': idx,
             'equity_before': equity_before,
         }
 
@@ -164,20 +175,30 @@ class AlphaLSTMBacktester:
                 current_pos = self.positions[asset]
 
                 if current_pos is None:
-                    if direction != 0:
-                        self._open_position(asset, direction, entry_price, atr, ts)
+                    # Enforce ADX Training Parity (Must be > 20 to trade)
+                    current_adx = self.adx_data[asset].iloc[idx]
+                    if direction != 0 and current_adx >= 20.0:
+                        self._open_position(asset, direction, entry_price, atr, ts, idx)
                 else:
                     # Optional explicit close signal if model flips/neutral.
                     if direction == 0 or np.sign(direction) != np.sign(current_pos['direction']):
                         self._close_position(asset, entry_price, ts)
-                        if direction != 0:
-                            self._open_position(asset, direction, entry_price, atr, ts)
+                        current_adx = self.adx_data[asset].iloc[idx]
+                        if direction != 0 and current_adx >= 20.0:
+                            self._open_position(asset, direction, entry_price, atr, ts, idx)
 
             # Advance one candle and evaluate SL/TP on next close.
             for asset, pos_data in list(self.positions.items()):
                 if pos_data is None:
                     continue
+                
                 next_price = float(self.aligned_df.iloc[next_idx][f"{asset}_close"])
+                
+                # Check Vertical Barrier Timeout (2 Hours = 24 Bars)
+                if (next_idx - pos_data['entry_idx']) >= 24:
+                    self._close_position(asset, next_price, next_ts)
+                    continue
+                    
                 if pos_data['direction'] == 1:
                     if next_price <= pos_data['sl']:
                         self._close_position(asset, pos_data['sl'], next_ts)
