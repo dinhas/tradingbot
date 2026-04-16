@@ -61,6 +61,7 @@ class AlphaLSTMBacktester:
         self.leverage = 100
         self.max_pos_size_pct = 0.50
         self.min_atr_multiplier = 1e-4
+        self._asset_count = len(self.assets)
 
         self.asset_obs = {
             asset: self.feature_engine.get_observation_vectorized(self.normalized_df, asset)
@@ -77,6 +78,21 @@ class AlphaLSTMBacktester:
             
         self.session_mask = self.normalized_df[self.session_col] == 1
         self.session_indices = np.where(self.session_mask.values)[0]
+
+        # Cache commonly accessed market arrays to avoid repeated DataFrame iloc lookups in the main loop.
+        self.close_data = {
+            asset: self.aligned_df[f"{asset}_close"].to_numpy(dtype=np.float32)
+            for asset in self.assets
+        }
+        self.atr_data = {
+            asset: self.aligned_df[f"{asset}_atr"].to_numpy(dtype=np.float32)
+            for asset in self.assets
+        }
+        self.adx_np = {
+            asset: self.adx_data[asset].to_numpy(dtype=np.float32)
+            for asset in self.assets
+        }
+        self.timestamps = self.normalized_df.index.to_numpy()
 
     def _open_position(self, asset, direction, entry_price, atr, timestamp, idx):
         size = self.position_size * self.max_pos_size_pct * self.equity
@@ -141,49 +157,53 @@ class AlphaLSTMBacktester:
 
         # Iterate through all available steps
         steps_run = 0
+        probs_buffer = np.empty((self._asset_count, 3), dtype=np.float32)
         for idx in range(self.sequence_length - 1, n_steps - 1):
             if max_steps is not None and steps_run >= max_steps:
                 break
             
             next_idx = idx + 1
-            seq_indices = range(idx - self.sequence_length + 1, idx + 1)
-            ts = self.normalized_df.index[idx]
-            next_ts = self.normalized_df.index[next_idx]
+            seq_start = idx - self.sequence_length + 1
+            ts = self.timestamps[idx]
+            next_ts = self.timestamps[next_idx]
             steps_run += 1
 
-            for asset in self.assets:
-                entry_price = float(self.aligned_df.iloc[idx][f"{asset}_close"])
-                atr = float(self.aligned_df.iloc[idx][f"{asset}_atr"])
+            # Batch all assets through model in one forward pass (much faster than per-asset inference).
+            seq_batch = np.stack(
+                [self.asset_obs[asset][seq_start:idx + 1] for asset in self.assets],
+                axis=0,
+            ).astype(np.float32, copy=False)
+            seq_tensor = torch.as_tensor(seq_batch, device=DEVICE)
+            with torch.inference_mode():
+                logits = self.model(seq_tensor)
+                probs_buffer[:] = torch.softmax(logits, dim=1).cpu().numpy()
 
-                seq = self.asset_obs[asset][seq_indices]
-                seq_tensor = torch.from_numpy(seq).unsqueeze(0).to(DEVICE)
-
-                with torch.no_grad():
-                    logits = self.model(seq_tensor)
-                    probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+            for asset_i, asset in enumerate(self.assets):
+                entry_price = float(self.close_data[asset][idx])
+                atr = float(self.atr_data[asset][idx])
+                probs = probs_buffer[asset_i]
 
                 # Direction selection: Use threshold if provided (>0), otherwise use standard argmax
-                max_prob = np.max(probs)
+                max_prob = float(probs.max())
                 if self.confidence_thresh > 0:
                     if max_prob >= self.confidence_thresh:
-                        direction = int(np.argmax(probs) - 1)
+                        direction = int(probs.argmax() - 1)
                     else:
                         direction = 0  # Below threshold: Stay Neutral
                 else:
-                    direction = int(np.argmax(probs) - 1)
-                
+                    direction = int(probs.argmax() - 1)
+
                 current_pos = self.positions[asset]
+                current_adx = float(self.adx_np[asset][idx])
 
                 if current_pos is None:
                     # Enforce ADX Training Parity (Must be > 20 to trade)
-                    current_adx = self.adx_data[asset].iloc[idx]
                     if direction != 0 and current_adx >= 20.0:
                         self._open_position(asset, direction, entry_price, atr, ts, idx)
                 else:
                     # Optional explicit close signal if model flips/neutral.
                     if direction == 0 or np.sign(direction) != np.sign(current_pos['direction']):
                         self._close_position(asset, entry_price, ts)
-                        current_adx = self.adx_data[asset].iloc[idx]
                         if direction != 0 and current_adx >= 20.0:
                             self._open_position(asset, direction, entry_price, atr, ts, idx)
 
@@ -192,7 +212,7 @@ class AlphaLSTMBacktester:
                 if pos_data is None:
                     continue
                 
-                next_price = float(self.aligned_df.iloc[next_idx][f"{asset}_close"])
+                next_price = float(self.close_data[asset][next_idx])
                 
                 # Check Vertical Barrier Timeout (2 Hours = 24 Bars)
                 if (next_idx - pos_data['entry_idx']) >= 24:
@@ -210,22 +230,26 @@ class AlphaLSTMBacktester:
                     elif next_price <= pos_data['tp']:
                         self._close_position(asset, pos_data['tp'], next_ts)
 
-            while self.completed_trades:
-                metrics.add_trade(self.completed_trades.pop(0))
+            if self.completed_trades:
+                for trade in self.completed_trades:
+                    metrics.add_trade(trade)
+                self.completed_trades.clear()
 
             metrics.add_equity_point(next_ts, float(self.equity))
 
         # Force-close any remaining open positions at the end.
         final_idx = n_steps - 1
-        final_ts = self.normalized_df.index[final_idx]
+        final_ts = self.timestamps[final_idx]
         for asset, pos_data in list(self.positions.items()):
             if pos_data is None:
                 continue
-            last_price = float(self.aligned_df.iloc[final_idx][f"{asset}_close"])
+            last_price = float(self.close_data[asset][final_idx])
             self._close_position(asset, last_price, final_ts)
 
-        while self.completed_trades:
-            metrics.add_trade(self.completed_trades.pop(0))
+        if self.completed_trades:
+            for trade in self.completed_trades:
+                metrics.add_trade(trade)
+            self.completed_trades.clear()
 
         return metrics
 
