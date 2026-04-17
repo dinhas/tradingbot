@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import logging
+import pywt
 from ta.momentum import RSIIndicator
 from ta.trend import MACD
 from ta.volatility import AverageTrueRange, BollingerBands
@@ -10,6 +11,29 @@ class FeatureEngine:
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
         self.feature_names = []
         self._define_feature_names()
+
+    def _wavelet_denoise(self, data, wavelet='db4', level=1):
+        """
+        Performs Wavelet Denoising on a price series using Soft Thresholding.
+        De-noises signal while preserving sharp edges.
+        """
+        # Calculate coefficients
+        coeff = pywt.wavedec(data, wavelet, mode="per")
+        
+        # Calculate sigma using Median Absolute Deviation of the highest frequency detail coefficients
+        sigma = (1/0.6745) * np.median(np.abs(coeff[-level] - np.median(coeff[-level])))
+        
+        # Universal Threshold calculation
+        uthresh = sigma * np.sqrt(2 * np.log(len(data)))
+        
+        # Apply threshold to all detail coefficients except approximation
+        new_coeff = [coeff[0]]
+        for i in range(1, len(coeff)):
+            new_coeff.append(pywt.threshold(coeff[i], value=uthresh, mode='soft'))
+            
+        # Reconstruct signal
+        denoised = pywt.waverec(new_coeff, wavelet, mode="per")
+        return denoised[:len(data)]
 
     def _define_feature_names(self):
         """Defines the list of 17 features based on user requirements."""
@@ -39,7 +63,7 @@ class FeatureEngine:
         
         all_new_cols = {}
         for asset in self.assets:
-            logger.info(f"Calculating features for {asset}...")
+            logger.info(f"Calculating features for {asset} (with Wavelet Denoising)...")
             asset_cols = self._get_asset_features(aligned_df, asset)
             all_new_cols.update(asset_cols)
             
@@ -76,31 +100,40 @@ class FeatureEngine:
         return pd.concat(aligned_parts, axis=1)
 
     def _get_asset_features(self, df, asset):
-        close = df[f"{asset}_close"]
+        raw_close = df[f"{asset}_close"]
         high = df[f"{asset}_high"]
         low = df[f"{asset}_low"]
         volume = df[f"{asset}_volume"]
         
+        # Apply Wavelet Smoothing to the close price
+        close_filled = raw_close.ffill().bfill().values
+        close_denoised = self._wavelet_denoise(close_filled)
+        close = pd.Series(close_denoised, index=raw_close.index)
+        
         new_cols = {}
-        log_ret = np.log(close / close.shift(1))
+        # Use denoised close for log returns and volatility
+        log_ret = np.log(close / (close.shift(1) + 1e-8))
         new_cols[f"{asset}_log_return"] = log_ret
         new_cols[f"{asset}_rolling_vol"] = log_ret.rolling(window=20).std()
         new_cols[f"{asset}_rolling_mean_ret"] = log_ret.rolling(window=20).mean()
         
+        # Technical indicators use the denoised close for stability
         new_cols[f"{asset}_rsi"] = RSIIndicator(close, window=14).rsi()
         macd = MACD(close)
         new_cols[f"{asset}_macd_hist"] = macd.macd_diff()
         
         bb = BollingerBands(close, window=20, window_dev=2)
         new_cols[f"{asset}_bollinger_pB"] = (close - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-8)
-        new_cols[f"{asset}_atr"] = AverageTrueRange(high, low, close, window=14).average_true_range()
+        
+        # ATR uses raw OHLC prices to capture true volatility range
+        new_cols[f"{asset}_atr"] = AverageTrueRange(high, low, raw_close, window=14).average_true_range()
         
         from ta.trend import ADXIndicator
-        new_cols[f"{asset}_adx"] = ADXIndicator(high, low, close, window=14).adx()
+        new_cols[f"{asset}_adx"] = ADXIndicator(high, low, raw_close, window=14).adx()
 
         # New 16 & 17
         new_cols[f"{asset}_volume_ratio"] = volume / (volume.rolling(20).mean() + 1e-8)
-        new_cols[f"{asset}_relative_spread"] = (high - low) / (close + 1e-8)
+        new_cols[f"{asset}_relative_spread"] = (high - low) / (raw_close + 1e-8)
         
         return new_cols
 
@@ -163,6 +196,6 @@ class FeatureEngine:
             current_step_data.get('is_late_session', 0),
             current_step_data.get('is_friday', 0),
             current_step_data.get(f"{asset}_volume_ratio", 0),
-            current_step_data.get(f"{asset}_relative_spread", 0)
+            current_step_data.get(f"{asset}_adx", 0)
         ]
         return np.array(obs, dtype=np.float32)
