@@ -72,28 +72,12 @@ def _build_loaders(config: TrainConfig) -> tuple[DataLoader, DataLoader, int]:
         raise ValueError("Sequence and target lengths do not match")
 
     n_total = len(X)
-    if n_total < 1:
-        raise ValueError("No samples found in training data")
-
-    if n_total == 1:
-        LOGGER.warning(
-            "Only one sample found; using it for both train and validation. "
-            "Increase data volume or relax thresholds for meaningful training."
-        )
-        n_train, n_val = 1, 1
-    else:
-        n_val = max(1, int(n_total * config.val_split))
-        n_train = n_total - n_val
-        if n_train <= 0:
-            n_train = 1
-            n_val = n_total - 1
+    n_val = max(1, int(n_total * config.val_split))
+    n_train = n_total - n_val
 
     # Chronological split to avoid leakage.
     train_ds = RiskDataset(X[:n_train], sl[:n_train], tp[:n_train], quality[:n_train])
-    if n_total == 1:
-        val_ds = RiskDataset(X[:1], sl[:1], tp[:1], quality[:1])
-    else:
-        val_ds = RiskDataset(X[n_train:], sl[n_train:], tp[n_train:], quality[n_train:])
+    val_ds = RiskDataset(X[n_train:], sl[n_train:], tp[n_train:], quality[n_train:])
 
     train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True, drop_last=False)
     val_loader = DataLoader(val_ds, batch_size=config.batch_size, shuffle=False, drop_last=False)
