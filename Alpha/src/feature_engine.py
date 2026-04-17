@@ -106,7 +106,7 @@ class FeatureEngine:
         volume = df[f"{asset}_volume"]
         
         # Apply Wavelet Smoothing to the close price
-        close_filled = raw_close.ffill().bfill().values
+        close_filled = raw_close.ffill().bfill().to_numpy(copy=True)
         close_denoised = self._wavelet_denoise(close_filled)
         close = pd.Series(close_denoised, index=raw_close.index)
         
