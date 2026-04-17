@@ -27,8 +27,7 @@ def run_pipeline(
     output_dir: str,
     alpha_model_path: str,
     seq_len: int,
-    adx_threshold: float,
-    atr_threshold: float | None,
+    atr_threshold: float,
     alpha_threshold: float,
     lookahead_candles: int,
     batch_size: int,
@@ -40,7 +39,6 @@ def run_pipeline(
         output_dir=output_dir,
         alpha_model_path=alpha_model_path,
         seq_len=seq_len,
-        adx_threshold=adx_threshold,
         atr_threshold=atr_threshold,
         alpha_threshold=alpha_threshold,
         lookahead_candles=lookahead_candles,
@@ -69,13 +67,7 @@ def main() -> None:
     parser.add_argument("--output-dir", default="RiskLayer/data/training_set")
     parser.add_argument("--alpha-model-path", default="Alpha/models/alpha_model.pth")
     parser.add_argument("--seq-len", type=int, default=50)
-    parser.add_argument("--adx-threshold", type=float, default=20.0)
-    parser.add_argument(
-        "--atr-threshold",
-        type=float,
-        default=None,
-        help="Deprecated alias for --adx-threshold (forwarded for compatibility).",
-    )
+    parser.add_argument("--atr-threshold", type=float, default=20.0)
     parser.add_argument("--alpha-threshold", type=float, default=0.55)
     parser.add_argument("--lookahead-candles", type=int, default=24)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -88,7 +80,6 @@ def main() -> None:
         output_dir=args.output_dir,
         alpha_model_path=args.alpha_model_path,
         seq_len=args.seq_len,
-        adx_threshold=args.adx_threshold,
         atr_threshold=args.atr_threshold,
         alpha_threshold=args.alpha_threshold,
         lookahead_candles=args.lookahead_candles,

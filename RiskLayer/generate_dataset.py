@@ -47,7 +47,6 @@ def generate_dataset(
     alpha_model_path: str,
     seq_len: int = 50,
     adx_threshold: float = 20.0,
-    atr_threshold: float | None = None,
     alpha_threshold: float = 0.55,
     lookahead_candles: int = 24,
     batch_size: int = 2048,
@@ -56,13 +55,6 @@ def generate_dataset(
         raise ValueError("seq_len must be >= 2")
     if lookahead_candles < 1:
         raise ValueError("lookahead_candles must be >= 1")
-    if atr_threshold is not None:
-        LOGGER.warning(
-            "Received deprecated atr_threshold=%.2f. Interpreting it as adx_threshold.",
-            atr_threshold,
-        )
-        adx_threshold = float(atr_threshold)
-
     if adx_threshold < 0:
         raise ValueError("adx_threshold must be >= 0")
 
@@ -215,12 +207,6 @@ def main() -> None:
     parser.add_argument("--alpha-model-path", type=str, default="Alpha/models/alpha_model.pth")
     parser.add_argument("--seq-len", type=int, default=50)
     parser.add_argument("--adx-threshold", type=float, default=20.0)
-    parser.add_argument(
-        "--atr-threshold",
-        type=float,
-        default=None,
-        help="Deprecated alias for --adx-threshold. Kept for backward compatibility.",
-    )
     parser.add_argument("--alpha-threshold", type=float, default=0.55)
     parser.add_argument("--lookahead-candles", type=int, default=24)
     parser.add_argument("--batch-size", type=int, default=2048)
@@ -232,7 +218,6 @@ def main() -> None:
         alpha_model_path=args.alpha_model_path,
         seq_len=args.seq_len,
         adx_threshold=args.adx_threshold,
-        atr_threshold=args.atr_threshold,
         alpha_threshold=args.alpha_threshold,
         lookahead_candles=args.lookahead_candles,
         batch_size=args.batch_size,
