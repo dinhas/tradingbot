@@ -72,6 +72,8 @@ def generate_dataset(
     all_future_low_min = []
     all_future_high_paths = []
     all_future_low_paths = []
+    all_entry_prices = []
+    all_signal_atr = []
     all_asset_ids = []
     all_signal_steps = []
 
@@ -81,6 +83,7 @@ def generate_dataset(
         atr = aligned_df[f"{asset}_atr"].values
         highs = aligned_df[f"{asset}_high"].values
         lows = aligned_df[f"{asset}_low"].values
+        closes = aligned_df[f"{asset}_close"].values
 
         max_end_idx = len(obs) - lookahead_candles
         if max_end_idx < seq_len - 1:
@@ -132,6 +135,8 @@ def generate_dataset(
         all_future_low_paths.append(future_low_paths)
         all_future_high_max.append(future_high_paths.max(axis=1))
         all_future_low_min.append(future_low_paths.min(axis=1))
+        all_entry_prices.append(closes[candidate_indices].astype(np.float32))
+        all_signal_atr.append(atr[candidate_indices].astype(np.float32))
         all_asset_ids.append(np.full(len(candidate_indices), asset_id, dtype=np.int8))
         all_signal_steps.append(candidate_indices)
 
@@ -147,6 +152,8 @@ def generate_dataset(
     future_low_min = np.concatenate(all_future_low_min, axis=0).astype(np.float32)
     future_high_paths = np.concatenate(all_future_high_paths, axis=0).astype(np.float32)
     future_low_paths = np.concatenate(all_future_low_paths, axis=0).astype(np.float32)
+    entry_price = np.concatenate(all_entry_prices, axis=0).astype(np.float32)
+    signal_atr = np.concatenate(all_signal_atr, axis=0).astype(np.float32)
     asset_ids = np.concatenate(all_asset_ids, axis=0).astype(np.int8)
     signal_steps = np.concatenate(all_signal_steps, axis=0).astype(np.int32)
 
@@ -163,6 +170,8 @@ def generate_dataset(
         future_low_min=future_low_min,
         future_high_path=future_high_paths,
         future_low_path=future_low_paths,
+        entry_price=entry_price,
+        signal_atr=signal_atr,
         asset_id=asset_ids,
         signal_step=signal_steps,
         asset_names=np.asarray(loader.assets),
