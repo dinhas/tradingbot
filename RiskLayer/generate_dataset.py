@@ -46,7 +46,7 @@ def generate_dataset(
     output_dir: str,
     alpha_model_path: str,
     seq_len: int = 50,
-    atr_threshold: float = 20.0,
+    adx_threshold: float = 20.0,
     alpha_threshold: float = 0.55,
     lookahead_candles: int = 24,
     batch_size: int = 2048,
@@ -55,6 +55,8 @@ def generate_dataset(
         raise ValueError("seq_len must be >= 2")
     if lookahead_candles < 1:
         raise ValueError("lookahead_candles must be >= 1")
+    if adx_threshold < 0:
+        raise ValueError("adx_threshold must be >= 0")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loader = AlphaDataLoader(data_dir=data_dir)
@@ -81,6 +83,7 @@ def generate_dataset(
         obs = engine.get_observation_vectorized(normalized_df, asset)
 
         atr = aligned_df[f"{asset}_atr"].values
+        adx = aligned_df[f"{asset}_adx"].values
         highs = aligned_df[f"{asset}_high"].values
         lows = aligned_df[f"{asset}_low"].values
         closes = aligned_df[f"{asset}_close"].values
@@ -93,11 +96,15 @@ def generate_dataset(
         candidate_indices = [
             end_idx
             for end_idx in range(seq_len - 1, max_end_idx + 1)
-            if atr[end_idx] > atr_threshold
+            if adx[end_idx] >= adx_threshold
         ]
 
         if not candidate_indices:
-            LOGGER.info("No ATR-qualified rows for %s.", asset)
+            LOGGER.info(
+                "No ADX-qualified rows for %s (threshold=%.2f).",
+                asset,
+                adx_threshold,
+            )
             continue
 
         candidate_indices = np.asarray(candidate_indices, dtype=np.int32)
@@ -140,7 +147,12 @@ def generate_dataset(
         all_asset_ids.append(np.full(len(candidate_indices), asset_id, dtype=np.int8))
         all_signal_steps.append(candidate_indices)
 
-        LOGGER.info("%s: generated %d ATR-qualified sequences.", asset, len(candidate_indices))
+        LOGGER.info(
+            "%s: generated %d ADX-qualified sequences (threshold=%.2f).",
+            asset,
+            len(candidate_indices),
+            adx_threshold,
+        )
 
     if not all_sequences:
         raise RuntimeError("No dataset rows were generated. Check thresholds and input data.")
@@ -175,7 +187,7 @@ def generate_dataset(
         asset_id=asset_ids,
         signal_step=signal_steps,
         asset_names=np.asarray(loader.assets),
-        atr_threshold=np.float32(atr_threshold),
+        adx_threshold=np.float32(adx_threshold),
         alpha_threshold=np.float32(alpha_threshold),
         lookahead_candles=np.int32(lookahead_candles),
         sequence_length=np.int32(seq_len),
@@ -194,7 +206,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=str, default="RiskLayer/data/training_set")
     parser.add_argument("--alpha-model-path", type=str, default="Alpha/models/alpha_model.pth")
     parser.add_argument("--seq-len", type=int, default=50)
-    parser.add_argument("--atr-threshold", type=float, default=20.0)
+    parser.add_argument("--adx-threshold", type=float, default=20.0)
     parser.add_argument("--alpha-threshold", type=float, default=0.55)
     parser.add_argument("--lookahead-candles", type=int, default=24)
     parser.add_argument("--batch-size", type=int, default=2048)
@@ -205,7 +217,7 @@ def main() -> None:
         output_dir=args.output_dir,
         alpha_model_path=args.alpha_model_path,
         seq_len=args.seq_len,
-        atr_threshold=args.atr_threshold,
+        adx_threshold=args.adx_threshold,
         alpha_threshold=args.alpha_threshold,
         lookahead_candles=args.lookahead_candles,
         batch_size=args.batch_size,
