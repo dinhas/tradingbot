@@ -126,6 +126,25 @@ def generate_dataset(
         actions = pred_class.astype(np.int8) - 1
         actions = np.where(pred_conf >= alpha_threshold, actions, 0).astype(np.int8)
 
+        # --- NEW: Append Alpha Model Outputs as Features for Risk Model ---
+        # probs (3 features) + final action (1 feature) = 4 extra features
+        # Broadcast (N, 4) -> (N, seq_len, 4) and concatenate to sequences (N, seq_len, 17)
+        
+        N = sequences.shape[0]
+        seq_len = sequences.shape[1]
+        
+        # Create alpha features array: [prob_sell, prob_neutral, prob_buy, final_action]
+        alpha_features = np.zeros((N, 4), dtype=np.float32)
+        alpha_features[:, 0:3] = probs
+        alpha_features[:, 3] = actions.astype(np.float32)
+        
+        # Broadcast and concatenate
+        # alpha_features_expanded shape: (N, seq_len, 4)
+        alpha_features_expanded = np.tile(alpha_features[:, np.newaxis, :], (1, seq_len, 1))
+        
+        # New sequences shape: (N, seq_len, 21)
+        sequences_with_alpha = np.concatenate([sequences, alpha_features_expanded], axis=2)
+
         future_high_paths = np.asarray(
             [highs[idx : idx + lookahead_candles] for idx in candidate_indices],
             dtype=np.float32,
@@ -135,7 +154,7 @@ def generate_dataset(
             dtype=np.float32,
         )
 
-        all_sequences.append(sequences)
+        all_sequences.append(sequences_with_alpha)
         all_actions.append(actions)
         all_confidences.append(pred_conf.astype(np.float32))
         all_future_high_paths.append(future_high_paths)
