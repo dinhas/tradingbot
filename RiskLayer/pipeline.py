@@ -11,9 +11,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Risklayer.generate_dataset import generate_dataset
-from Risklayer.label_generator import generate_labels
-from Risklayer.train import TrainConfig, train
+from RiskLayer.generate_dataset import generate_dataset
+from RiskLayer.label_generator import generate_labels
+from RiskLayer.train import TrainConfig, train
 
 LOGGER = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def main() -> None:
     _configure_logging()
     parser = argparse.ArgumentParser(description="Run full RiskLayer pipeline: dataset -> labels -> train")
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--output-dir", default="Risklayer/data/training_set")
+    parser.add_argument("--output-dir", default="RiskLayer/data/training_set")
     parser.add_argument("--alpha-model-path", default="Alpha/models/alpha_model.pth")
     parser.add_argument("--seq-len", type=int, default=50)
     parser.add_argument("--adx-threshold", type=float, default=20.0)
@@ -72,7 +72,7 @@ def main() -> None:
     parser.add_argument("--lookahead-candles", type=int, default=24)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--model-save-path", default="Risklayer/models/risk_lstm_multitask.pth")
+    parser.add_argument("--model-save-path", default="RiskLayer/models/risk_lstm_multitask.pth")
     args = parser.parse_args()
 
     run_pipeline(
