@@ -200,7 +200,8 @@ class TradingEnv(gym.Env):
             'net_pnl': pnl - (pos['size'] * 0.00004), # Approx total fees
             'entry_price': pos['entry_price'],
             'exit_price': price,
-            'size': pos['size']
+            'size': pos['size'],
+            'rr_ratio': pos['tp_dist'] / pos['sl_dist'] if pos['sl_dist'] > 0 else 0
         })
         self.positions[asset] = None
 

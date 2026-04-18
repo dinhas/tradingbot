@@ -18,9 +18,52 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from RiskLayer.model import MultiHeadRiskLSTM
+from Risklayer.model import MultiHeadRiskLSTM
+from backtest.backtest_risk_sl import CombinedBacktest, AlphaSLModel
 
 LOGGER = logging.getLogger(__name__)
+
+def run_validation_backtest(model_path: str, device: torch.device):
+    """Runs a quick backtest to validate the trained risk model."""
+    try:
+        LOGGER.info("Starting validation backtest...")
+        
+        # Load Alpha Model (Hardcoded for now as it's the standard)
+        alpha_path = "Alpha/models/alpha_model.pth"
+        alpha_model = AlphaSLModel(input_dim=17, lstm_units=64, dense_units=32).to(device)
+        alpha_model.load_state_dict(torch.load(alpha_path, map_location=device))
+        alpha_model.eval()
+
+        # Load trained Risk Model
+        risk_model = MultiHeadRiskLSTM(input_size=21, hidden_size=128, num_layers=2).to(device)
+        risk_checkpoint = torch.load(model_path, map_location=device)
+        risk_model.load_state_dict(risk_checkpoint["model_state_dict"])
+        risk_model.eval()
+
+        # Initialize Backtest
+        bt = CombinedBacktest(
+            alpha_model=alpha_model,
+            risk_model=risk_model,
+            risk_scaler=None, # Assuming no scaler or it handles internally
+            data_dir="backtest/data",
+            initial_equity=10000.0,
+            compounding=True,
+            risk_thresh=0.0, # Test all signals
+            alpha_thresh=0.5
+        )
+
+        metrics = bt.run_backtest(max_steps=5000) # Quick validation run
+        results = metrics.calculate_metrics()
+        
+        LOGGER.info("Validation Backtest Results:")
+        LOGGER.info(f"Total Return: {results['total_return']:.2%}")
+        LOGGER.info(f"Win Rate: {results['win_rate']:.2%}")
+        LOGGER.info(f"Profit Factor: {results['profit_factor']:.2f}")
+        LOGGER.info(f"Max Drawdown: {results['max_drawdown']:.2%}")
+        LOGGER.info(f"Avg RR Ratio: {results['avg_rr_ratio']:.2f}")
+        
+    except Exception as e:
+        LOGGER.error(f"Validation backtest failed: {e}")
 
 
 class RiskDataset(Dataset):
@@ -187,6 +230,9 @@ def train(config: TrainConfig) -> str:
                 LOGGER.info("Early stopping triggered after %d epochs without improvement.", patience)
                 break
 
+    # Run validation backtest after training
+    run_validation_backtest(config.save_path, device)
+
     return config.save_path
 
 
@@ -198,9 +244,9 @@ def main() -> None:
     _configure_logging()
 
     parser = argparse.ArgumentParser(description="Train multi-head LSTM risk model")
-    parser.add_argument("--sequences", default="RiskLayer/data/training_set/sequences.npy")
-    parser.add_argument("--targets", default="RiskLayer/data/training_set/risk_targets.npz")
-    parser.add_argument("--save-path", default="RiskLayer/models/risk_lstm_multitask.pth")
+    parser.add_argument("--sequences", default="Risklayer/data/training_set/sequences.npy")
+    parser.add_argument("--targets", default="Risklayer/data/training_set/risk_targets.npz")
+    parser.add_argument("--save-path", default="Risklayer/models/risk_lstm_multitask.pth")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
