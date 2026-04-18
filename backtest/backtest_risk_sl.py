@@ -29,7 +29,7 @@ if not hasattr(np, "_core"):
 
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.trading_env import TradingEnv
-from Risklayer.model import MultiHeadRiskLSTM
+from RiskLayer.model import MultiHeadRiskLSTM
 from backtest.rl_backtest import BacktestMetrics
 
 logging.basicConfig(
