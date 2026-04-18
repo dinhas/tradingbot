@@ -29,7 +29,7 @@ if not hasattr(np, "_core"):
 
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.trading_env import TradingEnv
-from Risklayer.model import MultiHeadRiskLSTM
+from RiskLayer.model import MultiHeadRiskLSTM
 from backtest.rl_backtest import BacktestMetrics
 
 logging.basicConfig(
@@ -139,59 +139,99 @@ class CombinedBacktest:
 
         return size_out, lots, position_size
 
-    def _precalculate_signals(self):
+    def _precalculate_signals(self, max_steps=None, start_date=None, end_date=None):
         """Batch inference for speed with windowing."""
         logger.info("Pre-calculating signals...")
         
-        # Determine base alpha features count
-        # Update env if it was using 40 features
+        df = self.env.processed_data
+        n_total = len(df)
         num_assets = len(self.env.assets)
         input_dim = 17 # From new alpha model
-        
-        # We need windows of length seq_len for LSTM models
-        n_total = len(self.env.processed_data)
-        
-        # Re-cache master matrix if needed to ensure 17 features
-        logger.info(f"Re-extracting 17-feature observations...")
-        master_obs_17 = np.zeros((n_total, num_assets, input_dim), dtype=np.float32)
-        for i, asset in enumerate(self.env.assets):
-            master_obs_17[:, i, :] = self.env.feature_engine.get_observation_vectorized(self.env.processed_data, asset)
-            
-        # 1. Alpha Inference (LSTM)
-        logger.info(f"Alpha Inference (Windowed)...")
-        self.alpha_direction_matrix = np.zeros((n_total, num_assets), dtype=np.int8)
-        self.alpha_quality_matrix = np.zeros((n_total, num_assets), dtype=np.float32)
-        self.alpha_meta_matrix = np.zeros((n_total, num_assets), dtype=np.float32)
-        self.alpha_probs_matrix = np.zeros((n_total, num_assets, 3), dtype=np.float32) # For Risk model
-
         batch_size = 2048
+
+        # Determine range for pre-calculation
+        start_idx = self.seq_len - 1
+        end_idx = n_total
+
+        if start_date:
+            start_ts = pd.to_datetime(start_date).tz_localize(df.index.tz)
+            start_indices = np.where(df.index >= start_ts)[0]
+            if len(start_indices) > 0:
+                start_idx = max(self.seq_len - 1, start_indices[0])
         
-        # Start from seq_len-1 to have enough history
+        if end_date:
+            end_ts = pd.to_datetime(end_date).tz_localize(df.index.tz)
+            end_indices = np.where(df.index <= end_ts)[0]
+            if len(end_indices) > 0:
+                end_idx = min(n_total, end_indices[-1] + 1)
+
+        if max_steps and not (start_date or end_date):
+            end_idx = min(n_total, start_idx + max_steps)
+
+        logger.info(f"Pre-calculating from index {start_idx} to {end_idx}")
+
+        # Optimize: Only extract features for the required range + lookback
+        feature_start = max(0, start_idx - self.seq_len + 1)
+        feature_end = end_idx
+        data_slice = self.env.processed_data.iloc[feature_start:feature_end]
+        
+        logger.info(f"Extracting features for range {feature_start}:{feature_end}...")
+        master_obs_17 = np.zeros((feature_end - feature_start, num_assets, input_dim), dtype=np.float32)
+        for i, asset in enumerate(self.env.assets):
+            master_obs_17[:, i, :] = self.env.feature_engine.get_observation_vectorized(data_slice, asset)
+            
+        # Helper to map global index to slice index
+        def to_slice_idx(global_idx):
+            return global_idx - feature_start
+
+        # Initialize matrices
+        self.alpha_direction_matrix = np.zeros((n_total, num_assets), dtype=np.int8)
+        self.alpha_probs_matrix = np.zeros((n_total, num_assets, 3), dtype=np.float32)
+        self.alpha_quality_matrix = np.ones((n_total, num_assets), dtype=np.float32)
+        self.alpha_meta_matrix = np.ones((n_total, num_assets), dtype=np.float32)
+
+        # 1. Alpha Inference (Batched)
+        logger.info(f"Alpha Inference (Batched)...")
+        from numpy.lib.stride_tricks import sliding_window_view
+        
         for asset_idx in range(num_assets):
             asset_obs = master_obs_17[:, asset_idx, :]
+            # Create sliding windows: (N_windows, seq_len, input_dim)
+            windows = sliding_window_view(asset_obs, (self.seq_len, input_dim)).squeeze(1)
             
-            for i in tqdm(range(self.seq_len - 1, n_total), desc=f"Alpha {self.env.assets[asset_idx]}"):
-                # Prepare window: (1, seq_len, 17)
-                window = asset_obs[i - self.seq_len + 1 : i + 1]
-                window_tensor = torch.from_numpy(window[np.newaxis, ...].astype(np.float32)).to(self.device)
-                
-                with torch.no_grad():
-                    # Alpha model from Alpha/src/model.py returns only logits for direction
-                    logits = self.alpha_model(window_tensor)
-                    probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-                    
-                    pred_class = np.argmax(probs)
-                    direction = pred_class - 1
-                    
-                    self.alpha_probs_matrix[i, asset_idx] = probs
-                    self.alpha_direction_matrix[i, asset_idx] = direction
-                    # We don't have qual/meta in the new 17-feature LSTM model, so we set them to 1.0
-                    self.alpha_quality_matrix[i, asset_idx] = 1.0
-                    self.alpha_meta_matrix[i, asset_idx] = 1.0
+            # The windows correspond to global indices [start_idx, end_idx)
+            # Find which windows in the slice correspond to our target range
+            # window[0] is for slice index self.seq_len-1
+            # We want windows for global_idx in [start_idx, end_idx)
+            # slice_idx = global_idx - feature_start
+            # window index = slice_idx - (self.seq_len - 1)
 
-        # 2. Risk Inference (LSTM)
+            target_global_indices = np.arange(start_idx, end_idx)
+            target_slice_indices = target_global_indices - feature_start
+            window_indices = target_slice_indices - (self.seq_len - 1)
+
+            # Filter valid window indices
+            valid_mask = (window_indices >= 0) & (window_indices < len(windows))
+            window_indices = window_indices[valid_mask]
+            target_global_indices = target_global_indices[valid_mask]
+
+            relevant_windows = windows[window_indices]
+
+            for b in tqdm(range(0, len(relevant_windows), batch_size), desc=f"Alpha {self.env.assets[asset_idx]}"):
+                batch = torch.from_numpy(relevant_windows[b : b + batch_size].astype(np.float32)).to(self.device)
+                with torch.inference_mode():
+                    logits = self.alpha_model(batch)
+                    probs = torch.softmax(logits, dim=1).cpu().numpy()
+                    
+                    directions = np.argmax(probs, axis=1) - 1
+                    
+                    batch_globals = target_global_indices[b : b + batch_size]
+                    self.alpha_probs_matrix[batch_globals, asset_idx] = probs
+                    self.alpha_direction_matrix[batch_globals, asset_idx] = directions
+
+        # 2. Risk Inference (Batched)
         if not self.verify_alpha:
-            logger.info(f"Risk Inference (Windowed 21-features)...")
+            logger.info(f"Risk Inference (Batched 21-features)...")
             self.sl_matrix = np.zeros((n_total, num_assets), dtype=np.float32)
             self.tp_matrix = np.zeros((n_total, num_assets), dtype=np.float32)
             self.size_matrix = np.zeros((n_total, num_assets), dtype=np.float32)
@@ -205,27 +245,42 @@ class CombinedBacktest:
                 else:
                     obs_scaled = asset_obs.astype(np.float32)
                 
-                # Construct 21 features: 17 market + 3 alpha probs + 1 alpha decision
-                alpha_decision = self.alpha_direction_matrix[:, asset_idx].astype(np.float32)
-                alpha_probs = self.alpha_probs_matrix[:, asset_idx]
+                # Construct 21 features
+                alpha_decision = np.zeros(len(obs_scaled), dtype=np.float32)
+                alpha_probs = np.zeros((len(obs_scaled), 3), dtype=np.float32)
+
+                # Map back global precalculated alpha values to this slice
+                global_indices = np.arange(feature_start, feature_end)
+                alpha_decision = self.alpha_direction_matrix[global_indices, asset_idx].astype(np.float32)
+                alpha_probs = self.alpha_probs_matrix[global_indices, asset_idx]
                 
-                # Full 21-feature array
                 full_features = np.concatenate([obs_scaled, alpha_probs, alpha_decision[..., np.newaxis]], axis=1)
                 
-                for i in tqdm(range(self.seq_len - 1, n_total), desc=f"Risk {self.env.assets[asset_idx]}"):
-                    # Prepare window: (1, seq_len, 21)
-                    window = full_features[i - self.seq_len + 1 : i + 1]
-                    window_tensor = torch.from_numpy(window[np.newaxis, ...].astype(np.float32)).to(self.device)
-                    
-                    with torch.no_grad():
-                        sl, tp, quality = self.risk_model(window_tensor)
+                # Create windows for 21 features
+                windows = sliding_window_view(full_features, (self.seq_len, 21)).squeeze(1)
+
+                target_global_indices = np.arange(start_idx, end_idx)
+                target_slice_indices = target_global_indices - feature_start
+                window_indices = target_slice_indices - (self.seq_len - 1)
+
+                valid_mask = (window_indices >= 0) & (window_indices < len(windows))
+                window_indices = window_indices[valid_mask]
+                target_global_indices = target_global_indices[valid_mask]
+
+                relevant_windows = windows[window_indices]
+
+                for b in tqdm(range(0, len(relevant_windows), batch_size), desc=f"Risk {self.env.assets[asset_idx]}"):
+                    batch = torch.from_numpy(relevant_windows[b : b + batch_size].astype(np.float32)).to(self.device)
+                    with torch.inference_mode():
+                        sl, tp, quality = self.risk_model(batch)
                         
-                        self.sl_matrix[i, asset_idx] = float(sl.item())
-                        self.tp_matrix[i, asset_idx] = float(tp.item())
-                        self.size_matrix[i, asset_idx] = float(quality.item())
+                        batch_globals = target_global_indices[b : b + batch_size]
+                        self.sl_matrix[batch_globals, asset_idx] = sl.cpu().numpy()
+                        self.tp_matrix[batch_globals, asset_idx] = tp.cpu().numpy()
+                        self.size_matrix[batch_globals, asset_idx] = quality.cpu().numpy()
 
     def run_backtest(self, episodes=1, max_steps=None, start_date=None, end_date=None):
-        self._precalculate_signals()
+        self._precalculate_signals(max_steps=max_steps, start_date=start_date, end_date=end_date)
         metrics_tracker = BacktestMetrics()
         assets = self.env.assets
         close_prices = {a: self.env.close_arrays[a] for a in assets}
@@ -367,15 +422,16 @@ def main():
     parser.add_argument(
         "--risk-model",
         type=str,
-        default="Risklayer/models/risk_lstm_multitask.pth",
+        default="RiskLayer/models/risk_lstm_multitask.pth",
     )
     parser.add_argument(
-        "--risk-scaler", type=str, default="Risklayer/models/sl_risk_scaler.pkl"
+        "--risk-scaler", type=str, default="RiskLayer/models/sl_risk_scaler.pkl"
     )
     parser.add_argument("--data-dir", type=str, default="backtest/data")
     parser.add_argument("--initial-equity", type=float, default=10000.0)
     parser.add_argument("--risk-thresh", type=float, default=0.10, help="Min confidence from risk model")
     parser.add_argument("--compounding", action="store_true", default=False)
+    parser.add_argument("--max-steps", type=int, default=None, help="Max steps for backtest")
     parser.add_argument("--output-dir", type=str, default="backtest/results")
     parser.add_argument("--start-date", type=str, default=None, help="Start date YYYY-MM-DD")
     parser.add_argument("--end-date", type=str, default=None, help="End date YYYY-MM-DD")
@@ -418,7 +474,7 @@ def main():
         risk_thresh=args.risk_thresh,
     )
 
-    metrics = bt.run_backtest(start_date=args.start_date, end_date=args.end_date)
+    metrics = bt.run_backtest(max_steps=args.max_steps, start_date=args.start_date, end_date=args.end_date)
     final_results = metrics.calculate_metrics()
 
     # Save results
