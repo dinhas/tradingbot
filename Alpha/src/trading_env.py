@@ -37,6 +37,10 @@ class TradingEnv(gym.Env):
         self.feature_engine = FeatureEngine()
         self.raw_data, self.processed_data = self.feature_engine.preprocess_data(self.data)
         
+        # Determine actual input dimension from feature engine
+        dummy_obs = self.feature_engine.get_observation_vectorized(self.processed_data.head(1), self.assets[0])
+        self.input_dim = dummy_obs.shape[1]
+        
         # Cache for performance
         self._cache_data_arrays()
         
@@ -52,7 +56,7 @@ class TradingEnv(gym.Env):
             self.action_dim = 20  
             
         self.action_space = spaces.Box(low=-1, high=1, shape=(self.action_dim,), dtype=np.float32)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(40,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.input_dim,), dtype=np.float32)
         
         # State Variables
         self.current_step = 0
@@ -68,18 +72,18 @@ class TradingEnv(gym.Env):
     def _create_master_obs_matrix(self):
         """Creates a single matrix containing all asset observations for batch inference."""
         n_steps = len(self.processed_data)
-        self.master_obs_matrix = np.zeros((n_steps, len(self.assets) * 40), dtype=np.float32)
+        self.master_obs_matrix = np.zeros((n_steps, len(self.assets) * self.input_dim), dtype=np.float32)
         
         # Use vectorized extraction for each asset
         for i, asset in enumerate(self.assets):
             obs_matrix = self.feature_engine.get_observation_vectorized(self.processed_data, asset)
-            self.master_obs_matrix[:, i*40:(i+1)*40] = obs_matrix
+            self.master_obs_matrix[:, i*self.input_dim:(i+1)*self.input_dim] = obs_matrix
 
     def _cache_data_arrays(self):
         self.close_arrays = {a: self.raw_data[f"{a}_close"].values.astype(np.float32) for a in self.assets}
         self.low_arrays = {a: self.raw_data[f"{a}_low"].values.astype(np.float32) for a in self.assets}
         self.high_arrays = {a: self.raw_data[f"{a}_high"].values.astype(np.float32) for a in self.assets}
-        self.atr_arrays = {a: self.raw_data[f"{a}_atr_14"].values.astype(np.float32) for a in self.assets}
+        self.atr_arrays = {a: self.raw_data[f"{a}_atr"].values.astype(np.float32) for a in self.assets}
 
     def _load_data(self):
         data = {}
