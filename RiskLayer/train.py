@@ -43,7 +43,7 @@ class TrainConfig:
     targets_path: str
     save_path: str
     batch_size: int = 256
-    epochs: int = 30
+    epochs: int = 100
     lr: float = 1e-3
     weight_decay: float = 1e-4
     hidden_size: int = 128
@@ -147,6 +147,9 @@ def train(config: TrainConfig) -> str:
     os.makedirs(os.path.dirname(config.save_path) or ".", exist_ok=True)
 
     best_val = float("inf")
+    patience = 12
+    epochs_no_improve = 0
+
     for epoch in range(1, config.epochs + 1):
         tr = _run_epoch(model, train_loader, optimizer, criterion, device)
         va = _run_epoch(model, val_loader, None, criterion, device)
@@ -167,6 +170,7 @@ def train(config: TrainConfig) -> str:
 
         if va[0] < best_val:
             best_val = va[0]
+            epochs_no_improve = 0
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
@@ -176,7 +180,12 @@ def train(config: TrainConfig) -> str:
                 },
                 config.save_path,
             )
-            LOGGER.info("Saved best checkpoint to %s", config.save_path)
+            LOGGER.info("Saved best checkpoint to %s (Val Loss improved)", config.save_path)
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                LOGGER.info("Early stopping triggered after %d epochs without improvement.", patience)
+                break
 
     return config.save_path
 
@@ -193,7 +202,7 @@ def main() -> None:
     parser.add_argument("--targets", default="RiskLayer/data/training_set/risk_targets.npz")
     parser.add_argument("--save-path", default="RiskLayer/models/risk_lstm_multitask.pth")
     parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--hidden-size", type=int, default=128)

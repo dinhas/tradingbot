@@ -29,7 +29,7 @@ if not hasattr(np, "_core"):
 
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.trading_env import TradingEnv
-from RiskLayer.model import MultiHeadRiskLSTM
+from Risklayer.model import MultiHeadRiskLSTM
 from backtest.rl_backtest import BacktestMetrics
 
 logging.basicConfig(
@@ -67,6 +67,7 @@ class CombinedBacktest:
         challenge_mode=False,
         compounding=False,
         risk_thresh=0.10,
+        alpha_thresh=None,
         seq_len=50,
     ):
         self.alpha_model = alpha_model
@@ -78,6 +79,7 @@ class CombinedBacktest:
         self.challenge_mode = challenge_mode
         self.compounding = compounding
         self.risk_thresh = risk_thresh
+        self.alpha_thresh = alpha_thresh
         self.seq_len = seq_len
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -353,6 +355,12 @@ class CombinedBacktest:
                     if direction == 0:
                         continue
 
+                    # Alpha Confidence Gate
+                    if self.alpha_thresh is not None:
+                        prob = self.alpha_probs_matrix[current_idx, i, direction + 1]
+                        if prob < self.alpha_thresh:
+                            continue
+
                     # Risk Params (from Risk LSTM)
                     sl_mult = (
                         self.sl_matrix[current_idx, i] if not self.verify_alpha else 2.0
@@ -430,6 +438,7 @@ def main():
     parser.add_argument("--data-dir", type=str, default="backtest/data")
     parser.add_argument("--initial-equity", type=float, default=10000.0)
     parser.add_argument("--risk-thresh", type=float, default=0.10, help="Min confidence from risk model")
+    parser.add_argument("--alpha-thresh", type=float, default=None, help="Min confidence from alpha model (e.g. 0.5)")
     parser.add_argument("--compounding", action="store_true", default=False)
     parser.add_argument("--max-steps", type=int, default=None, help="Max steps for backtest")
     parser.add_argument("--output-dir", type=str, default="backtest/results")
@@ -472,6 +481,7 @@ def main():
         initial_equity=args.initial_equity,
         compounding=args.compounding,
         risk_thresh=args.risk_thresh,
+        alpha_thresh=args.alpha_thresh,
     )
 
     metrics = bt.run_backtest(max_steps=args.max_steps, start_date=args.start_date, end_date=args.end_date)

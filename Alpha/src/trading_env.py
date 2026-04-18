@@ -90,6 +90,7 @@ class TradingEnv(gym.Env):
         for asset in self.assets:
             # Check multiple possible paths
             paths = [
+                f"{self.data_dir}/{asset}_5m_backtest.parquet",
                 f"{self.data_dir}/{asset}_5m.parquet",
                 f"{self.data_dir}/{asset}_5m_2025.parquet",
                 f"data/{asset}_5m.parquet"
