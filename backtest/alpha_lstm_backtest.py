@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.data_loader import DataLoader as AlphaDataLoader
-from Alpha.src.feature_engine import FeatureEngine
+from RiskLayer.src.feature_engine import FeatureEngine
 from backtest.rl_backtest import BacktestMetrics, generate_all_charts, NumpyEncoder
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -269,8 +269,10 @@ def main():
     output_dir = PROJECT_ROOT / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Use the RiskLayer FeatureEngine to ensure causal (no-lookahead) features
+    rk_engine = FeatureEngine()
     loader = AlphaDataLoader(data_dir=str(data_dir))
-    aligned_df, normalized_df = loader.get_features()
+    aligned_df, normalized_df = loader.get_features(engine=rk_engine)
 
     # Model parameters
     input_dim = 17 # From feature_engine.py

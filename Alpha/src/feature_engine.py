@@ -1,9 +1,7 @@
-import pandas as pd
 import numpy as np
 import logging
-import pywt
 from ta.momentum import RSIIndicator
-from ta.trend import MACD
+from ta.trend import MACD, ADXIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
 
 class FeatureEngine:
@@ -12,28 +10,30 @@ class FeatureEngine:
         self.feature_names = []
         self._define_feature_names()
 
-    def _wavelet_denoise(self, data, wavelet='db4', level=1):
+    def _kalman_filter(self, data):
         """
-        Performs Wavelet Denoising on a price series using Soft Thresholding.
-        De-noises signal while preserving sharp edges.
+        1D Kalman Filter for real-time price denoising.
+        State: True Price. Measurement: Observed OHLC Price.
+        No lookahead bias.
         """
-        # Calculate coefficients
-        coeff = pywt.wavedec(data, wavelet, mode="per")
+        # Parameters: Q (Process Variance), R (Measurement Variance)
+        Q = 1e-5 
+        R = 1e-3
         
-        # Calculate sigma using Median Absolute Deviation of the highest frequency detail coefficients
-        sigma = (1/0.6745) * np.median(np.abs(coeff[-level] - np.median(coeff[-level])))
+        xhat = data[0] # Initial guess
+        P = 1.0        # Initial covariance
+        filtered = []
         
-        # Universal Threshold calculation
-        uthresh = sigma * np.sqrt(2 * np.log(len(data)))
-        
-        # Apply threshold to all detail coefficients except approximation
-        new_coeff = [coeff[0]]
-        for i in range(1, len(coeff)):
-            new_coeff.append(pywt.threshold(coeff[i], value=uthresh, mode='soft'))
+        for z in data:
+            # Prediction Step
+            P = P + Q
+            # Update Step
+            K = P / (P + R) # Kalman Gain
+            xhat = xhat + K * (z - xhat)
+            P = (1 - K) * P
+            filtered.append(xhat)
             
-        # Reconstruct signal
-        denoised = pywt.waverec(new_coeff, wavelet, mode="per")
-        return denoised[:len(data)]
+        return np.array(filtered, dtype=np.float32)
 
     def _define_feature_names(self):
         """Defines the list of 17 features based on user requirements."""
@@ -63,7 +63,7 @@ class FeatureEngine:
         
         all_new_cols = {}
         for asset in self.assets:
-            logger.info(f"Calculating features for {asset} (with Wavelet Denoising)...")
+            logger.info(f"Calculating features for {asset} (with Kalman Filtering)...")
             asset_cols = self._get_asset_features(aligned_df, asset)
             all_new_cols.update(asset_cols)
             
@@ -105,19 +105,19 @@ class FeatureEngine:
         low = df[f"{asset}_low"]
         volume = df[f"{asset}_volume"]
         
-        # Apply Wavelet Smoothing to the close price
+        # Apply Kalman Denoising to the close price (Causal, no lookahead)
         close_filled = raw_close.ffill().bfill().to_numpy(copy=True)
-        close_denoised = self._wavelet_denoise(close_filled)
+        close_denoised = self._kalman_filter(close_filled)
         close = pd.Series(close_denoised, index=raw_close.index)
         
         new_cols = {}
-        # Use denoised close for log returns and volatility
+        # Use Kalman-denoised close for log returns and volatility
         log_ret = np.log(close / (close.shift(1) + 1e-8))
         new_cols[f"{asset}_log_return"] = log_ret
         new_cols[f"{asset}_rolling_vol"] = log_ret.rolling(window=20).std()
         new_cols[f"{asset}_rolling_mean_ret"] = log_ret.rolling(window=20).mean()
         
-        # Technical indicators use the denoised close for stability
+        # Technical indicators use the Kalman-denoised close for stability
         new_cols[f"{asset}_rsi"] = RSIIndicator(close, window=14).rsi()
         macd = MACD(close)
         new_cols[f"{asset}_macd_hist"] = macd.macd_diff()
@@ -125,13 +125,11 @@ class FeatureEngine:
         bb = BollingerBands(close, window=20, window_dev=2)
         new_cols[f"{asset}_bollinger_pB"] = (close - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-8)
         
-        # ATR uses raw OHLC prices to capture true volatility range
+        # ATR and ADX use raw prices to capture real market range
         new_cols[f"{asset}_atr"] = AverageTrueRange(high, low, raw_close, window=14).average_true_range()
-        
-        from ta.trend import ADXIndicator
         new_cols[f"{asset}_adx"] = ADXIndicator(high, low, raw_close, window=14).adx()
 
-        # New 16 & 17
+        # Volume and Relative Spread
         new_cols[f"{asset}_volume_ratio"] = volume / (volume.rolling(20).mean() + 1e-8)
         new_cols[f"{asset}_relative_spread"] = (high - low) / (raw_close + 1e-8)
         
@@ -146,6 +144,7 @@ class FeatureEngine:
         return new_cols
 
     def _normalize_features(self, df):
+        """Robust Scaling using Rolling Median and Interquartile Range (IQR)."""
         for asset in self.assets:
             cols_to_scale = [
                 f"{asset}_log_return", f"{asset}_rolling_vol", f"{asset}_rolling_mean_ret",
@@ -154,7 +153,15 @@ class FeatureEngine:
             ]
             for col in cols_to_scale:
                 if col in df.columns:
-                    df[col] = (df[col] - df[col].rolling(100).mean()) / (df[col].rolling(100).std() + 1e-8)
+                    # Robust Normalization: (x - median) / IQR
+                    median = df[col].rolling(100).median()
+                    q75 = df[col].rolling(100).quantile(0.75)
+                    q25 = df[col].rolling(100).quantile(0.25)
+                    iqr = q75 - q25 + 1e-8
+                    
+                    df[col] = (df[col] - median) / iqr
+                    # Clip outliers to reduce noise during training
+                    df[col] = df[col].clip(-5.0, 5.0)
             
             if f"{asset}_rsi" in df.columns:
                 df[f"{asset}_rsi"] = (df[f"{asset}_rsi"] - 50) / 50.0

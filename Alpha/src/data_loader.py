@@ -54,7 +54,7 @@ class DataLoader:
 
         return data_dict
 
-    def get_features(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def get_features(self, engine=None) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Generates features using FeatureEngine.
         Returns (aligned_df, normalized_df).
@@ -65,7 +65,9 @@ class DataLoader:
                 f"No parquet files found under data_dir={self.data_dir}. Expected files like EURUSD_5m.parquet."
             )
 
-        engine = FeatureEngine()
+        if engine is None:
+            engine = FeatureEngine()
+            
         aligned_df, normalized_df = engine.preprocess_data(data_dict)
         return aligned_df, normalized_df
 

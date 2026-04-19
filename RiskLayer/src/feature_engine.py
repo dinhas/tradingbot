@@ -1,14 +1,11 @@
-"""Risk feature engine.
+"""Risk-layer feature engine.
 
-This module intentionally re-uses Alpha's feature engineering stack so the
-risk-model pipeline receives an identical feature set (including wavelet
-smoothing behavior and normalization settings).
+Now inherits the cleaner Kalman-based and Robust Scaling logic 
+directly from the Alpha FeatureEngine to maintain 100% parity.
 """
 
 from Alpha.src.feature_engine import FeatureEngine as AlphaFeatureEngine
 
-
 class FeatureEngine(AlphaFeatureEngine):
-    """Risk-layer feature engine that is 100% aligned with Alpha features."""
-
+    """Risk-layer feature engine aligned with Alpha's causal Kalman logic."""
     pass
