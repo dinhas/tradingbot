@@ -57,7 +57,10 @@ A sophisticated classifier was implemented using ADX (Trend), ATR (Volatility), 
 **Deployment Recommendation: YES (Regime-Aware).**
 Do not use the denoising pipeline as a "always-on" filter. Deploy as a **Selective Signal Generator** that activates when ADX > 25 (Trending).
 
-### Dataset Stats:
-- **Samples**: 199,752
-- **Features**: 11 (Regime-weighted)
-- **Target**: Balanced 5M Directional.
+### Dataset Stats (V3 Final):
+- **Total Samples**: 199,752
+- **Buy Signals (+1)**: 61,504 (30.8%)
+- **Sell Signals (-1)**: 61,545 (30.8%)
+- **Neutral (0)**: 76,703 (38.4%)
+- **Features**: 11 (Regime-weighted, LSTM-ready)
+- **Feature List**: `bollinger_pB`, `ema_diff`, `macd_hist`, `rsi_momentum`, `rsi`, `bb_width`, `volatility`, `atr_norm`, `hour`, `regime`, `is_tradeable`.
