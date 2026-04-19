@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from ta.trend import EMAIndicator, ADXIndicator
+from shared_constants import DEFAULT_SPREADS
 
 class Labeler:
     def __init__(self, tp_mult: float = 4.0, sl_mult: float = 2.0, ema_window: int = 100, max_bars: int = 24, adx_threshold: float = 20.0):
@@ -70,11 +71,13 @@ class Labeler:
         labels = []
         indices = []
         
+        spread = DEFAULT_SPREADS.get(asset, 0.0)
+        
         n = len(df)
         for i in range(n - 1):
             current_trend = trend_1h.iloc[i]
             current_adx = adx_series.iloc[i]
-            entry_price = prices_close[i]
+            mid_price = prices_close[i]
             atr = atrs_5m[i]
             
             if np.isnan(atr) or atr == 0 or np.isnan(current_trend):
@@ -90,30 +93,40 @@ class Labeler:
             
             direction = 0 # Default: No barrier hit or Neutral (Vertical Barrier / Timeout)
             
-            # --- TRIPLE BARRIER LOGIC ---
+            # --- SPREAD-AWARE TRIPLE BARRIER LOGIC ---
             if current_trend == 1: # Bullish Trend -> ONLY Look for BUYS
-                upper_barrier = entry_price + tp_dist
-                lower_barrier = entry_price - sl_dist
+                # Buy at Ask, Exit at Bid
+                entry_ask = mid_price + (spread / 2.0)
+                tp_barrier = entry_ask + tp_dist
+                sl_barrier = entry_ask - sl_dist
                 
                 # Look forward until a barrier is hit or max_bars reached
                 for j in range(i + 1, min(i + 1 + self.max_bars, n)):
-                    if prices_high[j] >= upper_barrier:
-                        direction = 1 # TP Hit
+                    bid_high = prices_high[j] - (spread / 2.0)
+                    bid_low = prices_low[j] - (spread / 2.0)
+                    
+                    if bid_high >= tp_barrier:
+                        direction = 1 # TP Hit (at Bid price)
                         break
-                    if prices_low[j] <= lower_barrier:
-                        direction = 0 # SL Hit
+                    if bid_low <= sl_barrier:
+                        direction = 0 # SL Hit (at Bid price)
                         break
                         
             elif current_trend == -1: # Bearish Trend -> ONLY Look for SELLS
-                upper_barrier = entry_price + sl_dist # Stop Loss for Short
-                lower_barrier = entry_price - tp_dist # Take Profit for Short
+                # Sell at Bid, Exit at Ask
+                entry_bid = mid_price - (spread / 2.0)
+                tp_barrier = entry_bid - tp_dist
+                sl_barrier = entry_bid + sl_dist
                 
                 for j in range(i + 1, min(i + 1 + self.max_bars, n)):
-                    if prices_low[j] <= lower_barrier:
-                        direction = -1 # TP Hit
+                    ask_low = prices_low[j] + (spread / 2.0)
+                    ask_high = prices_high[j] + (spread / 2.0)
+                    
+                    if ask_low <= tp_barrier:
+                        direction = -1 # TP Hit (at Ask price)
                         break
-                    if prices_high[j] >= upper_barrier:
-                        direction = 0 # SL Hit
+                    if ask_high >= sl_barrier:
+                        direction = 0 # SL Hit (at Ask price)
                         break
             
             labels.append({'direction': direction})

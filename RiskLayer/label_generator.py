@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from RiskLayer.utils import floor_to_increment, sigmoid
+from shared_constants import DEFAULT_SPREADS
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,15 +45,13 @@ def _first_touch_simulation(
     side: int,
     future_high: np.ndarray,
     future_low: np.ndarray,
+    spread: float = 0.0
 ) -> tuple[int, int]:
-    """Return first-touch outcome and candle index.
-
-    Uses boundary levels at max configured ATR ranges, ensuring strict sequential
-    processing with no future peeking.
-    """
+    """Return first-touch outcome and candle index with spread simulation."""
     if side not in (-1, 1):
         return 0, -1
 
+    # entry is the spread-adjusted execution price (Ask for BUY, Bid for SELL)
     if side == 1:  # BUY
         sl_level = entry - SL_MAX * atr
         tp_level = entry + TP_MAX * atr
@@ -62,11 +61,17 @@ def _first_touch_simulation(
 
     for idx, (high, low) in enumerate(zip(future_high, future_low), start=1):
         if side == 1:
-            sl_hit = low <= sl_level
-            tp_hit = high >= tp_level
+            # Long exit side is Bid
+            bid_high = high - (spread / 2.0)
+            bid_low = low - (spread / 2.0)
+            sl_hit = bid_low <= sl_level
+            tp_hit = bid_high >= tp_level
         else:
-            sl_hit = high >= sl_level
-            tp_hit = low <= tp_level
+            # Short exit side is Ask
+            ask_high = high + (spread / 2.0)
+            ask_low = low + (spread / 2.0)
+            sl_hit = ask_high >= sl_level
+            tp_hit = ask_low <= tp_level
 
         # In same-candle ambiguity, choose SL first (conservative risk-first rule).
         if sl_hit and tp_hit:
@@ -79,16 +84,22 @@ def _first_touch_simulation(
     return 0, -1
 
 
-def _excursions(entry: float, side: int, highs: np.ndarray, lows: np.ndarray) -> tuple[float, float]:
-    """Compute favorable and adverse excursions in price units."""
-    if side == 1:  # BUY
-        favorable = float(np.max(highs) - entry)
-        adverse = float(entry - np.min(lows))
-    elif side == -1:  # SELL
-        favorable = float(entry - np.min(lows))
-        adverse = float(np.max(highs) - entry)
+def _excursions(entry: float, side: int, highs: np.ndarray, lows: np.ndarray, spread: float = 0.0) -> tuple[float, float]:
+    """Compute favorable and adverse excursions in price units with spread."""
+    if side == 1:  # BUY (entry = Ask)
+        # Long exits at Bid
+        bid_highs = highs - (spread / 2.0)
+        bid_lows = lows - (spread / 2.0)
+        favorable = float(np.max(bid_highs) - entry)
+        adverse = float(entry - np.min(bid_lows))
+    elif side == -1:  # SELL (entry = Bid)
+        # Short exits at Ask
+        ask_highs = highs + (spread / 2.0)
+        ask_lows = lows + (spread / 2.0)
+        favorable = float(entry - np.min(ask_lows))
+        adverse = float(np.max(ask_highs) - entry)
     else:
-        favorable, adverse = 0.0, 0.0
+        raise ValueError(f"Invalid side {side}. Expected 1 or -1.")
 
     return max(favorable, 0.0), max(adverse, 0.0)
 
@@ -133,10 +144,17 @@ def generate_labels(
         side = int(actions[i])
         highs = high_paths[i]
         lows = low_paths[i]
-        entry = float(entries[i])
+        mid_entry = float(entries[i])
         atr = max(float(atr_ref[i]), 1e-8)
 
-        outcome, event_candle = _first_touch_simulation(entry, atr, side, highs, lows)
+        # Retrieve asset name to find spread
+        asset_name = asset_names[asset_ids[i]] if asset_ids[i] < len(asset_names) else "EURUSD"
+        spread = DEFAULT_SPREADS.get(asset_name, 0.0)
+        
+        # Adjust entry for spread (Buy at Ask, Sell at Bid)
+        entry_exec = mid_entry + (side * spread / 2.0)
+
+        outcome, event_candle = _first_touch_simulation(entry_exec, atr, side, highs, lows, spread=spread)
 
         # Respect first touch: any future opposite move is ignored by slicing to event.
         if event_candle > 0:
@@ -146,7 +164,7 @@ def generate_labels(
             highs_slice = highs
             lows_slice = lows
 
-        favorable_move, adverse_move = _excursions(entry, side, highs_slice, lows_slice)
+        favorable_move, adverse_move = _excursions(entry_exec, side, highs_slice, lows_slice, spread=spread)
 
         tp_atr = favorable_move / atr
         sl_atr = adverse_move / atr
@@ -182,7 +200,7 @@ def generate_labels(
         asset_names=asset_names,
     )
 
-    LOGGER.info("Generated %d labels → %s", len(sl_targets), output_path)
+    LOGGER.info("Generated %d labels (Spread-Aware) → %s", len(sl_targets), output_path)
     return output_path
 
 

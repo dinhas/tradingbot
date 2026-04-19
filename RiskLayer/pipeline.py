@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from RiskLayer.generate_dataset import generate_dataset
 from RiskLayer.label_generator import generate_labels
 from RiskLayer.train import TrainConfig, train
+import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +47,17 @@ def run_pipeline(
 
     targets_path = f"{output_dir.rstrip('/')}/risk_targets.npz"
     generate_labels(labels_npz_path=labels_path, output_path=targets_path)
+
+    # --- FINAL DATASET SUMMARY ---
+    with np.load(targets_path) as data:
+        final_count = len(data["sl_atr"])
+        
+    print(f"\n{'='*60}")
+    print(f"🚀 DATA GENERATION COMPLETE")
+    print(f"✅ Final Dataset Count: {final_count} Buy/Sell signals")
+    print(f"📂 Training Data: {sequences_path}")
+    print(f"📂 Target Labels: {targets_path}")
+    print(f"{'='*60}\n")
 
     ckpt = train(
         TrainConfig(

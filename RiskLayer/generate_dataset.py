@@ -47,7 +47,7 @@ def generate_dataset(
     alpha_model_path: str,
     seq_len: int = 50,
     adx_threshold: float = 20.0,
-    alpha_threshold: float = 0.55,
+    alpha_threshold: float = 0.50,
     lookahead_candles: int = 24,
     batch_size: int = 2048,
 ) -> tuple[str, str]:
@@ -122,9 +122,25 @@ def generate_dataset(
         pred_class = probs.argmax(axis=1)
         pred_conf = probs.max(axis=1)
 
-        # Map class ids [0,1,2] -> actions [-1,0,1], then enforce confidence gate.
+        # Map class ids [0,1,2] -> actions [-1,0,1]
         actions = pred_class.astype(np.int8) - 1
+        
+        # --- APPLY THRESHOLD: Signals below alpha_threshold are Neutral (0) ---
         actions = np.where(pred_conf >= alpha_threshold, actions, 0).astype(np.int8)
+        
+        # --- FILTER: Only keep Buy/Sell signals. Drop everything else. ---
+        trade_mask = actions != 0
+        
+        if not np.any(trade_mask):
+            LOGGER.info("No signals passed the %.2f threshold for %s. Skipping.", alpha_threshold, asset)
+            continue
+            
+        # Apply mask to all relevant data
+        candidate_indices = candidate_indices[trade_mask]
+        sequences = sequences[trade_mask]
+        probs = probs[trade_mask]
+        pred_conf = pred_conf[trade_mask]
+        actions = actions[trade_mask]
 
         # --- NEW: Append Alpha Model Outputs as Features for Risk Model ---
         # probs (3 features) + final action (1 feature) = 4 extra features
@@ -226,7 +242,7 @@ def main() -> None:
     parser.add_argument("--alpha-model-path", type=str, default="Alpha/models/alpha_model.pth")
     parser.add_argument("--seq-len", type=int, default=50)
     parser.add_argument("--adx-threshold", type=float, default=20.0)
-    parser.add_argument("--alpha-threshold", type=float, default=0.55)
+    parser.add_argument("--alpha-threshold", type=float, default=0.50)
     parser.add_argument("--lookahead-candles", type=int, default=24)
     parser.add_argument("--batch-size", type=int, default=2048)
     args = parser.parse_args()

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import logging
 from .feature_engine import FeatureEngine
+from shared_constants import DEFAULT_SPREADS
 
 class TradingEnv(gym.Env):
     """
@@ -64,6 +65,9 @@ class TradingEnv(gym.Env):
         self.equity = 10000.0
         self.leverage = 100
         self.positions = {asset: None for asset in self.assets}
+        
+        # Spread Configuration (from centralized constants)
+        self.spreads = DEFAULT_SPREADS
         
         self.completed_trades = []
         self.start_equity = self.equity
@@ -160,17 +164,27 @@ class TradingEnv(gym.Env):
                 self._close_position(asset, price)
 
     def _open_position(self, asset, direction, act, price, atr):
+        """
+        Opens a new position with spread simulation.
+        Long: Entry at Ask (Price + Spread/2)
+        Short: Entry at Bid (Price - Spread/2)
+        """
+        spread = self.spreads.get(asset, 0.0)
+        entry_price = price + (direction * spread / 2.0)
+        
         size = act['size'] * self.MAX_POS_SIZE_PCT * self.equity
         # Handle zero ATR
         atr = max(atr, price * self.MIN_ATR_MULTIPLIER)
         sl_dist = act['sl_mult'] * atr
         tp_dist = act['tp_mult'] * atr
-        sl = price - (direction * sl_dist)
-        tp = price + (direction * tp_dist)
+        
+        # SL/TP are set relative to the entry price (execution price)
+        sl = entry_price - (direction * sl_dist)
+        tp = entry_price + (direction * tp_dist)
         
         self.positions[asset] = {
             'direction': direction,
-            'entry_price': price,
+            'entry_price': entry_price,
             'size': size,
             'sl': sl,
             'tp': tp,
@@ -178,28 +192,43 @@ class TradingEnv(gym.Env):
             'sl_dist': sl_dist,
             'tp_dist': tp_dist
         }
-        # Entry fee
+        # Entry fee (Commission)
         self.equity -= size * 0.00002
 
     def _close_position(self, asset, price):
+        """
+        Closes a position with spread simulation on exit.
+        If 'price' is provided (e.g. SL/TP level), it uses it.
+        Otherwise, it calculates exit price based on Bid (Long) or Ask (Short).
+        """
         pos = self.positions[asset]
         if pos is None: return
         
+        spread = self.spreads.get(asset, 0.0)
+        
+        if price is None:
+            # Market close at current mid price
+            mid_price = self.close_arrays[asset][self.current_step]
+            exit_price = mid_price - (pos['direction'] * spread / 2.0)
+        else:
+            # Used for SL/TP hits where the price is already determined
+            exit_price = price
+        
         # Leveraged P&L calculation
-        price_change_pct = (price - pos['entry_price']) / pos['entry_price'] * pos['direction']
+        price_change_pct = (exit_price - pos['entry_price']) / pos['entry_price'] * pos['direction']
         pnl = price_change_pct * (pos['size'] * self.leverage)
         
         self.equity += pnl
-        # Exit fee
+        # Exit fee (Commission)
         self.equity -= pos['size'] * 0.00002
         
         self.completed_trades.append({
             'timestamp': self._get_current_timestamp(),
             'asset': asset,
             'pnl': pnl,
-            'net_pnl': pnl - (pos['size'] * 0.00004), # Approx total fees
+            'net_pnl': pnl - (pos['size'] * 0.00004), # Approx total commissions
             'entry_price': pos['entry_price'],
-            'exit_price': price,
+            'exit_price': exit_price,
             'size': pos['size'],
             'rr_ratio': pos['tp_dist'] / pos['sl_dist'] if pos['sl_dist'] > 0 else 0
         })
@@ -212,19 +241,30 @@ class TradingEnv(gym.Env):
         return {asset: self.atr_arrays[asset][self.current_step] for asset in self.assets}
 
     def _update_positions(self):
-        """Check SL/TP for all open positions."""
+        """
+        Check SL/TP for all open positions with spread simulation.
+        Long: SL/TP triggered by Bid (Price - Spread/2)
+        Short: SL/TP triggered by Ask (Price + Spread/2)
+        """
         current_prices = self._get_current_prices()
         for asset, pos in list(self.positions.items()):
             if pos is None:
                 continue
+            
             price = current_prices[asset]
+            spread = self.spreads.get(asset, 0.0)
+            
             if pos['direction'] == 1:  # Long
-                if price <= pos['sl']:
+                # Bid triggers SL/TP for Longs
+                bid_price = price - (spread / 2.0)
+                if bid_price <= pos['sl']:
                     self._close_position(asset, pos['sl'])
-                elif price >= pos['tp']:
+                elif bid_price >= pos['tp']:
                     self._close_position(asset, pos['tp'])
             else:  # Short
-                if price >= pos['sl']:
+                # Ask triggers SL/TP for Shorts
+                ask_price = price + (spread / 2.0)
+                if ask_price >= pos['sl']:
                     self._close_position(asset, pos['sl'])
-                elif price <= pos['tp']:
+                elif ask_price <= pos['tp']:
                     self._close_position(asset, pos['tp'])
