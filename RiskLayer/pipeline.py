@@ -35,11 +35,11 @@ def run_pipeline(
     epochs: int,
     model_save_path: str,
     sl_weight: float = 1.0,
-    tp_weight: float = 0.2,
-    quality_weight: float = 10.0,
+    tp_weight: float = 0.1,
+    quality_weight: float = 500.0,
     sl_epsilon: float = 0.025,
     tp_epsilon: float = 0.025,
-    quality_epsilon: float = 0.05,
+    quality_epsilon: float = 0.01,
 ) -> str:
     sequences_path, labels_path = generate_dataset(
         data_dir=data_dir,
@@ -98,11 +98,11 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--model-save-path", default="RiskLayer/models/risk_lstm_multitask.pth")
     parser.add_argument("--sl-weight", type=float, default=1.0)
-    parser.add_argument("--tp-weight", type=float, default=0.2)
-    parser.add_argument("--quality-weight", type=float, default=10.0)
+    parser.add_argument("--tp-weight", type=float, default=0.1)
+    parser.add_argument("--quality-weight", type=float, default=500.0)
     parser.add_argument("--sl-epsilon", type=float, default=0.025)
     parser.add_argument("--tp-epsilon", type=float, default=0.025)
-    parser.add_argument("--quality-epsilon", type=float, default=0.05)
+    parser.add_argument("--quality-epsilon", type=float, default=0.01)
     args = parser.parse_args()
 
     run_pipeline(

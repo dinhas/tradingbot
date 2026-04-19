@@ -87,19 +87,19 @@ class TrainConfig:
     save_path: str
     batch_size: int = 256
     epochs: int = 100
-    lr: float = 1e-3
-    weight_decay: float = 1e-4
+    lr: float = 3e-4 # Lowered from 1e-3 for more stable convergence
+    weight_decay: float = 1e-3 # Increased from 1e-4 to fight overfitting
     hidden_size: int = 128
     num_layers: int = 2
-    dropout: float = 0.2
+    dropout: float = 0.4 # Increased from 0.2 to improve regularization
     val_split: float = 0.2
     seed: int = 42
     sl_weight: float = 1.0
-    tp_weight: float = 0.2
-    quality_weight: float = 10.0
-    sl_epsilon: float = 0.025 # Half of 0.05 step
-    tp_epsilon: float = 0.025 # Half of 0.05 step
-    quality_epsilon: float = 0.05 # Half of 0.1 step
+    tp_weight: float = 0.1 # Lowered from 0.2 to reduce dominance
+    quality_weight: float = 500.0 # Increased from 10.0 to force learning on Sigmoid output
+    sl_epsilon: float = 0.025
+    tp_epsilon: float = 0.025
+    quality_epsilon: float = 0.01 # Tightened from 0.05 to increase precision requirement
 
 
 def _set_seed(seed: int) -> None:
@@ -271,19 +271,19 @@ def main() -> None:
     parser.add_argument("--save-path", default="Risklayer/models/risk_lstm_multitask.pth")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--weight-decay", type=float, default=1e-3)
     parser.add_argument("--hidden-size", type=int, default=128)
     parser.add_argument("--num-layers", type=int, default=2)
-    parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument("--dropout", type=float, default=0.4)
     parser.add_argument("--val-split", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sl-weight", type=float, default=1.0)
-    parser.add_argument("--tp-weight", type=float, default=0.2)
-    parser.add_argument("--quality-weight", type=float, default=10.0)
+    parser.add_argument("--tp-weight", type=float, default=0.1)
+    parser.add_argument("--quality-weight", type=float, default=500.0)
     parser.add_argument("--sl-epsilon", type=float, default=0.025)
     parser.add_argument("--tp-epsilon", type=float, default=0.025)
-    parser.add_argument("--quality-epsilon", type=float, default=0.05)
+    parser.add_argument("--quality-epsilon", type=float, default=0.01)
     args = parser.parse_args()
 
     config = TrainConfig(
