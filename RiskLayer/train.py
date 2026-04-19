@@ -95,11 +95,9 @@ class TrainConfig:
     val_split: float = 0.2
     seed: int = 42
     sl_weight: float = 1.0
-    tp_weight: float = 0.1 # Lowered from 0.2 to reduce dominance
-    quality_weight: float = 500.0 # Increased from 10.0 to force learning on Sigmoid output
-    sl_epsilon: float = 0.025
-    tp_epsilon: float = 0.025
-    quality_epsilon: float = 0.01 # Tightened from 0.05 to increase precision requirement
+    tp_weight: float = 0.5 # Increased from 0.1 for better balance
+    quality_weight: float = 5.0 # Lowered from 500.0 (BCE is more impactful than MSE)
+    huber_delta: float = 1.0 # Sensitivity for Huber Loss
 
 
 def _set_seed(seed: int) -> None:
@@ -116,13 +114,20 @@ def epsilon_mse_loss(pred: torch.Tensor, target: torch.Tensor, epsilon: float) -
     return loss.mean()
 
 
-def _build_loaders(config: TrainConfig) -> tuple[DataLoader, DataLoader, int]:
+def _build_loaders(config: TrainConfig) -> tuple[DataLoader, DataLoader, int, torch.Tensor]:
     X = np.load(config.seq_path).astype(np.float32)
     y = np.load(config.targets_path)
 
     sl = y["sl_atr"].astype(np.float32)
     tp = y["tp_atr"].astype(np.float32)
     quality = y["quality"].astype(np.float32)
+
+    # 4th Problem: Fix Class Imbalance
+    # Calculate pos_weight for BCEloss
+    n_pos = np.sum(quality == 1)
+    n_neg = np.sum(quality == 0)
+    pos_weight = torch.tensor([n_neg / (n_pos + 1e-8)], dtype=torch.float32)
+    LOGGER.info(f"Calculated pos_weight: {pos_weight.item():.4f} (Pos: {n_pos}, Neg: {n_neg})")
 
     if len(X) != len(sl):
         raise ValueError("Sequence and target lengths do not match")
@@ -139,14 +144,14 @@ def _build_loaders(config: TrainConfig) -> tuple[DataLoader, DataLoader, int]:
     val_loader = DataLoader(val_ds, batch_size=config.batch_size, shuffle=False, drop_last=False)
 
     input_size = X.shape[-1]
-    return train_loader, val_loader, input_size
+    return train_loader, val_loader, input_size, pos_weight
 
 
 def _run_epoch(
     model: MultiHeadRiskLSTM,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer | None,
-    criterion: nn.Module, # Kept for backward compatibility if needed, but we use epsilon_mse_loss
+    losses_fn_dict: dict,
     device: torch.device,
     config: TrainConfig,
 ) -> tuple[float, float, float, float]:
@@ -165,10 +170,12 @@ def _run_epoch(
         with torch.set_grad_enabled(is_train):
             p_sl, p_tp, p_q = model(x)
             
-            # Use Epsilon-Insensitive Loss for each head
-            l_sl = epsilon_mse_loss(p_sl, y_sl, config.sl_epsilon)
-            l_tp = epsilon_mse_loss(p_tp, y_tp, config.tp_epsilon)
-            l_q = epsilon_mse_loss(p_q, y_q, config.quality_epsilon)
+            # Regression heads use Huber Loss (less sensitive to noise/outliers)
+            l_sl = losses_fn_dict['huber'](p_sl, y_sl)
+            l_tp = losses_fn_dict['huber'](p_tp, y_tp)
+            
+            # Quality head uses BCE with Logits (Classification)
+            l_q = losses_fn_dict['bce'](p_q, y_q)
             
             # Weighted loss for optimization
             loss = (config.sl_weight * l_sl + 
@@ -196,7 +203,7 @@ def train(config: TrainConfig) -> str:
     _set_seed(config.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_loader, val_loader, input_size = _build_loaders(config)
+    train_loader, val_loader, input_size, pos_weight = _build_loaders(config)
 
     model = MultiHeadRiskLSTM(
         input_size=input_size,
@@ -205,7 +212,12 @@ def train(config: TrainConfig) -> str:
         dropout=config.dropout,
     ).to(device)
 
-    criterion = nn.MSELoss()
+    # Initialize Huber and Weighted BCE
+    losses_fn_dict = {
+        'huber': nn.HuberLoss(delta=config.huber_delta),
+        'bce': nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
+    }
+    
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
 
     os.makedirs(os.path.dirname(config.save_path) or ".", exist_ok=True)
@@ -215,8 +227,8 @@ def train(config: TrainConfig) -> str:
     epochs_no_improve = 0
 
     for epoch in range(1, config.epochs + 1):
-        tr = _run_epoch(model, train_loader, optimizer, criterion, device, config)
-        va = _run_epoch(model, val_loader, None, criterion, device, config)
+        tr = _run_epoch(model, train_loader, optimizer, losses_fn_dict, device, config)
+        va = _run_epoch(model, val_loader, None, losses_fn_dict, device, config)
 
         LOGGER.info(
             "Epoch %d/%d | train loss=%.5f (sl=%.5f tp=%.5f q=%.5f) | val loss=%.5f (sl=%.5f tp=%.5f q=%.5f)",

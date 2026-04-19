@@ -34,11 +34,14 @@ class AlphaSLModel(nn.Module):
             bidirectional=False
         )
 
-        # 2. Small dense layer with dropout
+        # 2. Attention Layer to learn which timesteps matter most
+        self.attention_weights = nn.Linear(lstm_units, 1)
+
+        # 3. Small dense layer with dropout
         self.fc1 = nn.Linear(lstm_units, dense_units)
         self.dropout = nn.Dropout(dropout)
 
-        # 3. Output head for classification (3 classes: Sell, Neutral, Buy)
+        # 4. Output head for classification (3 classes: Sell, Neutral, Buy)
         self.fc_out = nn.Linear(dense_units, 3)
 
     def forward(self, x):
@@ -47,11 +50,13 @@ class AlphaSLModel(nn.Module):
         # LSTM output
         lstm_out, _ = self.lstm(x)
         
-        # Take the output of the last time step (return_sequences=False behavior)
-        last_out = lstm_out[:, -1, :]
+        # Attention Mechanism instead of taking just the last output bar
+        attn_scores = self.attention_weights(lstm_out) # (batch, seq_len, 1)
+        attn_weights = torch.softmax(attn_scores, dim=1)
+        context_vector = torch.sum(attn_weights * lstm_out, dim=1) # (batch, hidden_dim)
         
         # Dense + Dropout
-        x = F.relu(self.fc1(last_out))
+        x = F.relu(self.fc1(context_vector))
         x = self.dropout(x)
         
         # Output Logits

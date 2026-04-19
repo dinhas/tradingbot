@@ -13,28 +13,53 @@ class FeatureEngine:
 
     def _kalman_filter(self, data):
         """
-        1D Kalman Filter for real-time price denoising.
-        State: True Price. Measurement: Observed OHLC Price.
+        Adaptive 1D Kalman Filter for real-time price denoising.
+        Reduces lag during breakouts by adapting Process Noise to innovation variance.
         No lookahead bias.
         """
-        # Parameters: Q (Process Variance), R (Measurement Variance)
-        Q = 1e-5 
-        R = 1e-3
+        Q_base = 1e-5 
+        R_base = 1e-3
         
         xhat = data[0] # Initial guess
         P = 1.0        # Initial covariance
         filtered = []
+        var_innovation = 1e-5
+        alpha = 0.1 # Smoothing factor for variance
         
         for z in data:
             # Prediction Step
-            P = P + Q
+            P = P + Q_base
+            
+            # Adaptive logic: track innovation variance
+            innovation = z - xhat
+            var_innovation = (1 - alpha) * var_innovation + alpha * (innovation ** 2)
+            
+            # Boost Q if variance spikes to catch up with fast moves
+            Q_adaptive = max(Q_base, 0.05 * var_innovation)
+            P = P + Q_adaptive
+            
             # Update Step
-            K = P / (P + R) # Kalman Gain
-            xhat = xhat + K * (z - xhat)
+            K = P / (P + R_base) # Kalman Gain
+            xhat = xhat + K * innovation
             P = (1 - K) * P
             filtered.append(xhat)
             
         return np.array(filtered, dtype=np.float32)
+
+    def _get_weights_ffd(self, d, size):
+        w = [1.]
+        for k in range(1, size):
+            w.append(-w[-1] * (d - k + 1) / k)
+        return np.array(w[::-1])
+
+    def _frac_diff_fixed(self, series, d, window=20):
+        weights = self._get_weights_ffd(d, window)
+        prices = series.values
+        fd = np.convolve(prices, weights, mode='full')[:len(prices)]
+        # Valid output starts at index (window-1)
+        if len(fd) >= window:
+            fd[:window-1] = fd[window-1]
+        return pd.Series(fd, index=series.index)
 
     def _define_feature_names(self):
         """Defines the list of 17 features based on user requirements."""
@@ -43,7 +68,7 @@ class FeatureEngine:
             "open", "high", "low", "close", "volume",
             
             # --- NORMALIZED (3) ---
-            "log_return", "rolling_vol", "rolling_mean_ret",
+            "frac_diff", "rolling_vol", "rolling_mean_ret",
             
             # --- TECHNICAL (5) ---
             "rsi", "macd_hist", "bollinger_pB", "atr", "adx",
@@ -112,11 +137,12 @@ class FeatureEngine:
         close = pd.Series(close_denoised, index=raw_close.index)
         
         new_cols = {}
-        # Use Kalman-denoised close for log returns and volatility
-        log_ret = np.log(close / (close.shift(1) + 1e-8))
-        new_cols[f"{asset}_log_return"] = log_ret
-        new_cols[f"{asset}_rolling_vol"] = log_ret.rolling(window=20).std()
-        new_cols[f"{asset}_rolling_mean_ret"] = log_ret.rolling(window=20).mean()
+        # Use Fractionally Differentiated memory instead of log returns
+        log_price = np.log(close + 1e-8)
+        frac_diff = self._frac_diff_fixed(log_price, d=0.4, window=20)
+        new_cols[f"{asset}_frac_diff"] = frac_diff
+        new_cols[f"{asset}_rolling_vol"] = frac_diff.rolling(window=20).std()
+        new_cols[f"{asset}_rolling_mean_ret"] = frac_diff.rolling(window=20).mean()
         
         # Technical indicators use the Kalman-denoised close for stability
         new_cols[f"{asset}_rsi"] = RSIIndicator(close, window=14).rsi()
@@ -148,7 +174,7 @@ class FeatureEngine:
         """Robust Scaling using Rolling Median and Interquartile Range (IQR)."""
         for asset in self.assets:
             cols_to_scale = [
-                f"{asset}_log_return", f"{asset}_rolling_vol", f"{asset}_rolling_mean_ret",
+                f"{asset}_frac_diff", f"{asset}_rolling_vol", f"{asset}_rolling_mean_ret",
                 f"{asset}_macd_hist", f"{asset}_atr", f"{asset}_volume_ratio", f"{asset}_relative_spread",
                 f"{asset}_adx"
             ]
@@ -178,7 +204,7 @@ class FeatureEngine:
     def get_observation_vectorized(self, df, asset):
         obs_cols = [
             f"{asset}_open", f"{asset}_high", f"{asset}_low", f"{asset}_close", f"{asset}_volume",
-            f"{asset}_log_return", f"{asset}_rolling_vol", f"{asset}_rolling_mean_ret",
+            f"{asset}_frac_diff", f"{asset}_rolling_vol", f"{asset}_rolling_mean_ret",
             f"{asset}_rsi", f"{asset}_macd_hist", f"{asset}_bollinger_pB", f"{asset}_atr",
             'hour_of_day', 'is_late_session', 'is_friday',
             f"{asset}_volume_ratio", f"{asset}_adx"
@@ -193,7 +219,7 @@ class FeatureEngine:
             current_step_data.get(f"{asset}_low", 0),
             current_step_data.get(f"{asset}_close", 0),
             current_step_data.get(f"{asset}_volume", 0),
-            current_step_data.get(f"{asset}_log_return", 0),
+            current_step_data.get(f"{asset}_frac_diff", 0),
             current_step_data.get(f"{asset}_rolling_vol", 0),
             current_step_data.get(f"{asset}_rolling_mean_ret", 0),
             current_step_data.get(f"{asset}_rsi", 0),
