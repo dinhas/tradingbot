@@ -35,6 +35,12 @@ def get_features(df):
     features['atr_norm'] = AverageTrueRange(high, low, close, window=14).average_true_range() / (close + 1e-8)
     features['adx'] = ADXIndicator(high, low, close, window=14).adx()
 
+    # Interaction and non-linear features
+    features['rsi_momentum'] = features['rsi'] * features['momentum']
+    features['vol_roc'] = features['volatility'] * features['roc']
+    features['bb_width'] = BollingerBands(close, window=20, window_dev=2).bollinger_wband()
+    features['dist_from_ema'] = (close - close.rolling(50).mean()) / (close + 1e-8)
+
     return features.dropna()
 
 def get_labels(df, asset='EURUSD', raw_df=None):

@@ -5,30 +5,42 @@ from scipy.signal import savgol_filter
 from ta.trend import EMAIndicator
 from ta.volatility import AverageTrueRange
 
-# --- BASELINE KALMAN ---
-def kalman_filter(data):
-    Q_base = 1e-5
-    R_base = 1e-3
+# --- ADAPTIVE KALMAN FILTER ---
+def kalman_filter(data, Q_base=1e-5, R_base=1e-3):
+    """
+    Adaptive 1D Kalman Filter for real-time price denoising.
+    """
+    if len(data) == 0: return np.array([])
+
     xhat = data[0]
     P = 1.0
     filtered = []
     var_innovation = 1e-5
     alpha = 0.1
+
     for z in data:
         P = P + Q_base
         innovation = z - xhat
         var_innovation = (1 - alpha) * var_innovation + alpha * (innovation ** 2)
+
+        # Boost Q if variance spikes to catch up with fast moves
         Q_adaptive = max(Q_base, 0.05 * var_innovation)
         P = P + Q_adaptive
+
         K = P / (P + R_base)
         xhat = xhat + K * innovation
         P = (1 - K) * P
         filtered.append(xhat)
-    return np.array(filtered)
 
-def apply_kalman(df):
+    return np.array(filtered, dtype=np.float32)
+
+def apply_kalman(df, Q=1e-5, R=1e-3):
     df = df.copy()
-    df['close'] = kalman_filter(df['close'].values)
+    df['close'] = kalman_filter(df['close'].values, Q_base=Q, R_base=R)
+    # Also denoise high/low if they exist to keep them consistent
+    if 'high' in df and 'low' in df:
+        df['high'] = kalman_filter(df['high'].values, Q_base=Q, R_base=R)
+        df['low'] = kalman_filter(df['low'].values, Q_base=Q, R_base=R)
     return df
 
 # --- WAVELET (CAUSAL) ---
