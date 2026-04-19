@@ -94,6 +94,12 @@ class TrainConfig:
     dropout: float = 0.2
     val_split: float = 0.2
     seed: int = 42
+    sl_weight: float = 1.0
+    tp_weight: float = 0.2
+    quality_weight: float = 10.0
+    sl_epsilon: float = 0.025 # Half of 0.05 step
+    tp_epsilon: float = 0.025 # Half of 0.05 step
+    quality_epsilon: float = 0.05 # Half of 0.1 step
 
 
 def _set_seed(seed: int) -> None:
@@ -101,6 +107,13 @@ def _set_seed(seed: int) -> None:
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def epsilon_mse_loss(pred: torch.Tensor, target: torch.Tensor, epsilon: float) -> torch.Tensor:
+    """MSE Loss with an epsilon-insensitive 'dead zone' to ignore rounding noise."""
+    err = torch.abs(pred - target)
+    loss = torch.pow(torch.clamp(err - epsilon, min=0.0), 2)
+    return loss.mean()
 
 
 def _build_loaders(config: TrainConfig) -> tuple[DataLoader, DataLoader, int]:
@@ -133,8 +146,9 @@ def _run_epoch(
     model: MultiHeadRiskLSTM,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer | None,
-    criterion: nn.Module,
+    criterion: nn.Module, # Kept for backward compatibility if needed, but we use epsilon_mse_loss
     device: torch.device,
+    config: TrainConfig,
 ) -> tuple[float, float, float, float]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -150,10 +164,16 @@ def _run_epoch(
 
         with torch.set_grad_enabled(is_train):
             p_sl, p_tp, p_q = model(x)
-            l_sl = criterion(p_sl, y_sl)
-            l_tp = criterion(p_tp, y_tp)
-            l_q = criterion(p_q, y_q)
-            loss = l_sl + l_tp + l_q
+            
+            # Use Epsilon-Insensitive Loss for each head
+            l_sl = epsilon_mse_loss(p_sl, y_sl, config.sl_epsilon)
+            l_tp = epsilon_mse_loss(p_tp, y_tp, config.tp_epsilon)
+            l_q = epsilon_mse_loss(p_q, y_q, config.quality_epsilon)
+            
+            # Weighted loss for optimization
+            loss = (config.sl_weight * l_sl + 
+                    config.tp_weight * l_tp + 
+                    config.quality_weight * l_q)
 
             if is_train:
                 optimizer.zero_grad(set_to_none=True)
@@ -169,6 +189,7 @@ def _run_epoch(
         total_q += float(l_q.item()) * batch_size
 
     return total_loss / n, total_sl / n, total_tp / n, total_q / n
+
 
 
 def train(config: TrainConfig) -> str:
@@ -194,8 +215,8 @@ def train(config: TrainConfig) -> str:
     epochs_no_improve = 0
 
     for epoch in range(1, config.epochs + 1):
-        tr = _run_epoch(model, train_loader, optimizer, criterion, device)
-        va = _run_epoch(model, val_loader, None, criterion, device)
+        tr = _run_epoch(model, train_loader, optimizer, criterion, device, config)
+        va = _run_epoch(model, val_loader, None, criterion, device, config)
 
         LOGGER.info(
             "Epoch %d/%d | train loss=%.5f (sl=%.5f tp=%.5f q=%.5f) | val loss=%.5f (sl=%.5f tp=%.5f q=%.5f)",
@@ -210,6 +231,7 @@ def train(config: TrainConfig) -> str:
             va[2],
             va[3],
         )
+
 
         if va[0] < best_val:
             best_val = va[0]
@@ -256,6 +278,12 @@ def main() -> None:
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--val-split", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--sl-weight", type=float, default=1.0)
+    parser.add_argument("--tp-weight", type=float, default=0.2)
+    parser.add_argument("--quality-weight", type=float, default=10.0)
+    parser.add_argument("--sl-epsilon", type=float, default=0.025)
+    parser.add_argument("--tp-epsilon", type=float, default=0.025)
+    parser.add_argument("--quality-epsilon", type=float, default=0.05)
     args = parser.parse_args()
 
     config = TrainConfig(
@@ -271,6 +299,12 @@ def main() -> None:
         dropout=args.dropout,
         val_split=args.val_split,
         seed=args.seed,
+        sl_weight=args.sl_weight,
+        tp_weight=args.tp_weight,
+        quality_weight=args.quality_weight,
+        sl_epsilon=args.sl_epsilon,
+        tp_epsilon=args.tp_epsilon,
+        quality_epsilon=args.quality_epsilon,
     )
     train(config)
 

@@ -34,6 +34,12 @@ def run_pipeline(
     batch_size: int,
     epochs: int,
     model_save_path: str,
+    sl_weight: float = 1.0,
+    tp_weight: float = 0.2,
+    quality_weight: float = 10.0,
+    sl_epsilon: float = 0.025,
+    tp_epsilon: float = 0.025,
+    quality_epsilon: float = 0.05,
 ) -> str:
     sequences_path, labels_path = generate_dataset(
         data_dir=data_dir,
@@ -66,6 +72,12 @@ def run_pipeline(
             save_path=model_save_path,
             batch_size=batch_size,
             epochs=epochs,
+            sl_weight=sl_weight,
+            tp_weight=tp_weight,
+            quality_weight=quality_weight,
+            sl_epsilon=sl_epsilon,
+            tp_epsilon=tp_epsilon,
+            quality_epsilon=quality_epsilon,
         )
     )
     LOGGER.info("Pipeline complete. Model saved at %s", ckpt)
@@ -85,6 +97,12 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--model-save-path", default="RiskLayer/models/risk_lstm_multitask.pth")
+    parser.add_argument("--sl-weight", type=float, default=1.0)
+    parser.add_argument("--tp-weight", type=float, default=0.2)
+    parser.add_argument("--quality-weight", type=float, default=10.0)
+    parser.add_argument("--sl-epsilon", type=float, default=0.025)
+    parser.add_argument("--tp-epsilon", type=float, default=0.025)
+    parser.add_argument("--quality-epsilon", type=float, default=0.05)
     args = parser.parse_args()
 
     run_pipeline(
@@ -98,6 +116,12 @@ def main() -> None:
         batch_size=args.batch_size,
         epochs=args.epochs,
         model_save_path=args.model_save_path,
+        sl_weight=args.sl_weight,
+        tp_weight=args.tp_weight,
+        quality_weight=args.quality_weight,
+        sl_epsilon=args.sl_epsilon,
+        tp_epsilon=args.tp_epsilon,
+        quality_epsilon=args.quality_epsilon,
     )
 
 
