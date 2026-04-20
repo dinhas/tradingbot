@@ -22,7 +22,7 @@ class FocalLoss(nn.Module):
             return focal_loss
 
 class AlphaSLModel(nn.Module):
-    def __init__(self, input_dim: int = 17, lstm_units: int = 64, dense_units: int = 32, dropout: float = 0.3):
+    def __init__(self, input_dim: int = 11, lstm_units: int = 64, dense_units: int = 32, dropout: float = 0.3):
         super(AlphaSLModel, self).__init__()
 
         # 1. LSTM layer (captures temporal patterns)

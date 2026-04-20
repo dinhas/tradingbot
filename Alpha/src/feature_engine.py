@@ -11,35 +11,28 @@ class FeatureEngine:
         self.feature_names = []
         self._define_feature_names()
 
-    def _kalman_filter(self, data):
+    def _kalman_filter(self, data, Q_base=1e-4, R_base=1e-4):
         """
-        Adaptive 1D Kalman Filter for real-time price denoising.
-        Reduces lag during breakouts by adapting Process Noise to innovation variance.
-        No lookahead bias.
+        Adaptive 1D Kalman Filter optimized for regime-aware denoising.
+        Optimized Params: Q=1e-4, R=1e-4 (Balanced Configuration).
         """
-        Q_base = 1e-5 
-        R_base = 1e-3
+        if len(data) == 0: return np.array([], dtype=np.float32)
         
-        xhat = data[0] # Initial guess
-        P = 1.0        # Initial covariance
+        xhat = data[0]
+        P = 1.0
         filtered = []
         var_innovation = 1e-5
-        alpha = 0.1 # Smoothing factor for variance
+        alpha = 0.1
         
         for z in data:
-            # Prediction Step
             P = P + Q_base
-            
-            # Adaptive logic: track innovation variance
             innovation = z - xhat
             var_innovation = (1 - alpha) * var_innovation + alpha * (innovation ** 2)
             
-            # Boost Q if variance spikes to catch up with fast moves
             Q_adaptive = max(Q_base, 0.05 * var_innovation)
             P = P + Q_adaptive
             
-            # Update Step
-            K = P / (P + R_base) # Kalman Gain
+            K = P / (P + R_base)
             xhat = xhat + K * innovation
             P = (1 - K) * P
             filtered.append(xhat)
@@ -62,22 +55,10 @@ class FeatureEngine:
         return pd.Series(fd, index=series.index)
 
     def _define_feature_names(self):
-        """Defines the list of 17 features based on user requirements."""
+        """Defines the list of 11 V3 features based on regime-aware research."""
         self.feature_names = [
-            # --- RAW OHLCV (5) ---
-            "open", "high", "low", "close", "volume",
-            
-            # --- NORMALIZED (3) ---
-            "frac_diff", "rolling_vol", "rolling_mean_ret",
-            
-            # --- TECHNICAL (5) ---
-            "rsi", "macd_hist", "bollinger_pB", "atr", "adx",
-            
-            # --- TIME-FLAGS (3) ---
-            "hour_of_day", "is_late_session", "is_friday",
-
-            # --- NEW ADDITIONS TO REACH 17 (2) ---
-            "volume_ratio", "relative_spread"
+            "bollinger_pB", "ema_diff", "macd_hist", "rsi_momentum", "rsi",
+            "bb_width", "volatility", "atr_norm", "hour", "regime", "is_tradeable"
         ]
 
     def preprocess_data(self, data_dict):
@@ -127,38 +108,53 @@ class FeatureEngine:
 
     def _get_asset_features(self, df, asset):
         raw_close = df[f"{asset}_close"]
-        high = df[f"{asset}_high"]
-        low = df[f"{asset}_low"]
-        volume = df[f"{asset}_volume"]
+        raw_high = df[f"{asset}_high"]
+        raw_low = df[f"{asset}_low"]
         
-        # Apply Kalman Denoising to the close price (Causal, no lookahead)
+        # 1. Apply Adaptive Kalman Denoising (Balanced config)
         close_filled = raw_close.ffill().bfill().to_numpy(copy=True)
-        close_denoised = self._kalman_filter(close_filled)
-        close = pd.Series(close_denoised, index=raw_close.index)
+        high_filled = raw_high.ffill().bfill().to_numpy(copy=True)
+        low_filled = raw_low.ffill().bfill().to_numpy(copy=True)
+
+        close = pd.Series(self._kalman_filter(close_filled, Q_base=1e-4, R_base=1e-4), index=raw_close.index)
+        high = pd.Series(self._kalman_filter(high_filled, Q_base=1e-4, R_base=1e-4), index=raw_close.index)
+        low = pd.Series(self._kalman_filter(low_filled, Q_base=1e-4, R_base=1e-4), index=raw_close.index)
         
         new_cols = {}
-        # Use Fractionally Differentiated memory instead of log returns
-        log_price = np.log(close + 1e-8)
-        frac_diff = self._frac_diff_fixed(log_price, d=0.4, window=20)
-        new_cols[f"{asset}_frac_diff"] = frac_diff
-        new_cols[f"{asset}_rolling_vol"] = frac_diff.rolling(window=20).std()
-        new_cols[f"{asset}_rolling_mean_ret"] = frac_diff.rolling(window=20).mean()
         
-        # Technical indicators use the Kalman-denoised close for stability
+        # 2. Core V3 Technical Features (Calculated on denoised price)
         new_cols[f"{asset}_rsi"] = RSIIndicator(close, window=14).rsi()
         macd = MACD(close)
         new_cols[f"{asset}_macd_hist"] = macd.macd_diff()
         
         bb = BollingerBands(close, window=20, window_dev=2)
         new_cols[f"{asset}_bollinger_pB"] = (close - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-8)
+        new_cols[f"{asset}_bb_width"] = bb.bollinger_wband()
         
-        # ATR and ADX use raw prices to capture real market range
-        new_cols[f"{asset}_atr"] = AverageTrueRange(high, low, raw_close, window=14).average_true_range()
-        new_cols[f"{asset}_adx"] = ADXIndicator(high, low, raw_close, window=14).adx()
+        # 3. Distance and Interaction features
+        new_cols[f"{asset}_ema_diff"] = (close - close.rolling(20).mean()) / (close.rolling(20).std() + 1e-8)
+        new_cols[f"{asset}_rsi_momentum"] = new_cols[f"{asset}_rsi"] * (close / close.shift(5) - 1)
 
-        # Volume and Relative Spread
-        new_cols[f"{asset}_volume_ratio"] = volume / (volume.rolling(20).mean() + 1e-8)
-        new_cols[f"{asset}_relative_spread"] = (high - low) / (raw_close + 1e-8)
+        # 4. Volatility Features
+        new_cols[f"{asset}_volatility"] = close.pct_change().rolling(20).std()
+        new_cols[f"{asset}_atr_norm"] = AverageTrueRange(high, low, close, window=14).average_true_range() / (close + 1e-8)
+
+        # 5. Regime Features (Sophisticated Classification)
+        atr_indicator = AverageTrueRange(raw_high, raw_low, raw_close, window=14)
+        atr = atr_indicator.average_true_range().fillna(0)
+        adx = ADXIndicator(raw_high, raw_low, raw_close, window=14).adx().fillna(0)
+
+        atr_norm_raw = atr / (raw_close + 1e-8)
+        atr_q75 = atr_norm_raw.rolling(500).quantile(0.75)
+
+        # Trending = High ADX + Moderate Vol
+        is_trending = (adx > 25) & (atr_norm_raw < atr_q75)
+        new_cols[f"{asset}_regime"] = is_trending.astype(np.float32) # Trending (1) vs Other (0)
+        new_cols[f"{asset}_is_tradeable"] = is_trending.astype(np.float32)
+
+        # 6. Backward Compatibility for Backtester (Not in model features)
+        new_cols[f"{asset}_atr"] = atr
+        new_cols[f"{asset}_adx"] = adx
         
         return new_cols
 
@@ -171,31 +167,20 @@ class FeatureEngine:
         return new_cols
 
     def _normalize_features(self, df):
-        """Robust Scaling using Rolling Median and Interquartile Range (IQR)."""
+        """V3 Normalization: Rolling 200-window Z-Score."""
         for asset in self.assets:
             cols_to_scale = [
-                f"{asset}_frac_diff", f"{asset}_rolling_vol", f"{asset}_rolling_mean_ret",
-                f"{asset}_macd_hist", f"{asset}_atr", f"{asset}_volume_ratio", f"{asset}_relative_spread",
-                f"{asset}_adx"
+                f"{asset}_bollinger_pB", f"{asset}_ema_diff", f"{asset}_macd_hist",
+                f"{asset}_rsi_momentum", f"{asset}_rsi", f"{asset}_bb_width",
+                f"{asset}_volatility", f"{asset}_atr_norm"
             ]
             for col in cols_to_scale:
                 if col in df.columns:
-                    # Robust Normalization: (x - median) / IQR
-                    median = df[col].rolling(100).median()
-                    q75 = df[col].rolling(100).quantile(0.75)
-                    q25 = df[col].rolling(100).quantile(0.25)
-                    iqr = q75 - q25 + 1e-8
-                    
-                    df[col] = (df[col] - median) / iqr
-                    # Clip outliers to reduce noise during training
-                    df[col] = df[col].clip(-5.0, 5.0)
+                    mean = df[col].rolling(200).mean()
+                    std = df[col].rolling(200).std()
+                    df[col] = (df[col] - mean) / (std + 1e-8)
+                    df[col] = df[col].clip(-4.0, 4.0)
             
-            if f"{asset}_rsi" in df.columns:
-                df[f"{asset}_rsi"] = (df[f"{asset}_rsi"] - 50) / 50.0
-            
-            if f"{asset}_bollinger_pB" in df.columns:
-                df[f"{asset}_bollinger_pB"] = df[f"{asset}_bollinger_pB"] - 0.5
-        
         if 'hour_of_day' in df.columns:
             df['hour_of_day'] = (df['hour_of_day'] - 12) / 12.0
             
@@ -203,33 +188,26 @@ class FeatureEngine:
 
     def get_observation_vectorized(self, df, asset):
         obs_cols = [
-            f"{asset}_open", f"{asset}_high", f"{asset}_low", f"{asset}_close", f"{asset}_volume",
-            f"{asset}_frac_diff", f"{asset}_rolling_vol", f"{asset}_rolling_mean_ret",
-            f"{asset}_rsi", f"{asset}_macd_hist", f"{asset}_bollinger_pB", f"{asset}_atr",
-            'hour_of_day', 'is_late_session', 'is_friday',
-            f"{asset}_volume_ratio", f"{asset}_adx"
+            f"{asset}_bollinger_pB", f"{asset}_ema_diff", f"{asset}_macd_hist",
+            f"{asset}_rsi_momentum", f"{asset}_rsi", f"{asset}_bb_width",
+            f"{asset}_volatility", f"{asset}_atr_norm", 'hour_of_day',
+            f"{asset}_regime", f"{asset}_is_tradeable"
         ]
 
         return df.reindex(columns=obs_cols, fill_value=0).values.astype(np.float32)
 
     def get_observation(self, current_step_data, portfolio_state, asset):
         obs = [
-            current_step_data.get(f"{asset}_open", 0),
-            current_step_data.get(f"{asset}_high", 0),
-            current_step_data.get(f"{asset}_low", 0),
-            current_step_data.get(f"{asset}_close", 0),
-            current_step_data.get(f"{asset}_volume", 0),
-            current_step_data.get(f"{asset}_frac_diff", 0),
-            current_step_data.get(f"{asset}_rolling_vol", 0),
-            current_step_data.get(f"{asset}_rolling_mean_ret", 0),
-            current_step_data.get(f"{asset}_rsi", 0),
-            current_step_data.get(f"{asset}_macd_hist", 0),
             current_step_data.get(f"{asset}_bollinger_pB", 0),
-            current_step_data.get(f"{asset}_atr", 0),
+            current_step_data.get(f"{asset}_ema_diff", 0),
+            current_step_data.get(f"{asset}_macd_hist", 0),
+            current_step_data.get(f"{asset}_rsi_momentum", 0),
+            current_step_data.get(f"{asset}_rsi", 0),
+            current_step_data.get(f"{asset}_bb_width", 0),
+            current_step_data.get(f"{asset}_volatility", 0),
+            current_step_data.get(f"{asset}_atr_norm", 0),
             current_step_data.get('hour_of_day', 0),
-            current_step_data.get('is_late_session', 0),
-            current_step_data.get('is_friday', 0),
-            current_step_data.get(f"{asset}_volume_ratio", 0),
-            current_step_data.get(f"{asset}_adx", 0)
+            current_step_data.get(f"{asset}_regime", 0),
+            current_step_data.get(f"{asset}_is_tradeable", 0)
         ]
         return np.array(obs, dtype=np.float32)
