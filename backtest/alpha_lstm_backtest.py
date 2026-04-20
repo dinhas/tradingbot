@@ -275,7 +275,7 @@ def main():
     aligned_df, normalized_df = loader.get_features(engine=rk_engine)
 
     # Model parameters
-    input_dim = 17 # From feature_engine.py
+    input_dim = 11 # Aligned with V3 regime-aware features
     model = AlphaSLModel(input_dim=input_dim, lstm_units=64, dense_units=32, dropout=0.3)
     
     if not model_path.exists():

@@ -4,15 +4,16 @@ from ta.trend import EMAIndicator, ADXIndicator
 from shared_constants import DEFAULT_SPREADS
 
 class Labeler:
-    def __init__(self, tp_mult: float = 4.0, sl_mult: float = 2.0, ema_window: int = 100, max_bars: int = 24, adx_threshold: float = 20.0):
+    def __init__(self, tp_mult: float = 1.0, sl_mult: float = 0.5, ema_window: int = 100, max_bars: int = 6, adx_threshold: float = 25.0):
         """
         Trend-Following Triple Barrier Labeler.
+        Optimized for V3 Regime-Aware Denoising.
         Args:
-            tp_mult: Take Profit multiplier for 5M ATR (e.g., 4.0).
-            sl_mult: Stop Loss multiplier for 5M ATR (e.g., 2.0).
+            tp_mult: Take Profit multiplier for 5M ATR (Optimized: 1.0).
+            sl_mult: Stop Loss multiplier for 5M ATR (Optimized: 0.5).
             ema_window: Window for the 1H Trend EMA (e.g., 100).
-            max_bars: Vertical barrier (max holding period in bars). Default 24 (2h on 5M).
-            adx_threshold: Minimum trend strength to process a label. Default 20.0.
+            max_bars: Vertical barrier (30m on 5M). Optimized: 6.
+            adx_threshold: Minimum trend strength. Optimized: 25.0.
         """
         self.tp_mult = tp_mult
         self.sl_mult = sl_mult
