@@ -99,5 +99,6 @@ coverage.xml
 
 *.npy
 
-*png
+*.png
+!regime_research/**/*.png
 *.json
