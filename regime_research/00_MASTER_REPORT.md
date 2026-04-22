@@ -1,16 +1,22 @@
 # Master Research Report
-Run Time: 2026-04-21 15:54:48
+Run Time: 2026-04-22 01:30:49
+Pass: 3 (Final)
 
 ## Executive Summary
-Best Regime: **TRENDING**. Best Smoothing: **Kalman**.
+Best Regime: **RANGING**. Best Smoothing: **Gaussian_5**.
 
 ## Key Findings
-- Best regime: TRENDING (Score: 12.07)
-- Best smoothing: Kalman
-- Strongest signal: rsi in TRENDING
+- Best regime: RANGING | Score: 10.07
+- Best smoothing: Gaussian_5 | ICIR: 1.4452
+- Strongest feature: rsi in RANGING
 
-## Dataset Blueprint
-1. Filter for TRENDING.
-2. Apply Kalman smoothing.
-3. Label with Triple Barrier (2.0*ATR / 1.0*ATR).
-4. Train LSTM.
+## Dataset Construction Blueprint
+1. Filter: RANGING bars
+2. Drop: bb_width, volatility, atr_norm
+3. Smoothing: Gaussian_5
+4. FracDiff: Optimal d=0.3
+5. Label: Triple Barrier (2.0/1.0 ATR, 20 bars)
+6. Split: 70/15/15 chronological
+
+## Pass 1 + 2 Errors Corrected
+Corrected ICIR to use regime slice, fixed SNR infinity, enforced motif exclusion zone, disqualified HP Filter from winners.
