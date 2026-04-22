@@ -1,12 +1,12 @@
 # Regime Research — Master Report
-Run Time: 2026-04-22 09:00:58
+Run Time: 2026-04-22 14:55:37
 Pass: 3 (Final)
 
 ## Executive Summary
 Best regime identified is **RANGING**. Optimal smoothing is **Kalman**. Expected edge derived from high ICIR and causal signal preservation. Dead features like bb_width, volatility, atr_norm should be dropped.
 
 ## Key Findings
-- Best regime: RANGING | Score: 0.35 | ICIR: 0.5449 | Bars: 2371
+- Best regime: RANGING | Score: 0.36 | ICIR: 0.5449 | Bars: 2371
 - Best smoothing: Kalman | ICIR: -0.5308 | SNR: 12.7546 | Lag: 0
 - Strongest feature: ema_diff in RANGING | ICIR: -0.5308 | Direction: contrarian
 - Dead features (drop): bb_width, volatility, atr_norm

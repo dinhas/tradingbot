@@ -138,7 +138,7 @@ def phase_2_visual_and_patterns(df, all_stats, sig_qual):
         plt.close(); plt.figure(figsize=(8,8))
         try: ac = acf(rdf['close'].dropna(), nlags=50); lag = (np.where(ac<0)[0] or [1])[0]
         except: lag = 1
-        plt.plot(rdf['close'].iloc[:-lag].values, rdf['close'].iloc[lag:].values, '.', alpha=0.5); plt.title(f'PS - {r}'); plt.savefig(f'regime_research/plots/phase_space_{r}.png'); plt.close()
+        plt.plot(rdf['close'].iloc[:-lag].values, rdf['close'].iloc[lag:].values, '.', alpha=0.5); plt.title(f'Phase Space (lag={lag}) - {r}'); plt.savefig(f'regime_research/plots/phase_space_{r}.png'); plt.close()
         try:
             emd = EMD(); imfs = emd(rdf['close'].iloc[:500].values); plt.figure(figsize=(10,12))
             for i in range(min(4, imfs.shape[0])): plt.subplot(5,1,i+1); plt.plot(imfs[i]); plt.title(f'IMF {i+1}')
@@ -148,8 +148,24 @@ def phase_2_visual_and_patterns(df, all_stats, sig_qual):
         if r in sig_qual:
             fs = list(sig_qual[r].keys()); ics = [sig_qual[r][f]['IC_1'] for f in fs]; plt.figure(figsize=(12,6)); idxs = np.argsort(ics)
             plt.barh(np.array(fs)[idxs], np.array(ics)[idxs]); plt.title(f'IC - {r}'); plt.savefig(f'regime_research/plots/feature_ic_{r}.png'); plt.close()
+        # FIX 4: ACF Plot
+        try:
+            acf_vals = acf(rdf['close'].pct_change().dropna(), nlags=30, fft=True)
+            plt.figure(figsize=(10, 5))
+            plt.bar(range(len(acf_vals)), acf_vals, color='steelblue')
+            plt.axhline(y=0, color='black', linewidth=0.8)
+            plt.axhline(y=1.96/np.sqrt(len(rdf)), color='red', linestyle='--', label='95% CI')
+            plt.axhline(y=-1.96/np.sqrt(len(rdf)), color='red', linestyle='--')
+            plt.title(f'ACF of Returns — {r} (lags 1-30)')
+            plt.xlabel('Lag'); plt.ylabel('Autocorrelation')
+            plt.legend(); plt.tight_layout()
+            plt.savefig(f'regime_research/plots/acf_{r}.png')
+            plt.close()
+        except Exception as e:
+            logger.warning(f"ACF plot failed for {r}: {e}")
+
         m_wr = compute_motif_winrate(rdf['close'].values);
-        if np.isnan(m_wr): m_wr = 0.5
+        if m_wr is None or np.isnan(m_wr): m_wr = 0.5
         try:
             mp = stumpy.stump(rdf['close'].values, m=20); midxs = np.argsort(mp[:, 0])[:5]; plt.figure(figsize=(10,6))
             for i in midxs: m = rdf['close'].iloc[i:i+20].values; plt.plot((m-np.mean(m))/np.std(m), alpha=0.5)
@@ -157,8 +173,9 @@ def phase_2_visual_and_patterns(df, all_stats, sig_qual):
         except: pass
         avg_icir = np.mean(sorted([abs(sig_qual[r][f]['ICIR']) for f in sig_qual[r]], reverse=True)[:3]) if r in sig_qual else 0
         inv_pe = 1.0 - (all_stats[r]['permen'] if (r in all_stats and not np.isnan(all_stats[r]['permen'])) else 0.5)
-        score = (avg_icir*0.40) + (inv_pe*0.25) + (len(rdf)/total_bars*0.20) + (0.5*0.15) # Pass 3 formula
-        r_scores[r] = {'Signal Strength': avg_icir, 'Pattern Repeatability': m_wr, 'Predictability': inv_pe, 'Data Volume': len(rdf)/total_bars, 'Pattern Score': 0.5, 'Total Score': score, 'Bar Count': len(rdf)}
+        # FIX 1: Use actual m_wr in score
+        score = (avg_icir*0.40) + (inv_pe*0.25) + (len(rdf)/total_bars*0.20) + (m_wr*0.15)
+        r_scores[r] = {'Signal Strength': avg_icir, 'Pattern Repeatability': m_wr, 'Predictability': inv_pe, 'Data Volume': len(rdf)/total_bars, 'Pattern Score': m_wr, 'Total Score': score, 'Bar Count': len(rdf)}
     return r_scores
 
 def causal_gaussian(x, sigma):
@@ -258,10 +275,17 @@ def phase_4_documentation(all_stats, sig_qual, r_scores, comp_df, top_r, opt_d):
 
     with open('regime_research/03_smoothing_comparison.md', 'w') as f:
         f.write(f"# Smoothing Comparison Report\nRun Time: {ts}\nRegime Analyzed: {top_r}\n\n## Full Comparison Matrix\n{comp_df.to_markdown(index=False)}\n\n")
+        # FIX 5: EMD Limit documentation
+        f.write("> **Note:** EMD_Reconstruct computed on first 3000 regime bars only due to O(n²) rolling window complexity. Results beyond this range are NaN and excluded from scoring.\n\n")
         f.write("## Analysis\n### SNR vs Lag Tradeoff\nTechniques like EMA_20 and Gaussian_5 provide higher SNR but introduce significant lag, potentially delaying entry signals.\n\n### Techniques That Destroyed Signal\n")
-        none_icir = abs(comp_df[(comp_df['Technique']=='NONE')]['ICIR'].iloc[0])
-        destroyed = comp_df[comp_df['ICIR'].abs() < none_icir]['Technique'].unique()
-        f.write(f"{', '.join(destroyed) if len(destroyed)>0 else 'None'}\n\n### Causal Violations\nHP_Filter: DISQUALIFIED — non-causal by design. Even with rolling window, excluded from winner selection.\n\n## Winner (Causal Methods Only)\n**WINNER: {win['Technique']} on {win['Feature']}**\nICIR: {win['ICIR']:.4f} | SNR: {win['SNR']:.4f} | Lag: {win['Lag']} bars | Motif winrate: {win['Motif_winrate']*100 if not np.isnan(win['Motif_winrate']) else 0:.1f}%\n\n## Recommended Production Parameters\nUse {win['Technique']} with current optimized settings for {win['Feature']} in production.")
+        # FIX 3: none_icir NaN guard and correct destroyed logic
+        none_icir_val = comp_df[comp_df['Technique']=='NONE']['ICIR'].iloc[0]
+        if pd.isna(none_icir_val):
+            destroyed = []
+        else:
+            destroyed = comp_df[comp_df['ICIR'].abs() < abs(none_icir_val)]['Technique'].unique().tolist()
+            destroyed = [t for t in destroyed if t != 'NONE']
+        f.write(f"{', '.join(destroyed) if destroyed else 'None'}\n\n### Causal Violations\nHP_Filter: DISQUALIFIED — non-causal by design. Even with rolling window, excluded from winner selection.\n\n## Winner (Causal Methods Only)\n**WINNER: {win['Technique']} on {win['Feature']}**\nICIR: {win['ICIR']:.4f} | SNR: {win['SNR']:.4f} | Lag: {win['Lag']} bars | Motif winrate: {win['Motif_winrate']*100 if (win['Motif_winrate'] is not None and not np.isnan(win['Motif_winrate'])) else 0:.1f}%\n\n## Recommended Production Parameters\nUse {win['Technique']} with current optimized settings for {win['Feature']} in production.")
 
     with open('regime_research/00_MASTER_REPORT.md', 'w') as f:
         f.write(f"# Regime Research — Master Report\nRun Time: {ts}\nPass: 3 (Final)\n\n## Executive Summary\nBest regime identified is **{top_r}**. Optimal smoothing is **{win['Technique']}**. Expected edge derived from high ICIR and causal signal preservation. Dead features like {', '.join([ft for ft, v in sig_qual[top_r].items() if v['strength']=='weak/dead'][:3])} should be dropped.\n\n## Key Findings\n- Best regime: {top_r} | Score: {r_scores[top_r]['Total Score']:.2f} | ICIR: {r_scores[top_r]['Signal Strength']:.4f} | Bars: {r_scores[top_r]['Bar Count']}\n- Best smoothing: {win['Technique']} | ICIR: {win['ICIR']:.4f} | SNR: {win['SNR']:.4f} | Lag: {win['Lag']}\n- Strongest feature: {win['Feature']} in {top_r} | ICIR: {win['ICIR']:.4f} | Direction: {sig_qual[top_r][win['Feature']]['Direction']}\n- Dead features (drop): {', '.join([ft for ft, v in sig_qual[top_r].items() if v['strength']=='weak/dead'])}\n- Regimes to avoid: {', '.join([r for r in r_scores if r != top_r])}\n- Pass 1 errors fixed: 7 bugs corrected across ICIR, SNR, EMD, HP Filter\n\n## Regime Research Summary\n")
@@ -279,11 +303,25 @@ if __name__ == "__main__":
         v_c = c_df[(c_df['Causal']==True)&(c_df['SNR'].notna())&(c_df['Motif_winrate'].notna())]
         c4 = v_c.loc[v_c['Score'].idxmax(), 'Technique'] != 'HP_Filter' if not v_c.empty else False
         e_rows = c_df[c_df['Technique'] == 'EMD_Reconstruct']; n_rows = c_df[c_df['Technique'] == 'NONE']
-        c5 = not (e_rows['IC_1bar'].values == n_rows['IC_1bar'].values).all() if len(e_rows)>0 else False
-        c6 = c_df['Technique'].nunique() >= 8; c7 = v_c.loc[v_c['Score'].idxmax(), 'Causal'] if not v_c.empty else False
+        # FIX 2: Strengthen c5 sanity check
+        c5 = (
+            len(e_rows) > 0 and
+            not e_rows['IC_1bar'].isna().all() and
+            not (e_rows['IC_1bar'].values == n_rows['IC_1bar'].values).all()
+        )
+        c6 = c_df['Technique'].nunique() >= 8; v_c_check = c_df[(c_df['Causal']==True)&(c_df['SNR'].notna())&(c_df['Motif_winrate'].notna())]
+        c7 = v_c_check.loc[v_c_check['Score'].idxmax(), 'Causal'] if not v_c_check.empty else False
         c8 = len(set(sig_q[r]['rsi']['ICIR'] for r in sig_q if 'rsi' in sig_q[r])) > 1
-        print(f"PASS 3 SANITY CHECKS: {sum([c1,c2,c3,c4,c5,c6,c7,c8])}/8 PASSED")
-        if all([c1,c2,c3,c4,c5,c6,c7,c8]): phase_4_documentation(all_st, sig_q, r_sc, c_df, top_r, opt_d)
+        # FIX 1 verification (c9)
+        window = 20
+        c9 = all(
+            r_sc[r]['Pattern Score'] != 0.5
+            for r in r_sc
+            if r_sc[r].get('Bar Count', 0) >= window * 3
+        )
+
+        print(f"PASS 4 SANITY CHECKS: {sum([c1,c2,c3,c4,c5,c6,c7,c8,c9])}/9 PASSED")
+        if all([c1,c2,c3,c4,c5,c6,c7,c8,c9]): phase_4_documentation(all_st, sig_q, r_sc, c_df, top_r, opt_d)
         else:
             if not c1: print("FAILED: ICIR Identical")
             if not c2: print("FAILED: SNR Inf")
@@ -293,3 +331,4 @@ if __name__ == "__main__":
             if not c6: print("FAILED: < 8 techniques")
             if not c7: print("FAILED: Winner not causal")
             if not c8: print("FAILED: ICIR no variation")
+            if not c9: print("FAILED: Pattern Score still hardcoded 0.5 — m_wr not used")

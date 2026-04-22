@@ -1,5 +1,5 @@
 # Smoothing Comparison Report
-Run Time: 2026-04-22 09:00:58
+Run Time: 2026-04-22 14:55:37
 Regime Analyzed: RANGING
 
 ## Full Comparison Matrix
@@ -39,12 +39,14 @@ Regime Analyzed: RANGING
 | rsi          | HP_Filter       | -0.0143688   | -0.0154099 | -0.238067 |   0.819534 |     3 |             0.4 | False    | 0.311831 |
 | rsi          | EMD_Reconstruct | -0.000298935 | -0.0137414 | -0.32667  | nan        |     1 |             0.4 | True     | 0.353168 |
 
+> **Note:** EMD_Reconstruct computed on first 3000 regime bars only due to O(n²) rolling window complexity. Results beyond this range are NaN and excluded from scoring.
+
 ## Analysis
 ### SNR vs Lag Tradeoff
 Techniques like EMA_20 and Gaussian_5 provide higher SNR but introduce significant lag, potentially delaying entry signals.
 
 ### Techniques That Destroyed Signal
-EMA_5, EMA_10, EMA_20, Kalman, Savitzky-Golay, Wavelet, Gaussian_2, Gaussian_5, HP_Filter, EMD_Reconstruct, NONE
+EMA_5, EMA_10, EMA_20, Kalman, Savitzky-Golay, Wavelet, Gaussian_2, Gaussian_5, HP_Filter, EMD_Reconstruct
 
 ### Causal Violations
 HP_Filter: DISQUALIFIED — non-causal by design. Even with rolling window, excluded from winner selection.

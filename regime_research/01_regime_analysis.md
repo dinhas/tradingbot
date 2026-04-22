@@ -1,5 +1,5 @@
 # Regime Analysis Report
-Run Time: 2026-04-22 09:00:58
+Run Time: 2026-04-22 14:55:37
 
 ## Methodology
 Classification via Hurst (300), ADX(14), ATR Ratio (14/100), BB Width Percentile (100).
@@ -59,9 +59,9 @@ Classification via Hurst (300), ADX(14), ATR Ratio (14/100), BB Width Percentile
 ## Regime Score Table
 | Regime | Signal Strength | Predictability | Data Volume | Pattern Score | Total Score |
 |---|---|---|---|---|---|
-| **RANGING** | 0.5449 | 0.0287 | 0.2371 | 0.5000 | **0.3476** |
-| TRENDING | 0.4378 | 0.0307 | 0.0602 | 0.5000 | 0.2698 |
-| BREAKOUT | 0.2455 | 0.0317 | 0.0878 | 0.5000 | 0.1987 |
+| **RANGING** | 0.5449 | 0.0287 | 0.2371 | 0.6000 | **0.3626** |
+| TRENDING | 0.4378 | 0.0307 | 0.0602 | 0.8000 | 0.3148 |
+| BREAKOUT | 0.2455 | 0.0317 | 0.0878 | 0.4000 | 0.1837 |
 
 ## Verdict
 **Best Regime: RANGING**
