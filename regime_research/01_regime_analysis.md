@@ -1,18 +1,24 @@
 # Regime Analysis Report
-Run Time: 2026-04-22 01:30:49
+Run Time: 2026-04-22 09:00:58
 
 ## Methodology
-Hurst Window=300, ADX, ATR Ratio, BB Width.
+Classification via Hurst (300), ADX(14), ATR Ratio (14/100), BB Width Percentile (100).
 
-## Distribution
+## Regime Distribution
 ![Regime Distribution](plots/regime_distribution.png)
 
-## Statistical Results
-| Regime | ADF p | ADF Stat? | LB p | Hurst | SampEn | PermEn | JB p |
-|---|---|---|---|---|---|---|---|
-| RANGING | 0.0849 | NO | 0.7918 | 0.4227 | 0.1180 | 0.9713 | 0.0000 |
-| TRENDING | 0.1396 | NO | 0.8728 | 0.5924 | 0.1128 | 0.9693 | 0.0000 |
-| BREAKOUT | 0.1398 | NO | 0.7736 | 0.4353 | 0.2882 | 0.9683 | 0.0000 |
+| Regime | Bar Count | % of Data |
+|---|---|---|
+| RANGING | 2371 | 23.71% |
+| TRENDING | 602 | 6.02% |
+| BREAKOUT | 878 | 8.78% |
+
+## Statistical Test Results
+| Regime | ADF p-val | ADF Stationary? | Ljung-Box p | Hurst Avg | Perm Entropy | JB p-val |
+|---|---|---|---|---|---|---|
+| RANGING | 0.0849 | NO | 0.7918 | 0.4227 | 0.9713 | 0.0000 |
+| TRENDING | 0.1396 | NO | 0.8728 | 0.5924 | 0.9693 | 0.0000 |
+| BREAKOUT | 0.1398 | NO | 0.7736 | 0.4353 | 0.9683 | 0.0000 |
 
 ### RANGING — Feature Rankings
 | Feature | IC 1-bar | IC 5-bar | ICIR | Direction | Strength |
@@ -49,3 +55,16 @@ Hurst Window=300, ADX, ATR Ratio, BB Width.
 | atr_norm | -0.0268 | -0.0565 | 0.0804 | neutral | weak/dead |
 | ema_diff | -0.0136 | 0.0217 | -0.0639 | neutral | weak/dead |
 | bollinger_pB | -0.0136 | 0.0217 | -0.0639 | neutral | weak/dead |
+
+## Regime Score Table
+| Regime | Signal Strength | Predictability | Data Volume | Pattern Score | Total Score |
+|---|---|---|---|---|---|
+| **RANGING** | 0.5449 | 0.0287 | 0.2371 | 0.5000 | **0.3476** |
+| TRENDING | 0.4378 | 0.0307 | 0.0602 | 0.5000 | 0.2698 |
+| BREAKOUT | 0.2455 | 0.0317 | 0.0878 | 0.5000 | 0.1987 |
+
+## Verdict
+**Best Regime: RANGING**
+Based on the highest total score combining signal strength and predictability.
+
+**Dead Features (top regime):** bb_width, volatility, atr_norm
