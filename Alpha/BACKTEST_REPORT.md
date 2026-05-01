@@ -1,44 +1,30 @@
-# Alpha Model: Training and Backtest Report
+# Alpha Model: Barrier Sensitivity Analysis and Backtest Report
 
-## 1. Training Report
-*   **Total Training Time:** 2 minutes 17 seconds (20 epochs)
-*   **Device:** CPU (optimized with 4 workers)
-*   **Training Loss performance:**
-    *   **Initial Epoch:** ~0.11
-    *   **Final Epoch (20):** Train Loss: 0.0632 | Val Loss: 0.0638
-*   **Convergence:** The model showed steady convergence over 20 epochs, though the loss plateaued around epoch 15.
+## 1. Parameter Comparison
+| Metric | Baseline (TP: 1.5, SL: 1.5) | Optimized (TP: 4.0, SL: 2.0) |
+| :--- | :--- | :--- |
+| **Profit Factor** | 0.9874 | 1.0342 |
+| **Total Return** | -5.39% | +13.87% |
+| **Sharpe Ratio** | -0.0821 | 0.6376 |
+| **Max Drawdown** | -40.73% | -24.35% |
+| **Win Rate** | 38.64% | 34.24% |
+| **Total Trades** | 885 | 812 |
+| **Avg Hold Time** | 174.7 min | 217.1 min |
 
-## 2. Market Regime Analysis
-*   **Regime used for training:** **RANGING**
-*   **Regime Definition:** ADX < 20 AND Hurst Exponent < 0.48.
-*   **Logic:** The Alpha model is specifically designed to extract edge from mean-reverting environments. Trending and Breakout periods are filtered out during training and backtesting.
+## 2. Training Analysis
+*   **Dataset Generation:** The 4.0/2.0 barrier configuration significantly reduced the training set size (7,173 -> 3,027) because fewer price movements reached the 4x ATR target within the 20-bar window in a RANGING regime.
+*   **Class Imbalance:**
+    *   Baseline: 100% Long Bias (Class 1)
+    *   Optimized: 100% Short Bias (Class -1)
+*   **Convergence:** Both models achieved near-zero loss, indicating they successfully "learned" to predict the majority class perfectly, rather than capturing subtle alpha signals.
 
-## 3. Backtest Metrics (OOS 2024)
-*   **Test Period:** 2023-12-31 to 2024-12-13
-*   **Confidence Threshold:** 0.50
-*   **Profit Factor:** 0.9874
-*   **Total Return:** -5.39%
-*   **Sharpe Ratio:** -0.0821
-*   **Max Drawdown:** -40.73%
-*   **Win Rate:** 38.64%
-*   **Total Trades:** 885
-*   **Avg Hold Time:** 174.7 minutes
-*   **Exit Summary:**
-    *   **Stop Loss (SL):** 517
-    *   **Take Profit (TP):** 232
-    *   **Signal Flip:** 134
+## 3. Deep Analysis: Why did the Optimized Model perform better?
+Despite the predictive collapse (Short Bias), the **Optimized (4.0/2.0)** model outperformed the baseline primarily due to the asymmetry of the barriers:
+1.  **Risk/Reward Ratio:** By setting TP to 2x the SL distance, even a low win rate (34%) generated a positive expected value.
+2.  **Regime Characteristics:** In the 2024 ranging markets, a persistent short-side drift (or specific asset behavior) allowed a "Always Short" strategy to be profitable when gated by the ADX/Hurst filters.
+3.  **Noise Tolerance:** Larger barriers are less susceptible to 5-minute market noise "whipsawing" the position before the logic can play out.
 
-## 4. Deep Analysis
-### Model Bias Observation
-Evaluation of the model on the test set revealed a significant **Long Bias** (100% Class 1 predictions). This is a common failure mode in LSTM training on noisy financial data where the model finds a local minimum by predicting the majority class or the mean direction of the training set.
-
-### Backtest Performance
-Despite the bias, the backtester executed 885 trades because the **RANGING** regime filter and the **0.50 threshold** were active. The poor profit factor (0.98) and high SL hit rate suggest that:
-1.  **Label Quality:** The Triple Barrier labels in ranging markets may be too tight, causing the model to hit SL before reaching the TP barrier.
-2.  **Feature Signal:** The 5 Kalman-smoothed features might be over-smoothed, losing the micro-patterns necessary for 5-minute prediction.
-3.  **Regime Stability:** Even within the RANGING regime, 2024 saw significant "false ranges" that eventually broke into trends, hitting the SL.
-
-## 5. Recommendations
-- **Increase Epochs:** The 20 epochs used might be insufficient for the LSTM to learn complex temporal dependencies.
-- **Rebalance Training Set:** Although undersampling was used, the model still collapsed to a single class. Advanced synthetic oversampling (SMOTE) or tighter label filtering might be required.
-- **Dynamic Thresholding:** Adjusting the 0.50 threshold per asset based on rolling performance.
+## 4. Recommendations for V4
+- **Synthetic Balancing:** Implement SMOTE or Class Weighting during training to force the model to learn both Buy and Sell signals.
+- **Dynamic Exit Logic:** Instead of fixed barriers, use the Kalman-smoothed ATR to adjust barriers per-bar as volatility evolves.
+- **Contrarian Labeling:** In RANGING regimes, explore labeling based on mean-reversion (e.g., selling at upper BB and buying at lower BB) to capture the oscillation edge.
