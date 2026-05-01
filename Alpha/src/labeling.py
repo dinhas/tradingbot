@@ -19,8 +19,8 @@ class Labeler:
         self.use_research_pipeline = use_research_pipeline
         if self.use_research_pipeline:
             # STEP 3: Research Parameters
-            self.tp_mult = 1.5
-            self.sl_mult = 1.5
+            self.tp_mult = 4.0
+            self.sl_mult = 2.0
             self.max_bars = 20
         else:
             self.tp_mult = tp_mult

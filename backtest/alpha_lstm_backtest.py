@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.data_loader import DataLoader as AlphaDataLoader
-from RiskLayer.src.feature_engine import FeatureEngine
+from Alpha.src.feature_engine import FeatureEngine
 from backtest.rl_backtest import BacktestMetrics, generate_all_charts, NumpyEncoder
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -59,7 +59,7 @@ class AlphaLSTMVectorizedBacktester:
         self.batch_size = batch_size
         
         self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
-        self.feature_engine = FeatureEngine()
+        self.feature_engine = FeatureEngine(use_research_pipeline=True)
         
     def _precompute_predictions(self):
         """Precomputes model predictions for all assets in batches."""
@@ -116,8 +116,10 @@ class AlphaLSTMVectorizedBacktester:
         close_prices = {asset: self.aligned_df[f"{asset}_close"].values for asset in self.assets}
         high_prices = {asset: self.aligned_df[f"{asset}_high"].values for asset in self.assets}
         low_prices = {asset: self.aligned_df[f"{asset}_low"].values for asset in self.assets}
-        atrs = {asset: self.aligned_df[f"{asset}_atr"].values for asset in self.assets}
+        atrs = {asset: self.aligned_df[f"{asset}_atr_kalman"].values for asset in self.assets}
         adxs = {asset: self.aligned_df[f"{asset}_adx"].values for asset in self.assets}
+        hursts = {asset: self.aligned_df[f"{asset}_hurst_300"].values for asset in self.assets}
+        regimes = {asset: self.aligned_df[f"{asset}_regime"].values for asset in self.assets}
         timestamps = self.normalized_df.index
         
         logger.info(f"Starting vectorized backtest execution (ADX Threshold: {self.adx_thresh})...")
@@ -128,9 +130,12 @@ class AlphaLSTMVectorizedBacktester:
             
             for asset in self.assets:
                 current_adx = adxs[asset][idx]
+                current_hurst = hursts[asset][idx]
+                current_regime = regimes[asset][idx]
                 
-                # ADX Filter: Only consider model decisions if ADX is above threshold
-                can_act = current_adx >= self.adx_thresh
+                # RANGING Regime Filter: Only consider model decisions if in RANGING regime
+                # RANGING is defined as ADX < 20 and Hurst < 0.48
+                can_act = current_regime == 'RANGING'
 
                 # Prediction logic
                 probs = all_probs[asset][idx]
@@ -255,7 +260,9 @@ def main():
     parser.add_argument("--data-dir", type=str, default="backtest/data")
     parser.add_argument("--output-dir", type=str, default="backtest/results")
     parser.add_argument("--steps", type=int, default=None)
-    parser.add_argument("--confidence-thresh", type=float, default=0.45)
+    parser.add_argument("--start-date", type=str, default=None)
+    parser.add_argument("--end-date", type=str, default=None)
+    parser.add_argument("--confidence-thresh", type=float, default=0.50)
     parser.add_argument("--initial-equity", type=float, default=10000.0)
     parser.add_argument("--pos-size", type=float, default=0.1, help="Position size as % of equity (0.1 = 10%)")
     parser.add_argument("--sl-mult", type=float, default=2.0)
@@ -269,13 +276,22 @@ def main():
     output_dir = PROJECT_ROOT / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use the RiskLayer FeatureEngine to ensure causal (no-lookahead) features
-    rk_engine = FeatureEngine()
+    # Use the Alpha FeatureEngine with Research Pipeline enabled
+    rk_engine = FeatureEngine(use_research_pipeline=True)
     loader = AlphaDataLoader(data_dir=str(data_dir))
     aligned_df, normalized_df = loader.get_features(engine=rk_engine)
 
+    if args.start_date:
+        start_ts = pd.to_datetime(args.start_date)
+        aligned_df = aligned_df[aligned_df.index >= start_ts]
+        normalized_df = normalized_df[normalized_df.index >= start_ts]
+    if args.end_date:
+        end_ts = pd.to_datetime(args.end_date)
+        aligned_df = aligned_df[aligned_df.index <= end_ts]
+        normalized_df = normalized_df[normalized_df.index <= end_ts]
+
     # Model parameters
-    input_dim = 11 # Aligned with V3 regime-aware features
+    input_dim = 5 # Aligned with V3 research (Kalman features)
     model = AlphaSLModel(input_dim=input_dim, lstm_units=64, dense_units=32, dropout=0.3)
     
     if not model_path.exists():
