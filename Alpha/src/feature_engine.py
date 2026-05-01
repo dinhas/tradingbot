@@ -7,84 +7,20 @@ from ta.volatility import AverageTrueRange, BollingerBands
 from numba import njit
 
 @njit
-def fast_hurst_rs(x):
-    """
-    Numba-optimized Rescaled Range (R/S) Hurst exponent calculation.
-    More robust than simple variogram and faster than nolds.
-    """
-    n = len(x)
-    if n < 20:
-        return 0.5
-
-    # Use log2 subdivisions to get different scales
-    # From 8 bars up to n/2 or n
-    max_pow = int(np.log2(n))
-    scales = []
-    rs_values = []
-
-    for p in range(3, max_pow):
-        k = 2**p
-        num_chunks = n // k
-        rs_vals = np.zeros(num_chunks)
-        for i in range(num_chunks):
-            chunk = x[i*k : (i+1)*k]
-            mean_centered = chunk - np.mean(chunk)
-            cum_sum = np.cumsum(mean_centered)
-            r = np.max(cum_sum) - np.min(cum_sum)
-            s = np.std(chunk)
-            if s > 1e-12:
-                rs_vals[i] = r / s
-            else:
-                rs_vals[i] = 0.0
-
-        valid_rs = rs_vals[rs_vals > 0]
-        if len(valid_rs) > 0:
-            scales.append(float(k))
-            rs_values.append(np.mean(valid_rs))
-
-    if len(scales) < 2:
-        return 0.5
-
-    log_scales = np.log(np.array(scales))
-    log_rs = np.log(np.array(rs_values))
-
-    # Linear regression
-    n_pts = len(log_scales)
-    mx = np.mean(log_scales)
-    my = np.mean(log_rs)
-    num = np.sum((log_scales - mx) * (log_rs - my))
-    den = np.sum((log_scales - mx)**2)
-
+def fast_hurst(x):
+    lags = np.arange(2, 20); tau = np.zeros(len(lags))
+    for i in range(len(lags)):
+        lag = lags[i]; diff = x[lag:] - x[:-lag]; tau[i] = np.std(diff)
+    log_lags, log_tau = np.log(lags.astype(np.float64)), np.log(tau)
+    n = len(lags); x_mean, y_mean = np.mean(log_lags), np.mean(log_tau)
+    num = np.sum((log_lags - x_mean) * (log_tau - y_mean)); den = np.sum((log_lags - x_mean)**2)
     return num / den if den != 0 else 0.5
 
 @njit
 def rolling_hurst_numba(values, window):
-    n = len(values)
-    res = np.full(n, np.nan)
-    # To speed up even more, we can step if needed, but for 2.5M candles
-    # and 300 window, Numba should handle it if it's fast enough.
-    for i in range(window, n):
-        res[i] = fast_hurst_rs(values[i-window:i])
+    n = len(values); res = np.full(n, np.nan)
+    for i in range(window, n): res[i] = fast_hurst(values[i-window:i])
     return res
-
-@njit
-def fast_kalman_filter(data, Q, R):
-    n = len(data)
-    filtered = np.zeros(n, dtype=np.float32)
-    if n == 0: return filtered
-
-    x = data[0]
-    p = 1.0
-    for i in range(n):
-        # Prediction
-        p = p + Q
-        # Update
-        k = p / (p + R)
-        if not np.isnan(data[i]):
-            x = x + k * (data[i] - x)
-        p = (1 - k) * p
-        filtered[i] = x
-    return filtered
 
 class FeatureEngine:
     def __init__(self, use_research_pipeline: bool = False):
@@ -95,12 +31,21 @@ class FeatureEngine:
         self.best_process_noise = 0.01
 
     def kalman_smooth(self, series, process_noise=0.01):
-        vals = series.ffill().bfill().fillna(0).values.astype(np.float64)
+        from pykalman import KalmanFilter
+        vals = series.ffill().fillna(0).values
         if len(vals) == 0:
             return pd.Series(dtype=np.float32)
-        # Use Numba optimized Kalman
-        smoothed = fast_kalman_filter(vals, Q=process_noise, R=1.0)
-        return pd.Series(smoothed, index=series.index).astype(np.float32)
+
+        kf = KalmanFilter(
+            transition_matrices=[1],
+            observation_matrices=[1],
+            initial_state_mean=vals[0],
+            initial_state_covariance=1,
+            observation_covariance=1,
+            transition_covariance=process_noise
+        )
+        state_means, _ = kf.filter(vals)
+        return pd.Series(state_means.flatten(), index=series.index).astype(np.float32)
 
     def _fracdiff(self, series, d=0.4, window=100):
         weights = [1.0]
@@ -132,6 +77,9 @@ class FeatureEngine:
         logger = logging.getLogger(__name__)
         aligned_df = self._align_data(data_dict)
         
+        # Don't convert everything to float32 yet if we have strings (like regime)
+        # aligned_df = aligned_df.astype(np.float32)
+
         all_new_cols = {}
         for asset in self.assets:
             logger.info(f"Calculating features for {asset}...")
@@ -200,12 +148,10 @@ class FeatureEngine:
             adx_14 = ADXIndicator(raw_high, raw_low, raw_close, window=14).adx()
 
             logger.info(f"Calculating Hurst(300) for {asset}...")
-            # Use returns for Hurst to match RANGING regime characteristics
-            raw_ret = raw_close.pct_change().fillna(0)
-            hurst_300_ret = self._calculate_hurst(raw_ret, window=300)
-            new_cols[f"{asset}_hurst_300"] = hurst_300_ret.astype(np.float32)
+            hurst_300 = self._calculate_hurst(raw_close, window=300)
+            new_cols[f"{asset}_hurst_300"] = hurst_300.astype(np.float32)
 
-            regime = np.where((adx_14 < 20) & (hurst_300_ret < 0.48), 'RANGING', 'OTHER')
+            regime = np.where((adx_14 < 20) & (hurst_300 < 0.48), 'RANGING', 'OTHER')
             new_cols[f"{asset}_regime"] = pd.Series(regime, index=df.index)
 
             logger.info(f"Tuning Kalman Filter for {asset} ATR...")
