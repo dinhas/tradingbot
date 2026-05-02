@@ -133,9 +133,10 @@ class AlphaLSTMVectorizedBacktester:
                 current_hurst = hursts[asset][idx]
                 current_regime = regimes[asset][idx]
                 
-                # RANGING Regime Filter: Only consider model decisions if in RANGING regime
+                # Regime Filter: Only consider model decisions if in RANGING or TRENDING regime
                 # RANGING is defined as ADX < 20 and Hurst < 0.48
-                can_act = current_regime == 'RANGING'
+                # TRENDING is defined as ADX > 25 and ATR_norm < ATR_q75
+                can_act = current_regime in ['RANGING', 'TRENDING']
 
                 # Prediction logic
                 probs = all_probs[asset][idx]

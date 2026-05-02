@@ -28,7 +28,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
 LEARNING_RATE = 1e-3
 DROPOUT = 0.3
-EPOCHS = 20 # Reduced for demonstration, can be increased if needed
+EPOCHS = 5 # Further reduced for speed on large dataset
 
 class AlphaSequenceDataset(Dataset):
     def __init__(self, sequences: np.ndarray, labels: np.ndarray):

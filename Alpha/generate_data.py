@@ -49,7 +49,7 @@ def get_stable_regime_mask(regime_series, min_duration=20):
             streak = 1
         if streak >= min_duration:
             confirmed_regime = current_regime
-        if confirmed_regime == 'RANGING':
+        if confirmed_regime in ['RANGING', 'TRENDING']:
             mask.iloc[i] = True
     return mask
 

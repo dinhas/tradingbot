@@ -205,7 +205,15 @@ class FeatureEngine:
             hurst_300_ret = self._calculate_hurst(raw_ret, window=300)
             new_cols[f"{asset}_hurst_300"] = hurst_300_ret.astype(np.float32)
 
-            regime = np.where((adx_14 < 20) & (hurst_300_ret < 0.48), 'RANGING', 'OTHER')
+            atr_norm = atr_raw / (raw_close + 1e-8)
+            atr_q75 = atr_norm.rolling(500).quantile(0.75).fillna(0)
+
+            # Regime identification from denoising research
+            is_ranging = (adx_14 < 20) & (hurst_300_ret < 0.48)
+            is_trending = (adx_14 > 25) & (atr_norm < atr_q75)
+
+            regime = np.where(is_ranging, 'RANGING',
+                             np.where(is_trending, 'TRENDING', 'OTHER'))
             new_cols[f"{asset}_regime"] = pd.Series(regime, index=df.index)
 
             logger.info(f"Tuning Kalman Filter for {asset} ATR...")
