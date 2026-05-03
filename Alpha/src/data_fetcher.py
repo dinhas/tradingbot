@@ -18,8 +18,8 @@ load_dotenv()
 # --- Configuration ---
 CT_APP_ID = "17481_ejoPRnjMkFdEkcZTHbjYt5n98n6wRE2wESCkSSHbLIvdWzRkRp"
 CT_APP_SECRET = "AaIrnTNyz47CC9t5nsCXU67sCXtKOm7samSkpNFIvqKOaz1vJ1"
-CT_ACCOUNT_ID = 45559627
-CT_ACCESS_TOKEN = "nHEnxubVAIjSkisNbbPAd4gWCVrX0hG8aKbteZrX4GY"
+CT_ACCOUNT_ID = 46341684
+CT_ACCESS_TOKEN = "3BU4QPtH9lE2T3cdBP2az9xTIJYmHU-uPQEjLqp2wus"
 CT_HOST_TYPE = "demo"
 
 # Custom Asset Universe
@@ -44,7 +44,7 @@ TIMEFRAME_MAP = {
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DataFetcher:
-    def __init__(self, timeframe='5m', start_date='2016-01-01', end_date='2024-12-31'):
+    def __init__(self, timeframe='30m', start_date='2016-01-01', end_date='2025-12-31'):
         host = EndPoints.PROTOBUF_LIVE_HOST if CT_HOST_TYPE.lower() == "live" else EndPoints.PROTOBUF_DEMO_HOST
         self.client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
         self.request_delay = 1.0  # Increased delay to avoid rate limits
@@ -140,21 +140,31 @@ class DataFetcher:
     def fetch_asset_history(self, asset_name, symbol_id):
         logging.info(f"📥 Starting fetch for {asset_name} (ID: {symbol_id}) at {self.timeframe_str}")
         
-        current_start = self.start_date
+        # Define chunk sizes based on timeframe to avoid silent truncation (cTrader limits)
+        CHUNK_LIMITS = {
+            '1m': timedelta(days=14),
+            '5m': timedelta(days=30),
+            '30m': timedelta(days=60),
+            '1h': timedelta(days=90),
+            '4h': timedelta(days=300),
+            '1d': timedelta(days=1000)
+        }
+        chunk_delta = CHUNK_LIMITS.get(self.timeframe_str, timedelta(days=30))
+
+        current_end = self.end_date
         all_bars = []
         
-        while current_start < self.end_date:
-            # Request 90 days at a time (approx 3 months)
-            chunk_end = current_start + timedelta(days=90)
-            if chunk_end > self.end_date:
-                chunk_end = self.end_date
+        while current_end > self.start_date:
+            current_start = current_end - chunk_delta
+            if current_start < self.start_date:
+                current_start = self.start_date
             
             req = ProtoOAGetTrendbarsReq()
             req.ctidTraderAccountId = CT_ACCOUNT_ID
             req.symbolId = int(symbol_id)
             req.period = self.timeframe
             req.fromTimestamp = int(current_start.timestamp() * 1000)
-            req.toTimestamp = int(chunk_end.timestamp() * 1000)
+            req.toTimestamp = int(current_end.timestamp() * 1000)
             
             # Retry loop for the current chunk
             max_retries = 5
@@ -163,9 +173,9 @@ class DataFetcher:
 
             while retry_count < max_retries:
                 try:
-                    # Rate limit delay
+                    # Rate limit delay (5 req/sec limit)
                     d = defer.Deferred()
-                    reactor.callLater(self.request_delay, d.callback, None)
+                    reactor.callLater(0.2, d.callback, None)
                     yield d
                     
                     res_msg = yield self.send_proto_request(req)
@@ -206,7 +216,7 @@ class DataFetcher:
                     df_chunk.set_index('timestamp', inplace=True)
                     
                     all_bars.append(df_chunk)
-                    logging.info(f"   {asset_name}: Fetched {len(df_chunk)} bars. Next: {chunk_end}")
+                    logging.info(f"   {asset_name}: Fetched {len(df_chunk)} bars. Range: {current_start} to {current_end}")
                     
                     chunk_success = True
                     break # Success, exit retry loop
@@ -226,9 +236,8 @@ class DataFetcher:
             if not chunk_success:
                 logging.error(f"❌ Failed to fetch chunk starting {current_start} for {asset_name} after {max_retries} attempts. Skipping to next chunk.")
             
-            # Move to next chunk regardless of success/failure to avoid infinite loop, 
-            # but only after retries are exhausted or success achieved.
-            current_start = chunk_end
+            # Move to next chunk (walking backward)
+            current_end = current_start
         
         if all_bars:
             full_df = pd.concat(all_bars)
@@ -244,9 +253,9 @@ class DataFetcher:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="cTrader Data Fetcher")
-    parser.add_argument("--timeframe", type=str, default="5m", choices=["1m", "5m", "30m", "1h", "4h", "1d"], help="Timeframe to fetch (1m, 5m, 30m, 1h, 4h, 1d)")
+    parser.add_argument("--timeframe", type=str, default="30m", choices=["1m", "5m", "30m", "1h", "4h", "1d"], help="Timeframe to fetch (1m, 5m, 30m, 1h, 4h, 1d)")
     parser.add_argument("--start", type=str, default="2016-01-01", help="Start date (YYYY-MM-DD)")
-    parser.add_argument("--end", type=str, default="2024-12-31", help="End date (YYYY-MM-DD)")
+    parser.add_argument("--end", type=str, default="2025-12-31", help="End date (YYYY-MM-DD)")
     
     args = parser.parse_args()
     

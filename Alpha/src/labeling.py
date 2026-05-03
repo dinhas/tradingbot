@@ -4,16 +4,15 @@ from ta.trend import EMAIndicator, ADXIndicator
 from shared_constants import DEFAULT_SPREADS
 
 class Labeler:
-    def __init__(self, tp_mult: float = 1.0, sl_mult: float = 0.5, ema_window: int = 100, max_bars: int = 6, adx_threshold: float = 25.0):
+    def __init__(self, tp_mult: float = 2.0, sl_mult: float = 1.0, ema_window: int = 100, max_bars: int = 7, adx_threshold: float = 25.0):
         """
-        Trend-Following Triple Barrier Labeler.
-        Optimized for V3 Regime-Aware Denoising.
+        Modified Triple Barrier Labeler for 30M data.
         Args:
-            tp_mult: Take Profit multiplier for 5M ATR (Optimized: 1.0).
-            sl_mult: Stop Loss multiplier for 5M ATR (Optimized: 0.5).
-            ema_window: Window for the 1H Trend EMA (e.g., 100).
-            max_bars: Vertical barrier (30m on 5M). Optimized: 6.
-            adx_threshold: Minimum trend strength. Optimized: 25.0.
+            tp_mult: Take Profit multiplier for ATR (User: 2.0).
+            sl_mult: Stop Loss multiplier for ATR (User: 1.0).
+            ema_window: Window for the HTF Trend EMA.
+            max_bars: Vertical barrier (User: 7 candles).
+            adx_threshold: Minimum trend strength.
         """
         self.tp_mult = tp_mult
         self.sl_mult = sl_mult
@@ -46,27 +45,21 @@ class Labeler:
 
     def label_data(self, df: pd.DataFrame, asset: str) -> pd.DataFrame:
         """
-        Labels data using Triple Barrier Method filtered by 1H Trend and a Vertical Barrier.
+        Labels data using Triple Barrier Method without regime or trend filters.
+        Checks both Buy and Sell opportunities for each candle.
         """
         close_col = f"{asset}_close"
         high_col = f"{asset}_high"
         low_col = f"{asset}_low"
         atr_col = f"{asset}_atr"
-        adx_col = f"{asset}_adx"
 
-        if close_col not in df.columns or atr_col not in df.columns or adx_col not in df.columns:
+        if close_col not in df.columns or atr_col not in df.columns:
             raise ValueError(f"Required columns missing for {asset}")
-        
-        # 1. Calculate the 1H Trend for all timestamps
-        trend_1h = self._get_1h_trend(df, asset)
-        
-        # 2. Use pre-calculated ADX
-        adx_series = df[adx_col].fillna(0)
         
         prices_close = df[close_col].values
         prices_high = df[high_col].values
         prices_low = df[low_col].values
-        atrs_5m = df[atr_col].values
+        atrs = df[atr_col].values
         timestamps = df.index
         
         labels = []
@@ -76,59 +69,54 @@ class Labeler:
         
         n = len(df)
         for i in range(n - 1):
-            current_trend = trend_1h.iloc[i]
-            current_adx = adx_series.iloc[i]
             mid_price = prices_close[i]
-            atr = atrs_5m[i]
+            atr = atrs[i]
             
-            if np.isnan(atr) or atr == 0 or np.isnan(current_trend):
+            if np.isnan(atr) or atr == 0:
                 continue
                 
-            # ADX Filter: Only train on candles that pass the ADX threshold
-            if current_adx < self.adx_threshold:
-                continue
-
-            # Define barriers based on 5M ATR
             tp_dist = self.tp_mult * atr
             sl_dist = self.sl_mult * atr
             
-            direction = 0 # Default: No barrier hit or Neutral (Vertical Barrier / Timeout)
+            direction = 0
             
-            # --- SPREAD-AWARE TRIPLE BARRIER LOGIC ---
-            if current_trend == 1: # Bullish Trend -> ONLY Look for BUYS
-                # Buy at Ask, Exit at Bid
-                entry_ask = mid_price + (spread / 2.0)
-                tp_barrier = entry_ask + tp_dist
-                sl_barrier = entry_ask - sl_dist
+            # --- Buy Barrier setup ---
+            entry_ask = mid_price + (spread / 2.0)
+            buy_tp = entry_ask + tp_dist
+            buy_sl = entry_ask - sl_dist
+
+            # --- Sell Barrier setup ---
+            entry_bid = mid_price - (spread / 2.0)
+            sell_tp = entry_bid - tp_dist
+            sell_sl = entry_bid + sl_dist
+
+            buy_active = True
+            sell_active = True
+
+            for j in range(i + 1, min(i + 1 + self.max_bars, n)):
+                b_high = prices_high[j] - (spread / 2.0)
+                b_low = prices_low[j] - (spread / 2.0)
+                a_high = prices_high[j] + (spread / 2.0)
+                a_low = prices_low[j] + (spread / 2.0)
+
+                # Evaluate Buy side
+                if buy_active:
+                    if b_low <= buy_sl:
+                        buy_active = False # SL hit
+                    elif b_high >= buy_tp:
+                        direction = 1
+                        break # Success
+
+                # Evaluate Sell side
+                if sell_active:
+                    if a_high >= sell_sl:
+                        sell_active = False # SL hit
+                    elif a_low <= sell_tp:
+                        direction = -1
+                        break # Success
                 
-                # Look forward until a barrier is hit or max_bars reached
-                for j in range(i + 1, min(i + 1 + self.max_bars, n)):
-                    bid_high = prices_high[j] - (spread / 2.0)
-                    bid_low = prices_low[j] - (spread / 2.0)
-                    
-                    if bid_high >= tp_barrier:
-                        direction = 1 # TP Hit (at Bid price)
-                        break
-                    if bid_low <= sl_barrier:
-                        direction = 0 # SL Hit (at Bid price)
-                        break
-                        
-            elif current_trend == -1: # Bearish Trend -> ONLY Look for SELLS
-                # Sell at Bid, Exit at Ask
-                entry_bid = mid_price - (spread / 2.0)
-                tp_barrier = entry_bid - tp_dist
-                sl_barrier = entry_bid + sl_dist
-                
-                for j in range(i + 1, min(i + 1 + self.max_bars, n)):
-                    ask_low = prices_low[j] + (spread / 2.0)
-                    ask_high = prices_high[j] + (spread / 2.0)
-                    
-                    if ask_low <= tp_barrier:
-                        direction = -1 # TP Hit (at Ask price)
-                        break
-                    if ask_high >= sl_barrier:
-                        direction = 0 # SL Hit (at Ask price)
-                        break
+                if not buy_active and not sell_active:
+                    break
             
             labels.append({'direction': direction})
             indices.append(timestamps[i])

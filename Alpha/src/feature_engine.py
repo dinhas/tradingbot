@@ -139,18 +139,14 @@ class FeatureEngine:
         new_cols[f"{asset}_volatility"] = close.pct_change().rolling(20).std()
         new_cols[f"{asset}_atr_norm"] = AverageTrueRange(high, low, close, window=14).average_true_range() / (close + 1e-8)
 
-        # 5. Regime Features (Sophisticated Classification)
+        # 5. Regime Features (Disabled as per user request: all data treated as tradeable)
         atr_indicator = AverageTrueRange(raw_high, raw_low, raw_close, window=14)
         atr = atr_indicator.average_true_range().fillna(0)
         adx = ADXIndicator(raw_high, raw_low, raw_close, window=14).adx().fillna(0)
 
-        atr_norm_raw = atr / (raw_close + 1e-8)
-        atr_q75 = atr_norm_raw.rolling(500).quantile(0.75)
-
-        # Trending = High ADX + Moderate Vol
-        is_trending = (adx > 25) & (atr_norm_raw < atr_q75)
-        new_cols[f"{asset}_regime"] = is_trending.astype(np.float32) # Trending (1) vs Other (0)
-        new_cols[f"{asset}_is_tradeable"] = is_trending.astype(np.float32)
+        # Treat all data as tradeable and in a single "regime"
+        new_cols[f"{asset}_regime"] = np.ones_like(raw_close, dtype=np.float32)
+        new_cols[f"{asset}_is_tradeable"] = np.ones_like(raw_close, dtype=np.float32)
 
         # 6. Backward Compatibility for Backtester (Not in model features)
         new_cols[f"{asset}_atr"] = atr

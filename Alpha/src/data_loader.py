@@ -22,6 +22,7 @@ class DataLoader:
         data_dict = {}
         for asset in self.assets:
             candidate_paths = [
+                self.data_dir / f"{asset}_30m.parquet",
                 self.data_dir / f"{asset}_5m_backtest.parquet",
                 self.data_dir / f"{asset}_5m.parquet",
                 self.data_dir / f"{asset}_5m_2025.parquet",
