@@ -1,34 +1,37 @@
-# Alpha Model Training and Backtest Results (30M Data)
+# Alpha Model Training and Backtest Results (30M Data - Hard Targets)
 
 ## Training Summary
-- **Data Period**: 2022-04-11 to 2025-12-31 (approx. 45,000 bars per asset)
+- **Data Period**: 2022-04-11 to 2025-12-31 (approx. 100,000 bars per asset)
 - **Timeframe**: 30M
 - **Assets**: EURUSD, GBPUSD, XAUUSD, USDCHF, USDJPY
 - **Labeling Method**: Triple Barrier Method
-  - **Take Profit**: 2.0x ATR
-  - **Stop Loss**: 1.0x ATR
-  - **Time Barrier**: 7 candles
+  - **Take Profit**: 4.0x ATR
+  - **Stop Loss**: 2.0x ATR
+  - **Time Barrier**: 24 candles
   - **Filters**: None (No ADX or HTF Trend filters used)
 - **Target Distribution**:
-  - Buy (+1): 34,515 (16.1%)
-  - Sell (-1): 35,318 (16.5%)
-  - Neutral (0): 144,582 (67.4%)
-- **Training Epochs**: 16 (Early stopping triggered)
-- **Best Validation Loss**: 0.6238
+  - Buy (+1): 18,600 (3.73%)
+  - Sell (-1): 18,600 (3.73%)
+  - Neutral (0): 462,555 (92.54%)
+- **Training Epochs**: 11 (Early stopping triggered)
+- **Best Validation Loss**: ~0.7153
 
 ## Backtest Summary
 - **Backtester**: Ultra-Fast Vectorized Alpha LSTM Backtester
 - **Initial Equity**: $10,000.00
-- **Final Equity**: $667,356.50
-- **Total Return**: 6,573.57%
-- **Sharpe Ratio**: 6.11
-- **Profit Factor**: 1.108
-- **Win Rate**: 45.60%
-- **Max Drawdown**: -41.47%
-- **Total Trades**: 3,219
-- **Avg Hold Time**: 168.04 minutes (approx. 5.6 bars)
+- **Final Equity**: $10,194.51
+- **Total Return**: 1.95%
+- **Sharpe Ratio**: 0.20
+- **Profit Factor**: 1.003
+- **Win Rate**: 37.13%
+- **Max Drawdown**: -5.31%
+- **Total Trades**: 117,957
+- **Avg Hold Time**: 188.64 minutes (approx. 6.3 bars)
+- **Confidence Threshold**: 0.30
+- **Position Size**: 0.1% per trade
 
 ## Key Findings
-- Removing regime filters and using a purely technical approach on 30M data with the specified TBM parameters yielded a highly aggressive and profitable model in this backtest.
-- The 1.0x SL and 2.0x TP configuration provides a positive expectancy, which the LSTM model was able to exploit effectively across the tested assets.
-- The Sharper Ratio of 6.11 indicates high risk-adjusted performance, though the Max Drawdown of 41% suggests significant volatility in equity growth.
+- Increasing targets to 2.0x SL and 4.0x TP significantly reduced the hit rate of the directional barriers, as evidenced by the 92.5% neutral class distribution.
+- The model requires a much lower confidence threshold (0.30) to generate trade volume compared to the previous 1x/2x configuration.
+- While the profit factor remains near breakeven (1.003), the strategy shows resilience with a low max drawdown (5.31%) when using conservative position sizing (0.1%).
+- The high trade volume (117k trades) suggests that the model is capturing many small edges that aggregate into a positive return, despite the low win rate inherent in a 2:1 Reward-to-Risk setup with hard barriers.
