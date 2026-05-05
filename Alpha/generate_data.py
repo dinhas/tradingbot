@@ -41,10 +41,16 @@ def _build_sequences_for_asset(features: np.ndarray, labels: np.ndarray, seq_len
     return np.asarray(X_seq, dtype=np.float32), np.asarray(y_seq, dtype=np.float32)
 
 
-def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LENGTH, limit=None):
+def generate_dataset(data_dir, output_dir, tp_mult=None, sl_mult=None, max_bars=None, smoke_test=False, seq_len=SEQUENCE_LENGTH, limit=None):
     logger.info(f"Generating session-only dataset from {data_dir}...")
     loader = MyDataLoader(data_dir=data_dir)
-    labeler = Labeler()
+
+    labeler_kwargs = {}
+    if tp_mult is not None: labeler_kwargs['tp_mult'] = tp_mult
+    if sl_mult is not None: labeler_kwargs['sl_mult'] = sl_mult
+    if max_bars is not None: labeler_kwargs['max_bars'] = max_bars
+
+    labeler = Labeler(**labeler_kwargs)
     engine = FeatureEngine()
 
     aligned_df, normalized_df = loader.get_features()
@@ -108,6 +114,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", type=str, default="data")
     parser.add_argument("--output-dir", type=str, default="Alpha/data/training_set")
+    parser.add_argument("--tp-mult", type=float, default=None)
+    parser.add_argument("--sl-mult", type=float, default=None)
+    parser.add_argument("--max-bars", type=int, default=None)
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--seq-len", type=int, default=SEQUENCE_LENGTH)
@@ -117,7 +126,16 @@ def main():
     data_dir = os.path.abspath(os.path.join(base_dir, args.data_dir))
     dataset_dir = os.path.abspath(os.path.join(base_dir, args.output_dir))
 
-    generate_dataset(data_dir, dataset_dir, smoke_test=args.smoke_test, seq_len=args.seq_len, limit=args.limit)
+    generate_dataset(
+        data_dir,
+        dataset_dir,
+        tp_mult=args.tp_mult,
+        sl_mult=args.sl_mult,
+        max_bars=args.max_bars,
+        smoke_test=args.smoke_test,
+        seq_len=args.seq_len,
+        limit=args.limit
+    )
 
 
 if __name__ == "__main__":
