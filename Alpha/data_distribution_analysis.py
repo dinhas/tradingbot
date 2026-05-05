@@ -2,10 +2,11 @@ import numpy as np
 import os
 from collections import Counter
 
-def analyze_distribution():
+def analyze_distribution(labels_path=None):
     # Define paths
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    labels_path = os.path.join(base_dir, "data", "training_set", "labels.npz")
+    if labels_path is None:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        labels_path = os.path.join(base_dir, "data", "training_set", "labels.npz")
     
     if not os.path.exists(labels_path):
         print(f"Error: Labels file not found at {labels_path}")
@@ -51,4 +52,8 @@ def analyze_distribution():
     print("-" * 50)
 
 if __name__ == "__main__":
-    analyze_distribution()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--labels-path", type=str, default=None)
+    args = parser.parse_args()
+    analyze_distribution(args.labels_path)
