@@ -72,8 +72,32 @@ def train_model(sequences_path, labels_path, model_save_path):
 
     # Time-series-aware split.
     split = int(0.90 * total_samples)
-    X_train, X_val = sequences[:split], sequences[split:]
-    y_train, y_val = directions[:split], directions[split:]
+    X_train_raw, X_val = sequences[:split], sequences[split:]
+    y_train_raw, y_val = directions[:split], directions[split:]
+
+    # --- Majority Class Undersampling (Neutral Class) ---
+    buy_idx = np.where(y_train_raw == 1.0)[0]
+    sell_idx = np.where(y_train_raw == -1.0)[0]
+    neutral_idx = np.where(y_train_raw == 0.0)[0]
+
+    num_signals = len(buy_idx) + len(sell_idx)
+    # Target approximately 45% signals and 55% neutrals for a balanced but realistic view
+    max_neutral = int(num_signals * 0.55 / 0.45)
+
+    if len(neutral_idx) > max_neutral:
+        logger.info(f"Undersampling Neutral class from {len(neutral_idx)} to {max_neutral} (Signals: {num_signals})")
+        # Fix seed for reproducibility in sampling
+        np.random.seed(42)
+        sampled_neutral_idx = np.random.choice(neutral_idx, size=max_neutral, replace=False)
+        keep_idx = np.concatenate([buy_idx, sell_idx, sampled_neutral_idx])
+        np.random.shuffle(keep_idx)
+
+        X_train = X_train_raw[keep_idx]
+        y_train = y_train_raw[keep_idx]
+    else:
+        X_train, y_train = X_train_raw, y_train_raw
+
+    logger.info(f"Final training set size: {len(X_train)} (Signals: {num_signals}, Neutrals: {len(y_train)-num_signals})")
 
     train_dataset = AlphaSequenceDataset(X_train, y_train)
     val_dataset = AlphaSequenceDataset(X_val, y_val)
