@@ -255,7 +255,7 @@ def main():
     parser.add_argument("--data-dir", type=str, default="data")
     parser.add_argument("--output-dir", type=str, default="backtest/results")
     parser.add_argument("--steps", type=int, default=None)
-    parser.add_argument("--confidence-thresh", type=float, default=0.45)
+    parser.add_argument("--confidence-thresh", type=float, default=0.35)
     parser.add_argument("--initial-equity", type=float, default=10000.0)
     parser.add_argument("--pos-size", type=float, default=0.1, help="Position size as % of equity (0.1 = 10%)")
     parser.add_argument("--sl-mult", type=float, default=1.0)
