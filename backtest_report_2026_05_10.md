@@ -2,37 +2,37 @@
 **Period:** 2026-01-01 to 2026-05-01
 **Timeframe:** 30M
 **Strategy:** 2.0x TP / 1.0x ATR SL
-**Model:** Newly trained on 2022-2025 data (cTrader 30M)
+**Model:** Trained on 2022-2025 data with **Dynamic Regime Feature**
 **Report Date:** 2026-05-10
 
 ## Performance Summary
 | Metric | Value |
 |--------|-------|
-| **Total Return** | +164.67% |
-| **Profit Factor** | 1.0302 |
-| **Win Rate** | 35.73% |
-| **Sharpe Ratio** | 0.954 (Adjusted) |
-| **Max Drawdown** | -56.27% |
-| **Total Trades** | 3554 |
-| **Avg Hold Time** | 234.96 min |
+| **Total Return** | -62.86% |
+| **Profit Factor** | 0.9417 |
+| **Win Rate** | 32.86% |
+| **Sharpe Ratio** | -1.8170 |
+| **Max Drawdown** | -71.81% |
+| **Total Trades** | 3381 |
+| **Avg Hold Time** | 245.01 min |
 
 ## Asset Breakdown
 | Asset | Trades | Win Rate | Profit Factor | Total PnL |
 |-------|--------|----------|---------------|-----------|
-| **XAUUSD** | 693 | 36.80% | 1.0523 | +15149.57 |
-| **USDJPY** | 687 | 36.68% | 1.1005 | +6268.28 |
-| **USDCHF** | 723 | 35.41% | 0.9901 | -719.81 |
-| **EURUSD** | 704 | 35.23% | 0.9779 | -1313.28 |
-| **GBPUSD** | 747 | 34.67% | 0.9644 | -2583.59 |
+| **USDJPY** | 669 | 33.48% | 1.0184 | +227.24 |
+| **USDCHF** | 682 | 33.72% | 0.9973 | -35.02 |
+| **EURUSD** | 641 | 32.45% | 0.9412 | -605.44 |
+| **GBPUSD** | 707 | 31.54% | 0.8700 | -1737.38 |
+| **XAUUSD** | 682 | 33.14% | 0.9301 | -4162.74 |
 
 ## Observations
-- The model was trained on the newly downloaded 30M dataset with 2x TP and 1x ATR SL.
-- **XAUUSD** and **USDJPY** were profitable assets during this period.
-- The overall return is significantly positive (+164.67%), although drawdown remains high at -56.27%.
-- High trade frequency (approx. 30.6 trades per day across all assets) indicates a very active strategy.
-- Profit factor of 1.03 is thin, suggesting that while the strategy is profitable, it is sensitive to execution costs and market conditions.
+- The model was retrained incorporating a dynamic regime feature (Trending, Ranging, Breakout, Neutral).
+- Performance during the 2026 test period was negative overall (-62.86% return).
+- **USDJPY** was the only asset that remained marginally profitable.
+- The high trade frequency and drawdown suggest that the model with the current regime logic and TP/SL settings is over-trading or struggling to adapt to the 2026 market regime.
+- Profit factor below 1.0 indicates the strategy currently loses more than it earns on a gross basis during this period.
 
 ## Artifacts
 - **Model:** `Alpha/models/alpha_model.pth`
-- **Charts:** `backtest/results/comprehensive_analysis_stageAlphaLSTM_Vectorized_20260510_013321.png`
-- **Full Metrics:** `backtest/results/metrics_alpha_lstm_vectorized_20260510_013321.json`
+- **Charts:** `backtest/results/comprehensive_analysis_stageAlphaLSTM_Vectorized_20260510_021101.png`
+- **Full Metrics:** `backtest/results/metrics_alpha_lstm_vectorized_20260510_021101.json`
