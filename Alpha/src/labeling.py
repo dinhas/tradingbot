@@ -4,7 +4,7 @@ from ta.trend import EMAIndicator, ADXIndicator
 from shared_constants import DEFAULT_SPREADS
 
 class Labeler:
-    def __init__(self, tp_mult: float = 2.0, sl_mult: float = 1.0, ema_window: int = 100, max_bars: int = 7, adx_threshold: float = 25.0):
+    def __init__(self, tp_mult: float = 2.0, sl_mult: float = 1.0, ema_window: int = 100, max_bars: int = 24, adx_threshold: float = 25.0):
         """
         Modified Triple Barrier Labeler for 30M data.
         Args:
