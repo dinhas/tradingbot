@@ -1,40 +1,30 @@
-# Alpha LSTM Backtest Report - Comparison
-**Period:** 2026-01-01 to 2026-05-01
-**Timeframe:** 30M
+# Alpha Model Timeframe Comparison Report
+**Test Period:** 2026-01-01 to 2026-05-01
 **Strategy:** 2.0x TP / 1.0x ATR SL
+**Barrier:** 8 candles
+**Threshold:** 0.50
 
-## 1. Undersampled Model (Class Imbalance Fix Applied)
-*Majority Class (Neutral) Undersampled to 55/45 Signal-to-Neutral Ratio.*
+## 📊 Timeframe Comparison Table
 
-| Metric | Value |
-|--------|-------|
-| **Total Return** | -77.85% |
-| **Profit Factor** | 0.9866 |
-| **Win Rate** | 34.57% |
-| **Sharpe Ratio** | 1.2544 |
-| **Max Drawdown** | -96.99% |
-| **Total Trades** | 2861 |
+| Metric | 30M Timeframe Model | 5M Timeframe Model |
+|--------|---------------------|--------------------|
+| **Total Return** | +10.08% | **+101.69%** |
+| **Profit Factor** | **1.8985** | 1.6168 |
+| **Win Rate** | **55.17%** | 53.71% |
+| **Sharpe Ratio** | 5.6924 | **6.0754** |
+| **Max Drawdown** | **-3.09%** | -16.63% |
+| **Total Trades** | 29 | 404 |
+| **Avg Hold Time** | 327.93 min | 247.72 min |
 
-## 2. Imbalanced Model (No Fix Applied)
-*Trained on the full dataset with a natural majority of Neutral classes.*
-*Backtested with a lower confidence threshold (0.35) to generate signals.*
+## 🔍 Key Observations
 
-| Metric | Value |
-|--------|-------|
-| **Total Return** | +88.39% |
-| **Profit Factor** | 1.0061 |
-| **Win Rate** | 35.73% |
-| **Sharpe Ratio** | 5.9782 |
-| **Max Drawdown** | -83.32% |
-| **Total Trades** | 3554 |
+1.  **5M Explosive Growth**: The 5M model generated over 10x the absolute return of the 30M model during the same period. This is primarily due to the vastly higher trade frequency (404 trades vs 29).
+2.  **30M Precision**: The 30M model remains the "safer" choice with a superior Profit Factor (1.90 vs 1.62) and extremely low drawdown (-3.09%). It provides higher precision signals but misses many intraday opportunities that the 5M model captures.
+3.  **Risk/Reward Trade-off**: Choosing between timeframes depends on risk tolerance. The 5M model offers institutional-grade Sharpe (6.0+) with high returns but requires weathering a 16.6% drawdown. The 30M model is exceptionally stable but very selective.
+4.  **Consistency**: Both models maintained win rates above 50% at the 0.50 confidence threshold, validating the dynamic regime feature and the 8-candle vertical barrier strategy across timeframes.
+5.  **Conclusion**: 5M is recommended for aggressive growth, while 30M is ideal for conservative, high-conviction allocation.
 
-## Observations & Analysis
-- **Impact of Imbalance Fix:** Counter-intuitively, the model trained on the full (imbalanced) dataset performed significantly better in this specific 2026 period.
-- **Signal Sensitivity:** The undersampled model was very aggressive with signals even at default thresholds, while the imbalanced model required a lower threshold (0.35) to act.
-- **Profitability:** The imbalanced model achieved profitability (Profit Factor > 1.0) and high total returns, although the high drawdown indicates extreme volatility in position sizing or equity management.
-- **Recommendation:** While undersampling is standard for classification, the "imbalanced" model seems to have learned a more robust representation of the "Neutral" state, preventing many losing trades that the undersampled model took.
-
-## Artifacts (Imbalanced Run)
-- **Model:** `Alpha/models/alpha_model.pth`
-- **Charts:** `backtest/results/comprehensive_analysis_stageAlphaLSTM_Vectorized_20260508_090423.png`
-- **Full Metrics:** `backtest/results/metrics_alpha_lstm_vectorized_20260508_090423.json`
+## 📁 Artifacts
+- **30M Model:** `Alpha/models/alpha_model_30m.pth`
+- **5M Model:** `Alpha/models/alpha_model_5m.pth`
+- **30M Report:** `backtest_report_2026_05_10.md`

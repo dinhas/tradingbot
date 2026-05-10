@@ -144,8 +144,9 @@ class FeatureEngine:
         atr = atr_indicator.average_true_range().fillna(0)
         adx = ADXIndicator(raw_high, raw_low, raw_close, window=14).adx().fillna(0)
 
-        upper_band = bb.bollinger_hband()
-        lower_band = bb.bollinger_lband()
+        bb_regime = BollingerBands(close, window=20, window_dev=2)
+        upper_band = bb_regime.bollinger_hband()
+        lower_band = bb_regime.bollinger_lband()
 
         regime = np.zeros_like(raw_close, dtype=np.float32)
 
