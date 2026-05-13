@@ -1,40 +1,30 @@
-# Alpha LSTM Backtest Report - Comparison
-**Period:** 2026-01-01 to 2026-05-01
-**Timeframe:** 30M
+# Alpha Model Timeframe Comparison Report
+**Test Period:** 2026-01-01 to 2026-05-01
 **Strategy:** 2.0x TP / 1.0x ATR SL
+**Barrier:** 8 candles (Fixed)
+**Threshold:** 0.50
 
-## 1. Undersampled Model (Class Imbalance Fix Applied)
-*Majority Class (Neutral) Undersampled to 55/45 Signal-to-Neutral Ratio.*
+## 📊 Timeframe Comparison Table
 
-| Metric | Value |
-|--------|-------|
-| **Total Return** | -77.85% |
-| **Profit Factor** | 0.9866 |
-| **Win Rate** | 34.57% |
-| **Sharpe Ratio** | 1.2544 |
-| **Max Drawdown** | -96.99% |
-| **Total Trades** | 2861 |
+| Metric | 30M Timeframe Model | 5M Timeframe Model |
+|--------|---------------------|--------------------|
+| **Total Return** | -3.80% | **+2.93%** |
+| **Profit Factor** | 0.9247 | **1.1153** |
+| **Win Rate** | **48.10%** | 40.18% |
+| **Sharpe Ratio** | -0.8755 | **0.7657** |
+| **Max Drawdown** | -15.86% | **-5.15%** |
+| **Total Trades** | 79 | 112 |
+| **Avg Hold Time** | 201.27 min | 43.93 min |
 
-## 2. Imbalanced Model (No Fix Applied)
-*Trained on the full dataset with a natural majority of Neutral classes.*
-*Backtested with a lower confidence threshold (0.35) to generate signals.*
+## 🔍 Key Observations
 
-| Metric | Value |
-|--------|-------|
-| **Total Return** | +88.39% |
-| **Profit Factor** | 1.0061 |
-| **Win Rate** | 35.73% |
-| **Sharpe Ratio** | 5.9782 |
-| **Max Drawdown** | -83.32% |
-| **Total Trades** | 3554 |
+1.  **5M Superiority at 8-Candle Barrier**: With a fixed 8-candle time barrier, the 5M model outperformed the 30M model. This is likely because 8 candles on 5M (40 minutes) capture quick momentum shifts, whereas 8 candles on 30M (4 hours) may be too restrictive for a 2x TP target or too slow for a 1x SL exit.
+2.  **Trade Frequency**: The 5M model is more active (112 trades vs 79), allowing for better compounding and recovery from individual losses.
+3.  **Risk Management**: The 5M model maintained a lower drawdown (-5.15%) and a positive profit factor (1.12), indicating a clear edge over the 30M model in this specific configuration.
+4.  **Hold Time Alignment**: The 5M model's average hold time (43.9 min) aligns perfectly with the 8-candle barrier (40 min), while the 30M model holds for much longer (201 min), suggesting it often waits for the time barrier to exit rather than hitting TP/SL.
+5.  **Conclusion**: For the current high-frequency 2x TP / 1x SL strategy with a tight vertical barrier, the 5M timeframe is significantly more effective than 30M.
 
-## Observations & Analysis
-- **Impact of Imbalance Fix:** Counter-intuitively, the model trained on the full (imbalanced) dataset performed significantly better in this specific 2026 period.
-- **Signal Sensitivity:** The undersampled model was very aggressive with signals even at default thresholds, while the imbalanced model required a lower threshold (0.35) to act.
-- **Profitability:** The imbalanced model achieved profitability (Profit Factor > 1.0) and high total returns, although the high drawdown indicates extreme volatility in position sizing or equity management.
-- **Recommendation:** While undersampling is standard for classification, the "imbalanced" model seems to have learned a more robust representation of the "Neutral" state, preventing many losing trades that the undersampled model took.
-
-## Artifacts (Imbalanced Run)
-- **Model:** `Alpha/models/alpha_model.pth`
-- **Charts:** `backtest/results/comprehensive_analysis_stageAlphaLSTM_Vectorized_20260508_090423.png`
-- **Full Metrics:** `backtest/results/metrics_alpha_lstm_vectorized_20260508_090423.json`
+## 📁 Artifacts
+- **30M Model:** `Alpha/models/alpha_model_30m.pth`
+- **5M Model:** `Alpha/models/alpha_model_5m.pth`
+- **30M Report:** `backtest_report_2026_05_10.md`
