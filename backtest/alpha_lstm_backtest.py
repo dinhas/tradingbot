@@ -167,6 +167,11 @@ class AlphaLSTMVectorizedBacktester:
                             exit_price = p['tp']
                             reason = "TP"
                             
+                    # Time Barrier Exit (8 candles)
+                    if exit_price is None and (idx - p['entry_idx']) >= 8:
+                        exit_price = entry_price
+                        reason = "Time Barrier"
+
                     # Model Flip Signal (Only if ADX allows acting)
                     if exit_price is None and can_act and (direction == 0 or direction != p['direction']):
                         exit_price = entry_price
@@ -214,6 +219,7 @@ class AlphaLSTMVectorizedBacktester:
                         'sl': sl,
                         'tp': tp,
                         'entry_timestamp': ts,
+                        'entry_idx': idx,
                         'equity_before': equity
                     }
                     # Small entry fee (already accounted in round trip above for metrics, but we deduct for equity)
