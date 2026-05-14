@@ -1,30 +1,31 @@
 # Alpha Model Timeframe Comparison Report
 **Test Period:** 2026-01-01 to 2026-05-01
 **Strategy:** 2.0x TP / 1.0x ATR SL
-**Barrier:** 8 candles (Fixed)
+**Barrier:** 8 candles
 **Threshold:** 0.50
+**Position Size:** 10%
 
 ## 📊 Timeframe Comparison Table
 
 | Metric | 30M Timeframe Model | 5M Timeframe Model |
 |--------|---------------------|--------------------|
-| **Total Return** | -3.80% | **+2.93%** |
-| **Profit Factor** | 0.9247 | **1.1153** |
-| **Win Rate** | **48.10%** | 40.18% |
-| **Sharpe Ratio** | -0.8755 | **0.7657** |
-| **Max Drawdown** | -15.86% | **-5.15%** |
-| **Total Trades** | 79 | 112 |
-| **Avg Hold Time** | 201.27 min | 43.93 min |
+| **Total Return** | -9.22% | **+38.50%** |
+| **Profit Factor** | 0.8969 | **1.1097** |
+| **Win Rate** | **48.72%** | 39.77% |
+| **Sharpe Ratio** | -0.8721 | **2.2199** |
+| **Max Drawdown** | -29.56% | **-14.32%** |
+| **Total Trades** | 78 | **1134** |
+| **Avg Hold Time** | 203.85 min | 21.05 min |
 
 ## 🔍 Key Observations
 
-1.  **5M Superiority at 8-Candle Barrier**: With a fixed 8-candle time barrier, the 5M model outperformed the 30M model. This is likely because 8 candles on 5M (40 minutes) capture quick momentum shifts, whereas 8 candles on 30M (4 hours) may be too restrictive for a 2x TP target or too slow for a 1x SL exit.
-2.  **Trade Frequency**: The 5M model is more active (112 trades vs 79), allowing for better compounding and recovery from individual losses.
-3.  **Risk Management**: The 5M model maintained a lower drawdown (-5.15%) and a positive profit factor (1.12), indicating a clear edge over the 30M model in this specific configuration.
-4.  **Hold Time Alignment**: The 5M model's average hold time (43.9 min) aligns perfectly with the 8-candle barrier (40 min), while the 30M model holds for much longer (201 min), suggesting it often waits for the time barrier to exit rather than hitting TP/SL.
-5.  **Conclusion**: For the current high-frequency 2x TP / 1x SL strategy with a tight vertical barrier, the 5M timeframe is significantly more effective than 30M.
+1.  **5M Outperformance**: For this specific 2026 period (Jan-May), the 5M model significantly outperformed the 30M model in terms of total return (+38.50% vs -9.22%).
+2.  **Trade Velocity**: The 5M model generated over 14x more trades than the 30M model (1134 vs 78). This higher frequency allowed it to compound gains more effectively despite a lower win rate.
+3.  **Drawdown Control**: Surprisingly, the 5M model exhibited a lower max drawdown (-14.32%) than the 30M model (-29.56%) at a 10% position size. This suggests the 30M model's fewer trades were more concentrated in losing streaks during this window.
+4.  **Asset Performance**: **XAUUSD** was a drag on the 30M model but a major profit engine for the 5M model, indicating that the recent 2026 market regime favored the faster reactions of the M5 strategy.
+5.  **Conclusion**: 5M is strongly recommended for current market conditions based on its robust return and superior Sharpe ratio.
 
 ## 📁 Artifacts
 - **30M Model:** `Alpha/models/alpha_model_30m.pth`
 - **5M Model:** `Alpha/models/alpha_model_5m.pth`
-- **30M Report:** `backtest_report_2026_05_10.md`
+- **Detailed 30M Report:** `backtest_report_2026_05_10.md`
