@@ -118,6 +118,7 @@ class AlphaLSTMVectorizedBacktester:
         low_prices = {asset: self.aligned_df[f"{asset}_low"].values for asset in self.assets}
         atrs = {asset: self.aligned_df[f"{asset}_atr"].values for asset in self.assets}
         adxs = {asset: self.aligned_df[f"{asset}_adx"].values for asset in self.assets}
+        is_tradeable = self.normalized_df['is_tradeable'].values
         timestamps = self.normalized_df.index
         
         logger.info(f"Starting vectorized backtest execution (ADX Threshold: {self.adx_thresh})...")
@@ -129,8 +130,8 @@ class AlphaLSTMVectorizedBacktester:
             for asset in self.assets:
                 current_adx = adxs[asset][idx]
                 
-                # ADX Filter: Only consider model decisions if ADX is above threshold
-                can_act = current_adx >= self.adx_thresh
+                # Combined Filter: ADX + Session Tradeability
+                can_act = (current_adx >= self.adx_thresh) and (is_tradeable[idx] > 0.5)
 
                 # Prediction logic
                 probs = all_probs[asset][idx]

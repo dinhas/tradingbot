@@ -68,11 +68,25 @@ class Labeler:
         spread = DEFAULT_SPREADS.get(asset, 0.0)
         
         n = len(df)
+        hours = df.index.hour
+        dows = df.index.dayofweek
+
         for i in range(n - 1):
             mid_price = prices_close[i]
             atr = atrs[i]
             
             if np.isnan(atr) or atr == 0:
+                continue
+
+            # Session Tradeability Filter in Labeler
+            # Rollover: 21:00 - 23:00 UTC
+            # Late Friday: after 20:00 UTC
+            is_rollover = (hours[i] >= 21) and (hours[i] <= 22)
+            is_late_friday = (dows[i] == 4) and (hours[i] >= 20)
+
+            if is_rollover or is_late_friday:
+                labels.append({'direction': 0})
+                indices.append(timestamps[i])
                 continue
                 
             tp_dist = self.tp_mult * atr

@@ -5,6 +5,7 @@ import pandas as pd
 import logging
 from .feature_engine import FeatureEngine
 from shared_constants import DEFAULT_SPREADS
+from shared_constants import DEFAULT_SPREADS
 
 class TradingEnv(gym.Env):
     """
