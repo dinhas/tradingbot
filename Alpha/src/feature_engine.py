@@ -163,7 +163,6 @@ class FeatureEngine:
         regime = np.where((raw_close > upper_band) | (raw_close < lower_band), 2.0, regime)
 
         new_cols[f"{asset}_regime"] = regime
-        new_cols[f"{asset}_is_tradeable"] = np.ones_like(raw_close, dtype=np.float32)
 
         # 6. Backward Compatibility for Backtester (Not in model features)
         new_cols[f"{asset}_atr"] = atr
@@ -174,9 +173,22 @@ class FeatureEngine:
     def _get_time_features(self, df):
         new_cols = {}
         hours = df.index.hour
+        dows = df.index.dayofweek
+
         new_cols['hour_of_day'] = hours
-        new_cols['is_late_session'] = ((hours >= 14) & (hours <= 20)).astype(int)
-        new_cols['is_friday'] = (df.index.dayofweek == 4).astype(int)
+
+        # Tradeability Logic:
+        # 1. Avoid Rollover (21:00 - 23:00 UTC) - High spreads and low liquidity
+        # 2. Avoid late Friday (after 20:00 UTC) - Market close risk
+        is_rollover = (hours >= 21) & (hours <= 22)
+        is_late_friday = (dows == 4) & (hours >= 20)
+
+        new_cols['is_tradeable'] = (~is_rollover & ~is_late_friday).astype(np.float32)
+
+        # Backward compatibility for models trained with asset-specific flags
+        for asset in self.assets:
+            new_cols[f"{asset}_is_tradeable"] = new_cols['is_tradeable']
+
         return new_cols
 
     def _normalize_features(self, df):

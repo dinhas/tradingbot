@@ -31,9 +31,9 @@ SYMBOL_IDS = {
     'USDJPY': 4     # USD/JPY
 }
 
-# Backtesting Data Range: 2025 (Jan 1 to Dec 14, 2025)
-START_DATE = datetime(2025, 1, 1)
-END_DATE = datetime(2025, 12, 19)  # Fetch until end of Dec 19
+# Backtesting Data Range: 2026 (Jan 1 to May 1, 2026)
+START_DATE = datetime(2026, 1, 1)
+END_DATE = datetime(2026, 5, 1)
 TIMEFRAME = ProtoOATrendbarPeriod.M5
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -92,7 +92,7 @@ class DataFetcherBacktest:
             reactor.callLater(2.0, d_wait.callback, None)
             yield d_wait
             
-            # 3. Fetch Backtesting Data (2025)
+            # 3. Fetch Backtesting Data (2026)
             # Ensure we write to backtest/data
             self.data_dir.mkdir(parents=True, exist_ok=True)
             
@@ -104,7 +104,7 @@ class DataFetcherBacktest:
                     continue
                 
                 # Check if file already exists
-                fname = self.data_dir / f"{asset_name}_5m_2025.parquet"
+                fname = self.data_dir / f"{asset_name}_5m_2026.parquet"
                 if fname.exists():
                     logging.info(f"✅ Found existing backtest data for {asset_name}. Skipping download.")
                     continue
@@ -133,7 +133,7 @@ class DataFetcherBacktest:
             reactor.callLater(initial_delay, d_delay.callback, None)
             yield d_delay
             
-        logging.info(f"📥 Starting fetch for {asset_name} (ID: {symbol_id}) - 2025 BACKTEST DATA")
+        logging.info(f"📥 Starting fetch for {asset_name} (ID: {symbol_id}) - 2026 BACKTEST DATA")
         
         current_start = START_DATE
         all_bars = []
@@ -229,15 +229,15 @@ class DataFetcherBacktest:
             full_df = full_df[~full_df.index.duplicated(keep='first')]
             
             # Save Backtest Data
-            fname = self.data_dir / f"{asset_name}_5m_2025.parquet"
+            fname = self.data_dir / f"{asset_name}_5m_2026.parquet"
             full_df.to_parquet(fname)
-            logging.info(f"✅ Saved {fname}: {len(full_df)} rows (2025 backtest data).")
+            logging.info(f"✅ Saved {fname}: {len(full_df)} rows (2026 backtest data).")
         else:
             logging.warning(f"⚠️ No data fetched for {asset_name}!")
 
 if __name__ == "__main__":
     fetcher = DataFetcherBacktest()
-    print("Starting Backtest Data Fetcher for 2025... (Press Ctrl+C to stop manually)")
+    print("Starting Backtest Data Fetcher for 2026... (Press Ctrl+C to stop manually)")
     try:
         fetcher.start()
     except KeyboardInterrupt:

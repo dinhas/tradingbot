@@ -118,6 +118,7 @@ class AlphaLSTMVectorizedBacktester:
         low_prices = {asset: self.aligned_df[f"{asset}_low"].values for asset in self.assets}
         atrs = {asset: self.aligned_df[f"{asset}_atr"].values for asset in self.assets}
         adxs = {asset: self.aligned_df[f"{asset}_adx"].values for asset in self.assets}
+        is_tradeable = self.normalized_df['is_tradeable'].values
         timestamps = self.normalized_df.index
         
         logger.info(f"Starting vectorized backtest execution (ADX Threshold: {self.adx_thresh})...")
@@ -129,8 +130,8 @@ class AlphaLSTMVectorizedBacktester:
             for asset in self.assets:
                 current_adx = adxs[asset][idx]
                 
-                # ADX Filter: Only consider model decisions if ADX is above threshold
-                can_act = current_adx >= self.adx_thresh
+                # Combined Filter: ADX + Session Tradeability
+                can_act = (current_adx >= self.adx_thresh) and (is_tradeable[idx] > 0.5)
 
                 # Prediction logic
                 probs = all_probs[asset][idx]
@@ -258,12 +259,12 @@ class AlphaLSTMVectorizedBacktester:
 def main():
     parser = argparse.ArgumentParser(description="Ultra-Fast Vectorized Alpha LSTM Backtester")
     parser.add_argument("--model-path", type=str, default="Alpha/models/alpha_model.pth")
-    parser.add_argument("--data-dir", type=str, default="data")
+    parser.add_argument("--data-dir", type=str, default="backtest/data/30m")
     parser.add_argument("--output-dir", type=str, default="backtest/results")
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--confidence-thresh", type=float, default=0.35)
     parser.add_argument("--initial-equity", type=float, default=10000.0)
-    parser.add_argument("--pos-size", type=float, default=0.1, help="Position size as % of equity (0.1 = 10%)")
+    parser.add_argument("--pos-size", type=float, default=0.1, help="Position size")
     parser.add_argument("--sl-mult", type=float, default=1.0)
     parser.add_argument("--tp-mult", type=float, default=2.0)
     parser.add_argument("--adx-thresh", type=float, default=0.0)

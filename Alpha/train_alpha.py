@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # BEST-PRACTICE SETTINGS
-BATCH_SIZE = 64
+BATCH_SIZE = 1024
 LEARNING_RATE = 1e-3
 DROPOUT = 0.3
 

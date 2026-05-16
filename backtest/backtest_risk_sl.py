@@ -363,10 +363,10 @@ class CombinedBacktest:
 
                     # Risk Params (from Risk LSTM)
                     sl_mult = (
-                        self.sl_matrix[current_idx, i] if not self.verify_alpha else 2.0
+                        self.sl_matrix[current_idx, i] if not self.verify_alpha else 1.0
                     )
                     tp_mult = (
-                        self.tp_matrix[current_idx, i] if not self.verify_alpha else 4.0
+                        self.tp_matrix[current_idx, i] if not self.verify_alpha else 2.0
                     )
                     size_out = (
                         self.size_matrix[current_idx, i]

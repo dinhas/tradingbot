@@ -116,8 +116,8 @@ def run_sl_backtest():
                 actions[asset] = {
                     'direction': direction,
                     'size': 0.2, 
-                    'sl_mult': 1.5,
-                    'tp_mult': 4.0
+                    'sl_mult': 1.0,
+                    'tp_mult': 2.0
                 }
             else:
                 actions[asset] = {'direction': 0}
