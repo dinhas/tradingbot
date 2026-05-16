@@ -173,11 +173,6 @@ class AlphaLSTMVectorizedBacktester:
                         exit_price = entry_price
                         reason = "Time Barrier"
 
-                    # Time Barrier Exit (8 candles)
-                    if exit_price is None and (idx - p['entry_idx']) >= 8:
-                        exit_price = entry_price
-                        reason = "Time Barrier"
-
                     # Model Flip Signal (Only if ADX allows acting)
                     if exit_price is None and can_act and (direction == 0 or direction != p['direction']):
                         exit_price = entry_price
@@ -264,7 +259,7 @@ class AlphaLSTMVectorizedBacktester:
 def main():
     parser = argparse.ArgumentParser(description="Ultra-Fast Vectorized Alpha LSTM Backtester")
     parser.add_argument("--model-path", type=str, default="Alpha/models/alpha_model.pth")
-    parser.add_argument("--data-dir", type=str, default="data")
+    parser.add_argument("--data-dir", type=str, default="backtest/data/30m")
     parser.add_argument("--output-dir", type=str, default="backtest/results")
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--confidence-thresh", type=float, default=0.35)

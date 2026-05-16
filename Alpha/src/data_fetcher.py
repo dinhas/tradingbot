@@ -55,7 +55,7 @@ class DataFetcher:
         self.timeframe_str = timeframe.lower()
         if self.timeframe_str not in TIMEFRAME_MAP:
             logging.warning(f"Unknown timeframe '{timeframe}', defaulting to '5m'")
-            self.timeframe_str = '5m'
+            self.timeframe_str = '30m'
         
         self.timeframe = TIMEFRAME_MAP[self.timeframe_str]
         self.start_date = datetime.strptime(start_date, '%Y-%m-%d')
