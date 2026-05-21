@@ -1,4 +1,4 @@
-# Alpha 30M Final Backtest Report (2026)
+# Alpha 30M Final Backtest Report (2026) - 0.50 Threshold
 
 ## Strategy Overview
 - **Timeframe**: 30M
@@ -12,30 +12,30 @@
 ## Executive Summary
 | Metric | Value |
 |--------|-------|
-| **Total Return** | **+144.20%** |
-| **Profit Factor** | **1.021** |
-| **Sharpe Ratio** | **5.942** |
-| **Win Rate** | **40.57%** |
-| **Max Drawdown** | **-78.95%** |
-| **Total Trades** | **3,858** |
-| **Avg Hold Time** | **119.3 min** |
+| **Total Return** | **+32.50%** |
+| **Profit Factor** | **1.219** |
+| **Sharpe Ratio** | **3.691** |
+| **Win Rate** | **45.71%** |
+| **Max Drawdown** | **-33.80%** |
+| **Total Trades** | **70** |
+| **Avg Hold Time** | **118.3 min** |
 
 ## Asset Breakdown
 | Asset | Trades | Win Rate | Profit Factor | Total PnL |
 |-------|--------|----------|---------------|-----------|
-| **GBPUSD** | 763 | 42.20% | 1.141 | +11,182.85 |
-| **EURUSD** | 767 | 41.46% | 1.089 | +5,896.89 |
-| **XAUUSD** | 785 | 41.78% | 1.015 | +5,316.14 |
-| **USDCHF** | 751 | 39.41% | 0.999 | -13.95 |
-| **USDJPY** | 792 | 38.01% | 0.908 | -8,249.50 |
+| **XAUUSD** | 22 | 59.09% | 1.314 | +3,193.96 |
+| **GBPUSD** | 4 | 50.00% | 5.381 | +407.07 |
+| **USDCHF** | 8 | 50.00% | 1.045 | +31.90 |
+| **USDJPY** | 26 | 38.46% | 0.921 | -172.65 |
+| **EURUSD** | 10 | 30.00% | 0.247 | -451.09 |
 
 ## Observations
-- The model shows strong performance on **GBPUSD** and **EURUSD**, which are the primary drivers of the strategy's profitability.
-- **USDJPY** underperformed during this period, suggesting it might benefit from different regime-specific tuning or higher confidence thresholds.
-- The **0.40 confidence threshold** provided a healthy trade frequency (approx. 33 trades per day across 5 assets) while maintaining a positive edge.
-- Session-aware filters effectively prevented high-spread rollover losses, contributing to the high Sharpe ratio.
+- Increasing the confidence threshold to **0.50** significantly improved the **Profit Factor (1.219)** compared to the 0.40 threshold, albeit with much lower trade frequency (70 total trades).
+- **XAUUSD** continues to be the strongest performer at this higher confidence level.
+- **GBPUSD** shows extreme selective profitability with a PF of 5.38.
+- The higher threshold produces a much more conservative trading profile suitable for low-turnover, high-conviction strategies.
 
 ## Files
-- Model: `Alpha/models/alpha_model.pth` (Epoch 12 Best Val Loss: 0.6123)
+- Model: `Alpha/models/alpha_model.pth`
 - Backtest Script: `backtest/alpha_lstm_backtest.py`
 - Training Data: Full 2016-2025 30M dataset.
