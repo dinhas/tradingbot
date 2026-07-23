@@ -8,6 +8,7 @@ class ConfigError(Exception):
     pass
 
 DEFAULT_THRESHOLDS = {
+    "alpha_confidence_threshold": 0.50,
     "meta_threshold": 0.7071,
     "qual_threshold": 0.7,
     "risk_threshold": 0.1,
@@ -25,6 +26,7 @@ def get_thresholds(project_root=None):
             with open(results_path, "r") as f:
                 params = json.load(f)
             return {
+                "alpha_confidence_threshold": params.get("alpha_confidence_threshold", DEFAULT_THRESHOLDS["alpha_confidence_threshold"]),
                 "meta_threshold": params.get("meta_threshold", DEFAULT_THRESHOLDS["meta_threshold"]),
                 "qual_threshold": params.get("qual_threshold", DEFAULT_THRESHOLDS["qual_threshold"]),
                 "risk_threshold": params.get("risk_threshold", DEFAULT_THRESHOLDS["risk_threshold"]),
@@ -83,5 +85,6 @@ def load_config(override_env=None):
     config["TELEGRAM_PNL_MILESTONE"] = float(env.get("TELEGRAM_PNL_MILESTONE", "1.0"))
     config["TELEGRAM_PULSE_INTERVAL"] = int(env.get("TELEGRAM_PULSE_INTERVAL", "7200"))
     config["TELEGRAM_ERROR_ALERTS"] = env.get("TELEGRAM_ERROR_ALERTS", "true").lower() == "true"
+    config["ALPHA_CONFIDENCE_THRESHOLD"] = float(env.get("ALPHA_CONFIDENCE_THRESHOLD", DEFAULT_THRESHOLDS["alpha_confidence_threshold"]))
         
     return config

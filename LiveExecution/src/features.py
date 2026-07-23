@@ -3,6 +3,7 @@ import numpy as np
 import logging
 from collections import deque
 from Alpha.src.feature_engine import FeatureEngine as AlphaFeatureEngine
+from shared_constants import FX_ALPHA_ASSETS
 
 class FeatureManager:
     """
@@ -10,7 +11,7 @@ class FeatureManager:
     """
     def __init__(self):
         self.logger = logging.getLogger("LiveExecution")
-        self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+        self.assets = FX_ALPHA_ASSETS
         self.alpha_fe = AlphaFeatureEngine()
         
         # History buffers for each asset
@@ -126,13 +127,21 @@ class FeatureManager:
         self.risk_action_history[asset].append(actions)
 
     def get_alpha_observation(self, asset, portfolio_state):
-        """Calculates the 40-feature vector for Alpha model for a specific asset."""
+        """Calculates the latest single-bar Alpha features for compatibility callers."""
         data_dict = {a: df for a, df in self.history.items() if not df.empty}
         _, normalized_df = self.alpha_fe.preprocess_data(data_dict)
         latest_features = normalized_df.iloc[-1].to_dict()
 
-        # Alpha model needs 40 features: 25 asset-specific + 15 global
         return self.alpha_fe.get_observation(latest_features, portfolio_state, asset)
+
+    def get_alpha_sequence(self, asset, sequence_length):
+        """Builds the ordered 5m feature sequence expected by the Alpha LSTM."""
+        data_dict = {a: df for a, df in self.history.items() if not df.empty}
+        _, normalized_df = self.alpha_fe.preprocess_data(data_dict)
+        obs = self.alpha_fe.get_observation_vectorized(normalized_df, asset)
+        if len(obs) < sequence_length:
+            return None
+        return obs[-sequence_length:].astype(np.float32)
 
     def get_risk_observation(self, asset, alpha_obs):
         """

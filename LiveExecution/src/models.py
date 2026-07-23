@@ -7,6 +7,7 @@ import joblib
 import numpy as np
 from pathlib import Path
 from stable_baselines3 import PPO
+from Alpha.src.model import AlphaSLModel as AlphaLSTMModel
 
 # Add RiskLayer/src to path for custom policy loading
 # Resolved conflict: Keeping the new pathing for live-execution-paths-and-verification
@@ -35,11 +36,11 @@ class ResidualBlock(nn.Module):
         return residual + out
 
 
-class AlphaSLModel(nn.Module):
+class LegacyAlphaSLModel(nn.Module):
     def __init__(
         self, input_dim: int = 40, hidden_dim: int = 256, num_res_blocks: int = 4
     ):
-        super(AlphaSLModel, self).__init__()
+        super(LegacyAlphaSLModel, self).__init__()
 
         # Initial Projection
         self.input_proj = nn.Sequential(
@@ -76,6 +77,9 @@ class AlphaSLModel(nn.Module):
         meta_logits = self.meta_head(features)
 
         return direction_logits, quality, meta_logits
+
+
+AlphaSLModel = LegacyAlphaSLModel
 
 
 class RiskModelSL(nn.Module):
@@ -148,6 +152,7 @@ class ModelLoader:
         self.risk_model = None
         self.risk_scaler = None
         self.use_rl = True
+        self.alpha_sequence_length = 50
 
     def load_all_models(self):
         """Loads all models from their respective paths."""
@@ -158,7 +163,7 @@ class ModelLoader:
                 alpha_path = self.project_root / "models" / "alpha" / "alpha_model.pth"
 
             self.logger.info(f"Loading Alpha SL model from {alpha_path}...")
-            self.alpha_model = AlphaSLModel(input_dim=40)
+            self.alpha_model = AlphaLSTMModel(input_dim=11, lstm_units=64, dense_units=32, dropout=0.3)
             self.alpha_model.load_state_dict(
                 torch.load(alpha_path, map_location=self.device)
             )
@@ -225,29 +230,28 @@ class ModelLoader:
             return False
 
     def get_alpha_action(self, observation):
-        """Predicts direction, quality, and meta from Alpha SL model."""
+        """Predicts direction and confidence from the Alpha LSTM model."""
         if self.alpha_model is None:
             raise RuntimeError("Alpha model not loaded.")
 
-        if observation.ndim == 1:
-            observation = observation.reshape(1, -1)
+        if observation.ndim == 2:
+            observation = observation.reshape(1, observation.shape[0], observation.shape[1])
+        elif observation.ndim != 3:
+            raise ValueError("Alpha observation must have shape [seq, features] or [batch, seq, features].")
 
         obs_tensor = torch.from_numpy(observation.astype(np.float32)).to(self.device)
 
         with torch.no_grad():
-            direction_logits, quality, meta_logits = self.alpha_model(obs_tensor)
+            direction_logits = self.alpha_model(obs_tensor)
+            probs = torch.softmax(direction_logits, dim=1)
 
             # 1. Direction: Map (0, 1, 2) -> (-1, 0, 1)
-            pred_class = torch.argmax(direction_logits, dim=1)
+            pred_class = torch.argmax(probs, dim=1)
             direction = (pred_class - 1).cpu().numpy().astype(float)
 
-            # 2. Quality: Linear output [0, 1]
-            quality_val = quality.cpu().numpy().flatten().astype(float)
+            confidence = probs.max(dim=1).values.cpu().numpy().flatten().astype(float)
 
-            # 3. Meta: Sigmoid of logits [0, 1]
-            meta_val = torch.sigmoid(meta_logits).cpu().numpy().flatten().astype(float)
-
-        return {"direction": direction, "quality": quality_val, "meta": meta_val}
+        return {"direction": direction, "confidence": confidence, "probs": probs.cpu().numpy()}
 
     def get_risk_action(self, observation):
         """Predicts SL/TP multipliers and confidence (size) using RL or SL model."""
@@ -255,7 +259,11 @@ class ModelLoader:
             raise RuntimeError("Risk model or scaler not loaded.")
 
         # 1. Scale observation
-        if observation.ndim == 1:
+        if observation.ndim == 3:
+            observation = observation[:, -1, :]
+        elif observation.ndim == 2 and observation.shape[0] > 1:
+            observation = observation[-1:].copy()
+        elif observation.ndim == 1:
             observation = observation.reshape(1, -1)
         obs_scaled = self.risk_scaler.transform(observation).astype(np.float32)
 

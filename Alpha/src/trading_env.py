@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import logging
 from .feature_engine import FeatureEngine
-from shared_constants import DEFAULT_SPREADS
+from shared_constants import DEFAULT_SPREADS, FX_ALPHA_ASSETS
 
 class TradingEnv(gym.Env):
     """
@@ -23,7 +23,7 @@ class TradingEnv(gym.Env):
         self.data_dir = data_dir
         self.stage = stage
         self.is_training = is_training
-        self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+        self.assets = FX_ALPHA_ASSETS
         
         # Configuration Constants
         self.MAX_POS_SIZE_PCT = 0.50

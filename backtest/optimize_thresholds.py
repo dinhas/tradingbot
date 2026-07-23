@@ -36,29 +36,29 @@ logger = logging.getLogger(__name__)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def ensure_2025_data(data_dir):
-    """Checks for 2025 data and downloads it if missing."""
+def ensure_2026_data(data_dir):
+    """Checks for 2026 backtest data and downloads it if missing."""
     missing = False
     for asset in SYMBOL_IDS.keys():
-        file_path = data_dir / f"{asset}_5m_2025.parquet"
+        file_path = data_dir / f"{asset}_5m_backtest.parquet"
         if not file_path.exists():
-            logger.info(f"Missing 2025 data for {asset}")
+            logger.info(f"Missing 2026 backtest data for {asset}")
             missing = True
             break
 
     if missing:
-        logger.info("Starting DataFetcherBacktest to download 2025 data...")
+        logger.info("Starting DataFetcherBacktest to download 2026 data...")
         fetcher = DataFetcherBacktest()
         fetcher.start()
     else:
-        logger.info("All 2025 backtest data found.")
+        logger.info("All 2026 backtest data found.")
 
 
 def load_data(data_dir):
-    """Loads 2025 data for all assets."""
+    """Loads 2026 backtest data for all assets."""
     data_dict = {}
     for asset in SYMBOL_IDS.keys():
-        file_path = data_dir / f"{asset}_5m_2025.parquet"
+        file_path = data_dir / f"{asset}_5m_backtest.parquet"
         if file_path.exists():
             df = pd.read_parquet(file_path)
             df.index = pd.to_datetime(df.index)
@@ -93,7 +93,7 @@ def optimize_thresholds():
     data_dir = PROJECT_ROOT / args.data_dir
     use_rl = args.use_rl
 
-    ensure_2025_data(data_dir)
+    ensure_2026_data(data_dir)
     data_dict = load_data(data_dir)
     if not data_dict:
         return
@@ -223,7 +223,7 @@ def optimize_thresholds():
                         "qual_threshold": round(q_t.item(), 4),
                         "risk_threshold": round(r_t.item(), 4),
                         "expected_avg_r": round(avg_r, 4),
-                        "num_trades_2025": mask.sum().item(),
+                        "num_trades_2026": mask.sum().item(),
                     }
 
     logger.info(f"Total combinations: {loop_count}, Valid (>=50 trades): {valid_count}")

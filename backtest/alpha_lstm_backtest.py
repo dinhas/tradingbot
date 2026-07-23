@@ -19,6 +19,7 @@ from Alpha.src.model import AlphaSLModel
 from Alpha.src.data_loader import DataLoader as AlphaDataLoader
 from RiskLayer.src.feature_engine import FeatureEngine
 from backtest.rl_backtest import BacktestMetrics, generate_all_charts, NumpyEncoder
+from shared_constants import FX_ALPHA_ASSETS
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ class AlphaLSTMVectorizedBacktester:
         self.leverage = leverage
         self.batch_size = batch_size
         
-        self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+        self.assets = FX_ALPHA_ASSETS
         self.feature_engine = FeatureEngine()
         
     def _precompute_predictions(self):

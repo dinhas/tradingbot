@@ -1,4 +1,6 @@
 # Centralized Spread Configuration (in price units)
+FX_ALPHA_ASSETS = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF']
+
 DEFAULT_SPREADS = {
     'EURUSD': 0.00010,  # 1.0 pip
     'GBPUSD': 0.00015,  # 1.5 pips

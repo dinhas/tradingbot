@@ -1,6 +1,7 @@
 import logging
 import os
 import argparse
+import sys
 from pathlib import Path
 import pandas as pd
 from datetime import datetime, timedelta
@@ -15,21 +16,28 @@ from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
 # Load environment variables
 load_dotenv()
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from shared_constants import FX_ALPHA_ASSETS
+
 # --- Configuration ---
-CT_APP_ID = "17481_ejoPRnjMkFdEkcZTHbjYt5n98n6wRE2wESCkSSHbLIvdWzRkRp"
-CT_APP_SECRET = "AaIrnTNyz47CC9t5nsCXU67sCXtKOm7samSkpNFIvqKOaz1vJ1"
-CT_ACCOUNT_ID = 45559627
-CT_ACCESS_TOKEN = "nHEnxubVAIjSkisNbbPAd4gWCVrX0hG8aKbteZrX4GY"
-CT_HOST_TYPE = "demo"
+CT_APP_ID = os.getenv("CT_APP_ID", "17481_ejoPRnjMkFdEkcZTHbjYt5n98n6wRE2wESCkSSHbLIvdWzRkRp")
+CT_APP_SECRET = os.getenv("CT_APP_SECRET", "AaIrnTNyz47CC9t5nsCXU67sCXtKOm7samSkpNFIvqKOaz1vJ1")
+CT_ACCOUNT_ID = int(os.getenv("CT_ACCOUNT_ID", "46341684"))
+CT_ACCESS_TOKEN = os.getenv("CT_ACCESS_TOKEN", "9gOH7DYj1PASigp_-tAL_954qYONzzscIqPaqb1og3M")
+CT_HOST_TYPE = os.getenv("CT_HOST_TYPE", "demo")
 
 # Custom Asset Universe
-SYMBOL_IDS = {
+ALL_SYMBOL_IDS = {
     'EURUSD': 1,    # EUR/USD
     'GBPUSD': 2,    # GBP/USD
     'XAUUSD': 41,   # Gold/USD
     'USDCHF': 6,    # USD/CHF
     'USDJPY': 4     # USD/JPY
 }
+SYMBOL_IDS = {asset: ALL_SYMBOL_IDS[asset] for asset in FX_ALPHA_ASSETS}
 
 # Mapping for timeframes
 TIMEFRAME_MAP = {
@@ -44,7 +52,7 @@ TIMEFRAME_MAP = {
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DataFetcher:
-    def __init__(self, timeframe='5m', start_date='2016-01-01', end_date='2024-12-31'):
+    def __init__(self, timeframe='5m', start_date='2016-01-01', end_date='2024-12-31', merge_existing=False, force_start=False, chunk_days=None):
         host = EndPoints.PROTOBUF_LIVE_HOST if CT_HOST_TYPE.lower() == "live" else EndPoints.PROTOBUF_DEMO_HOST
         self.client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
         self.request_delay = 1.0  # Increased delay to avoid rate limits
@@ -60,6 +68,9 @@ class DataFetcher:
         self.timeframe = TIMEFRAME_MAP[self.timeframe_str]
         self.start_date = datetime.strptime(start_date, '%Y-%m-%d')
         self.end_date = datetime.strptime(end_date, '%Y-%m-%d')
+        self.merge_existing = merge_existing
+        self.force_start = force_start
+        self.chunk_days = chunk_days or (30 if self.timeframe_str in {'1m', '5m'} else 90)
 
     def start(self):
         self.client.setConnectedCallback(self.on_connected)
@@ -109,25 +120,17 @@ class DataFetcher:
             # 3. Fetch Data
             self.data_dir.mkdir(parents=True, exist_ok=True)
             
-            fetch_tasks = []
             for asset_name, symbol_id in SYMBOL_IDS.items():
                 if symbol_id == 0:
                     logging.warning(f"Skipping {asset_name}: Symbol ID not set. Please update SYMBOL_IDS.")
                     continue
                 
-                # Check if file already exists
                 fname = self.data_dir / f"{asset_name}_{self.timeframe_str}.parquet"
-                if fname.exists():
+                if fname.exists() and not self.merge_existing:
                     logging.info(f"✅ Found existing data for {asset_name} ({self.timeframe_str}). Skipping download.")
                     continue
                     
-                # Store task for parallel execution
-                d = self.fetch_asset_history(asset_name, symbol_id)
-                fetch_tasks.append(d)
-            
-            if fetch_tasks:
-                logging.info(f"🚀 Starting parallel fetch for {len(fetch_tasks)} assets ({self.timeframe_str})...")
-                yield defer.gatherResults(fetch_tasks, consumeErrors=True)
+                yield self.fetch_asset_history(asset_name, symbol_id)
                 
             logging.info("All downloads complete. Stopping reactor.")
             reactor.stop()
@@ -140,12 +143,32 @@ class DataFetcher:
     def fetch_asset_history(self, asset_name, symbol_id):
         logging.info(f"📥 Starting fetch for {asset_name} (ID: {symbol_id}) at {self.timeframe_str}")
         
+        fname = self.data_dir / f"{asset_name}_{self.timeframe_str}.parquet"
+        existing_df = None
         current_start = self.start_date
+
+        if self.merge_existing and fname.exists():
+            existing_df = pd.read_parquet(fname)
+            if not isinstance(existing_df.index, pd.DatetimeIndex):
+                if 'timestamp' in existing_df.columns:
+                    existing_df['timestamp'] = pd.to_datetime(existing_df['timestamp'])
+                    existing_df.set_index('timestamp', inplace=True)
+                else:
+                    existing_df.index = pd.to_datetime(existing_df.index)
+            existing_df.sort_index(inplace=True)
+            last_ts = existing_df.index.max()
+            if not self.force_start:
+                current_start = max(self.start_date, last_ts.to_pydatetime() + timedelta(minutes=5))
+            logging.info(f"   {asset_name}: existing rows={len(existing_df)}, last timestamp={last_ts}. Fetching from {current_start}.")
+
+        if current_start >= self.end_date:
+            logging.info(f"✅ {asset_name}: existing data already reaches requested end date {self.end_date}.")
+            return
+
         all_bars = []
         
         while current_start < self.end_date:
-            # Request 90 days at a time (approx 3 months)
-            chunk_end = current_start + timedelta(days=90)
+            chunk_end = current_start + timedelta(days=self.chunk_days)
             if chunk_end > self.end_date:
                 chunk_end = self.end_date
             
@@ -232,13 +255,14 @@ class DataFetcher:
         
         if all_bars:
             full_df = pd.concat(all_bars)
+            if existing_df is not None:
+                full_df = pd.concat([existing_df, full_df])
             full_df = full_df[~full_df.index.duplicated(keep='first')]
             full_df.sort_index(inplace=True)
             
             # Save Raw Data
-            fname = self.data_dir / f"{asset_name}_{self.timeframe_str}.parquet"
             full_df.to_parquet(fname)
-            logging.info(f"✅ Saved {fname}: {len(full_df)} rows.")
+            logging.info(f"✅ Saved {fname}: {len(full_df)} rows. Range: {full_df.index.min()} -> {full_df.index.max()}")
         else:
             logging.warning(f"⚠️ No data fetched for {asset_name}!")
 
@@ -247,10 +271,20 @@ if __name__ == "__main__":
     parser.add_argument("--timeframe", type=str, default="5m", choices=["1m", "5m", "30m", "1h", "4h", "1d"], help="Timeframe to fetch (1m, 5m, 30m, 1h, 4h, 1d)")
     parser.add_argument("--start", type=str, default="2016-01-01", help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end", type=str, default="2024-12-31", help="End date (YYYY-MM-DD)")
+    parser.add_argument("--merge-existing", action="store_true", help="Append downloaded data into existing parquet files instead of skipping them")
+    parser.add_argument("--force-start", action="store_true", help="When merging, fetch from --start even if the file already extends beyond it")
+    parser.add_argument("--chunk-days", type=int, default=None, help="Days per request chunk. Defaults to 30 for 1m/5m, otherwise 90")
     
     args = parser.parse_args()
     
-    fetcher = DataFetcher(timeframe=args.timeframe, start_date=args.start, end_date=args.end)
+    fetcher = DataFetcher(
+        timeframe=args.timeframe,
+        start_date=args.start,
+        end_date=args.end,
+        merge_existing=args.merge_existing,
+        force_start=args.force_start,
+        chunk_days=args.chunk_days,
+    )
     print(f"Starting Data Fetcher for {args.timeframe} from {args.start} to {args.end}... (Press Ctrl+C to stop manually)")
     try:
         fetcher.start()

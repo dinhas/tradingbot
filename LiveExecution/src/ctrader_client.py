@@ -5,6 +5,7 @@ from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
 import logging
+from shared_constants import FX_ALPHA_ASSETS
 
 class CTraderClient:
     def __init__(self, config):
@@ -26,13 +27,14 @@ class CTraderClient:
         self.access_token = config["CT_ACCESS_TOKEN"]
         
         # Asset Universe (as per PRD)
-        self.symbol_ids = {
+        all_symbol_ids = {
             'EURUSD': 1,
             'GBPUSD': 2,
             'XAUUSD': 41,
             'USDCHF': 6,
             'USDJPY': 4
         }
+        self.symbol_ids = {asset: all_symbol_ids[asset] for asset in FX_ALPHA_ASSETS}
         
         # Reconnection parameters
         self.max_retries = 5

@@ -3,11 +3,12 @@ import numpy as np
 import torch
 from Alpha.src.feature_engine import FeatureEngine
 from Alpha.src.model import AlphaSLModel
+from shared_constants import FX_ALPHA_ASSETS
 
 def verify():
     fe = FeatureEngine()
     dummy_data = {}
-    for asset in ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']:
+    for asset in FX_ALPHA_ASSETS:
         dummy_data[asset] = pd.DataFrame({
             'open': np.random.randn(1000),
             'high': np.random.randn(1000),

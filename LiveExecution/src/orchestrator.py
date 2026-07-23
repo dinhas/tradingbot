@@ -363,29 +363,27 @@ class Orchestrator:
     def run_inference_chain(self, symbol_id):
         try:
             asset_name = self._get_symbol_name(symbol_id)
-            alpha_obs = self.fm.get_alpha_observation(asset_name, self.portfolio_state)
-            alpha_out = self.ml.get_alpha_action(alpha_obs)
+            alpha_seq = self.fm.get_alpha_sequence(asset_name, self.ml.alpha_sequence_length)
+            if alpha_seq is None:
+                self.logger.info(f"Not enough Alpha sequence history for {asset_name}. Skipping.")
+                return {'action': 0}
+
+            alpha_out = self.ml.get_alpha_action(alpha_seq)
             direction = int(alpha_out['direction'][0])
-            quality = float(alpha_out['quality'][0])
-            meta = float(alpha_out['meta'][0])
+            confidence = float(alpha_out['confidence'][0])
             
-            self.logger.debug(f"Inference results for {asset_name}: Direction={direction}, Quality={quality:.3f}, Meta={meta:.3f}")
+            self.logger.debug(f"Inference results for {asset_name}: Direction={direction}, Confidence={confidence:.3f}")
             
             if direction == 0:
                 self.logger.info(f"Model predicted neutral direction for {asset_name}. Skipping.")
                 return {'action': 0}
             
-            meta_thresh = self.config.get('META_THRESHOLD', 0.7071)
-            qual_thresh = self.config.get('QUAL_THRESHOLD', 0.70)
-            
-            if meta < meta_thresh:
-                self._notify_threshold_breach(asset_name, "Meta", meta, meta_thresh)
-                return {'action': 0}
-            if quality < qual_thresh:
-                self._notify_threshold_breach(asset_name, "Quality", quality, qual_thresh)
+            alpha_thresh = self.config.get('ALPHA_CONFIDENCE_THRESHOLD', self.config.get('META_THRESHOLD', 0.50))
+            if confidence < alpha_thresh:
+                self._notify_threshold_breach(asset_name, "AlphaConfidence", confidence, alpha_thresh)
                 return {'action': 0}
             
-            risk_obs = self.fm.get_risk_observation(asset_name, alpha_obs)
+            risk_obs = self.fm.get_risk_observation(asset_name, alpha_seq)
             risk_action = self.ml.get_risk_action(risk_obs)
             size_out = risk_action['size']
             

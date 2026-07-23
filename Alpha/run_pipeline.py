@@ -53,6 +53,31 @@ class AlphaSequenceDataset(Dataset):
         return torch.from_numpy(x_seq), torch.tensor(y_dir, dtype=torch.float32)
 
 
+def _date_based_split_indices(timestamps: np.ndarray, train_ratio: float = 0.70, val_ratio: float = 0.15) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Splits samples by signal timestamp so future periods never leak into training."""
+    if len(timestamps) == 0:
+        raise ValueError("Cannot split an empty timestamp array.")
+    if not 0 < train_ratio < 1 or not 0 <= val_ratio < 1 or train_ratio + val_ratio >= 1:
+        raise ValueError("Expected train_ratio > 0, val_ratio >= 0, and train_ratio + val_ratio < 1.")
+
+    ts = np.asarray(timestamps, dtype="datetime64[ns]")
+    unique_ts = np.unique(ts)
+    if len(unique_ts) < 3:
+        raise ValueError("Need at least 3 unique timestamps for train/val/test splitting.")
+
+    train_cut = unique_ts[max(0, min(len(unique_ts) - 2, int(len(unique_ts) * train_ratio) - 1))]
+    val_cut = unique_ts[max(1, min(len(unique_ts) - 1, int(len(unique_ts) * (train_ratio + val_ratio)) - 1))]
+
+    train_idx = np.flatnonzero(ts <= train_cut)
+    val_idx = np.flatnonzero((ts > train_cut) & (ts <= val_cut))
+    test_idx = np.flatnonzero(ts > val_cut)
+
+    if len(train_idx) == 0 or len(val_idx) == 0 or len(test_idx) == 0:
+        raise ValueError("Date split produced an empty train, validation, or test partition.")
+
+    return train_idx, val_idx, test_idx
+
+
 def _build_sequences_for_asset(features: np.ndarray, labels: np.ndarray, seq_len: int) -> tuple[np.ndarray, np.ndarray]:
     """Builds in-session rolling windows for one asset."""
     if len(features) < seq_len:
@@ -79,9 +104,11 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
 
     all_sequences = []
     all_labels = []
+    all_timestamps = []
+    all_asset_ids = []
     total_rows = 0
 
-    for asset in loader.assets:
+    for asset_id, asset in enumerate(loader.assets):
         logger.info(f"Processing {asset}...")
         labels_df = labeler.label_data(aligned_df, asset)
         if smoke_test:
@@ -108,6 +135,8 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
 
         all_sequences.append(X_seq)
         all_labels.append(y_seq)
+        all_timestamps.append(common_indices[seq_len - 1:].to_numpy(dtype="datetime64[ns]"))
+        all_asset_ids.append(np.full(len(y_seq), asset_id, dtype=np.int8))
         asset_total = len(y_seq)
 
         total_rows += asset_total
@@ -118,13 +147,28 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
 
     X_np = np.concatenate(all_sequences, axis=0).astype(np.float32)
     y_dir_np = np.concatenate(all_labels, axis=0).astype(np.float32)
+    timestamps_np = np.concatenate(all_timestamps, axis=0).astype("datetime64[ns]")
+    asset_ids_np = np.concatenate(all_asset_ids, axis=0).astype(np.int8)
+
+    order = np.argsort(timestamps_np, kind="mergesort")
+    X_np = X_np[order]
+    y_dir_np = y_dir_np[order]
+    timestamps_np = timestamps_np[order]
+    asset_ids_np = asset_ids_np[order]
 
     os.makedirs(output_dir, exist_ok=True)
     sequences_path = os.path.join(output_dir, "sequences.npy")
     labels_path = os.path.join(output_dir, "labels.npz")
 
     np.save(sequences_path, X_np)
-    np.savez(labels_path, direction=y_dir_np)
+    np.savez(
+        labels_path,
+        direction=y_dir_np,
+        timestamp=timestamps_np,
+        asset_id=asset_ids_np,
+        asset_names=np.asarray(loader.assets),
+        sequence_length=np.int32(seq_len),
+    )
 
     logger.info(f"Dataset generated. Total sequences: {len(X_np)}")
     return sequences_path, labels_path
@@ -137,6 +181,9 @@ def train_model(sequences_path, labels_path, model_save_path):
     sequences = np.load(sequences_path, mmap_mode='r')
     labels_data = np.load(labels_path)
     directions = labels_data['direction']
+    if 'timestamp' not in labels_data:
+        raise RuntimeError("labels.npz is missing timestamp metadata. Regenerate the dataset before training.")
+    timestamps = labels_data['timestamp']
 
     total_samples = len(sequences)
     if total_samples == 0:
@@ -156,10 +203,15 @@ def train_model(sequences_path, labels_path, model_save_path):
     logger.info(f"Class Distribution [-1, 0, 1]: Sell={counts.get(-1.0,0)} | Neutral={counts.get(0.0,0)} | Buy={counts.get(1.0,0)}")
     logger.info(f"Applied Focal Loss Weights: {class_weights.cpu().numpy()}")
 
-    # Time-series-aware split.
-    split = int(0.90 * total_samples)
-    X_train, X_val = sequences[:split], sequences[split:]
-    y_train, y_val = directions[:split], directions[split:]
+    train_idx, val_idx, test_idx = _date_based_split_indices(timestamps)
+    X_train, X_val = sequences[train_idx], sequences[val_idx]
+    y_train, y_val = directions[train_idx], directions[val_idx]
+    logger.info(
+        "Date split: train=%d (%s to %s), val=%d (%s to %s), holdout_test=%d (%s to %s)",
+        len(train_idx), np.asarray(timestamps[train_idx[0]]).astype(str), np.asarray(timestamps[train_idx[-1]]).astype(str),
+        len(val_idx), np.asarray(timestamps[val_idx[0]]).astype(str), np.asarray(timestamps[val_idx[-1]]).astype(str),
+        len(test_idx), np.asarray(timestamps[test_idx[0]]).astype(str), np.asarray(timestamps[test_idx[-1]]).astype(str),
+    )
 
     train_dataset = AlphaSequenceDataset(X_train, y_train)
     val_dataset = AlphaSequenceDataset(X_val, y_val)

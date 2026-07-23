@@ -31,11 +31,12 @@ def main():
         config = load_config()
         # 3. Load Thresholds (Centralized)
         thresholds = get_thresholds(project_root)
+        config["ALPHA_CONFIDENCE_THRESHOLD"] = thresholds["alpha_confidence_threshold"]
         config["META_THRESHOLD"] = thresholds["meta_threshold"]
         config["QUAL_THRESHOLD"] = thresholds["qual_threshold"]
         config["RISK_THRESHOLD"] = thresholds["risk_threshold"]
 
-        logger.info(f"Thresholds Loaded: Meta={config['META_THRESHOLD']}, Qual={config['QUAL_THRESHOLD']}, Risk={config['RISK_THRESHOLD']}")
+        logger.info(f"Thresholds Loaded: Alpha={config['ALPHA_CONFIDENCE_THRESHOLD']}, Meta={config['META_THRESHOLD']}, Qual={config['QUAL_THRESHOLD']}, Risk={config['RISK_THRESHOLD']}")
 
     except Exception as e:
         logger.critical(f"Configuration Error: {e}")
@@ -47,7 +48,7 @@ def main():
         notifier = TelegramNotifier(config)
         notifier.send_message("🟢 System Starting Up...")
         notifier.send_message(
-            f"Thresholds Loaded:\nMeta: {config['META_THRESHOLD']}\nQual: {config['QUAL_THRESHOLD']}\nRisk: {config['RISK_THRESHOLD']}"
+            f"Thresholds Loaded:\nAlpha: {config['ALPHA_CONFIDENCE_THRESHOLD']}\nMeta: {config['META_THRESHOLD']}\nQual: {config['QUAL_THRESHOLD']}\nRisk: {config['RISK_THRESHOLD']}"
         )
 
         # Core Components

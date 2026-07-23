@@ -1,5 +1,7 @@
 import logging
 import os
+import sys
+import argparse
 from pathlib import Path
 import pandas as pd
 from datetime import datetime, timedelta
@@ -14,6 +16,12 @@ from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
 # Load environment variables from .env
 load_dotenv()
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from shared_constants import FX_ALPHA_ASSETS
+
 # --- Configuration ---
 CT_APP_ID = os.getenv("CT_APP_ID")
 CT_APP_SECRET = os.getenv("CT_APP_SECRET")
@@ -22,24 +30,24 @@ CT_ACCESS_TOKEN = os.getenv("CT_ACCESS_TOKEN")
 CT_HOST_TYPE = os.getenv("CT_HOST_TYPE", "demo")
 
 
-# Asset Universe (same as training)
-SYMBOL_IDS = {
+ALL_SYMBOL_IDS = {
     'EURUSD': 1,    # EUR/USD
     'GBPUSD': 2,    # GBP/USD
     'XAUUSD': 41,   # Gold/USD
     'USDCHF': 6,    # USD/CHF
     'USDJPY': 4     # USD/JPY
 }
+SYMBOL_IDS = {asset: ALL_SYMBOL_IDS[asset] for asset in FX_ALPHA_ASSETS}
 
-# Backtesting Data Range: 2025 (Jan 1 to Dec 14, 2025)
-START_DATE = datetime(2025, 1, 1)
-END_DATE = datetime(2025, 12, 19)  # Fetch until end of Dec 19
+# Backtesting Data Range: 2026 forward-test period.
+START_DATE = datetime(2026, 1, 1)
+END_DATE = datetime(2026, 4, 10)
 TIMEFRAME = ProtoOATrendbarPeriod.M5
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DataFetcherBacktest:
-    def __init__(self):
+    def __init__(self, start_date=START_DATE, end_date=END_DATE, overwrite=False):
         host = EndPoints.PROTOBUF_LIVE_HOST if CT_HOST_TYPE.lower() == "live" else EndPoints.PROTOBUF_DEMO_HOST
         self.client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
         self.request_delay = 1.0  # Increased delay to 1.0s to avoid rate limits
@@ -47,6 +55,9 @@ class DataFetcherBacktest:
         # Define a robust path to the backtest data directory at the project root
         # Define a robust path to the backtest data directory
         self.data_dir = Path(__file__).resolve().parent / "data"
+        self.start_date = start_date
+        self.end_date = end_date
+        self.overwrite = overwrite
 
     def start(self):
         self.client.setConnectedCallback(self.on_connected)
@@ -92,7 +103,7 @@ class DataFetcherBacktest:
             reactor.callLater(2.0, d_wait.callback, None)
             yield d_wait
             
-            # 3. Fetch Backtesting Data (2025)
+            # 3. Fetch Backtesting Data (2026)
             # Ensure we write to backtest/data
             self.data_dir.mkdir(parents=True, exist_ok=True)
             
@@ -104,8 +115,8 @@ class DataFetcherBacktest:
                     continue
                 
                 # Check if file already exists
-                fname = self.data_dir / f"{asset_name}_5m_2025.parquet"
-                if fname.exists():
+                fname = self.data_dir / f"{asset_name}_5m_backtest.parquet"
+                if fname.exists() and not self.overwrite:
                     logging.info(f"✅ Found existing backtest data for {asset_name}. Skipping download.")
                     continue
                     
@@ -133,16 +144,16 @@ class DataFetcherBacktest:
             reactor.callLater(initial_delay, d_delay.callback, None)
             yield d_delay
             
-        logging.info(f"📥 Starting fetch for {asset_name} (ID: {symbol_id}) - 2025 BACKTEST DATA")
+        logging.info(f"📥 Starting fetch for {asset_name} (ID: {symbol_id}) - 2026 BACKTEST DATA")
         
-        current_start = START_DATE
+        current_start = self.start_date
         all_bars = []
         
-        while current_start < END_DATE:
+        while current_start < self.end_date:
             # Request 5 days at a time to be SAFE from size limits
             chunk_end = current_start + timedelta(days=5)
-            if chunk_end > END_DATE:
-                chunk_end = END_DATE
+            if chunk_end > self.end_date:
+                chunk_end = self.end_date
             
             req = ProtoOAGetTrendbarsReq()
             req.ctidTraderAccountId = CT_ACCOUNT_ID
@@ -182,7 +193,9 @@ class DataFetcherBacktest:
                         high = (bar.low + bar.deltaHigh) / DIVISOR
                         close = (bar.low + bar.deltaClose) / DIVISOR
                         
+                        timestamp = pd.to_datetime(bar.utcTimestampInMinutes, unit='m')
                         bars_data.append({
+                            'timestamp': timestamp,
                             'open': open_p, 
                             'high': high, 
                             'low': low, 
@@ -195,10 +208,7 @@ class DataFetcherBacktest:
                         break
 
                     df_chunk = pd.DataFrame(bars_data)
-                    
-                    # Create time index (Approximation based on M5)
-                    time_index = pd.date_range(start=current_start, periods=len(df_chunk), freq='5min')
-                    df_chunk.index = time_index
+                    df_chunk.set_index('timestamp', inplace=True)
                     
                     all_bars.append(df_chunk)
                     logging.info(f"   {asset_name}: Fetched {len(df_chunk)} bars. Next: {chunk_end}")
@@ -229,20 +239,29 @@ class DataFetcherBacktest:
             full_df = full_df[~full_df.index.duplicated(keep='first')]
             
             # Save Backtest Data
-            fname = self.data_dir / f"{asset_name}_5m_2025.parquet"
+            fname = self.data_dir / f"{asset_name}_5m_backtest.parquet"
             full_df.to_parquet(fname)
-            logging.info(f"✅ Saved {fname}: {len(full_df)} rows (2025 backtest data).")
+            logging.info(f"✅ Saved {fname}: {len(full_df)} rows (2026 backtest data).")
         else:
             logging.warning(f"⚠️ No data fetched for {asset_name}!")
 
 if __name__ == "__main__":
-    fetcher = DataFetcherBacktest()
-    print("Starting Backtest Data Fetcher for 2025... (Press Ctrl+C to stop manually)")
+    parser = argparse.ArgumentParser(description="cTrader 2026 Backtest Data Fetcher")
+    parser.add_argument("--start", type=str, default="2026-01-01", help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--end", type=str, default="2026-04-10", help="End date (YYYY-MM-DD)")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing *_5m_backtest.parquet files")
+    args = parser.parse_args()
+
+    fetcher = DataFetcherBacktest(
+        start_date=datetime.strptime(args.start, "%Y-%m-%d"),
+        end_date=datetime.strptime(args.end, "%Y-%m-%d"),
+        overwrite=args.overwrite,
+    )
+    print("Starting Backtest Data Fetcher for 2026... (Press Ctrl+C to stop manually)")
     try:
         fetcher.start()
     except KeyboardInterrupt:
         logging.info("Interrupted.")
-
 
 
 

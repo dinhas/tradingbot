@@ -8,11 +8,12 @@ from typing import Dict, List, Tuple
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from Alpha.src.feature_engine import FeatureEngine
+from shared_constants import FX_ALPHA_ASSETS
 
 class DataLoader:
     def __init__(self, data_dir: str = "data"):
         self.data_dir = Path(data_dir)
-        self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+        self.assets = FX_ALPHA_ASSETS
 
     def load_raw_data(self) -> Dict[str, pd.DataFrame]:
         """

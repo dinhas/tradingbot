@@ -4,10 +4,11 @@ import logging
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, ADXIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
+from shared_constants import FX_ALPHA_ASSETS
 
 class FeatureEngine:
     def __init__(self):
-        self.assets = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAUUSD']
+        self.assets = FX_ALPHA_ASSETS
         self.feature_names = []
         self._define_feature_names()
 
