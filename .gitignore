@@ -1,0 +1,90 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Editors and notebooks
+.idea/
+.vscode/
+.ipynb_checkpoints/
+
+# Secrets
+.env
+config/credentials.yaml
+config/api_keys.yaml
+*.key
+*.pem
+
+# Runtime output
+logs/
+conductor/logs/
+runtime/
+*.log
+*.tmp
+*.bak
+*.cache
+*.db
+LiveExecution/data/
+
+# Generated training data and market data
+Alpha/data/training_set/
+RiskLayer/data/training_set/
+data/*.parquet
+backtest/data/*.parquet
+*.h5
+*.hdf5
+
+# Generated backtest output. Keep the latest comparison files tracked/visible.
+backtest/results/*
+!backtest/results/metrics_alpha_lstm_vectorized_20260420_213457.json
+!backtest/results/trades_alpha_lstm_vectorized_20260420_213457.csv
+!backtest/results/asset_breakdown_alpha_lstm_vectorized_20260420_213457.csv
+!backtest/results/combined_results_20260419_081114.json
+!backtest/results/combined_trades_20260419_081114.csv
+
+# Test and coverage output
+test_output/
+*.test
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

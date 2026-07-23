@@ -1,0 +1,17 @@
+{
+  "profit_factor": 1.1083863012406925,
+  "total_return": 14.547472661604719,
+  "sharpe_ratio": 4.774750800578983,
+  "max_drawdown": -0.6384273994775717,
+  "win_rate": 0.40538591007453717,
+  "avg_rr_ratio": 0,
+  "trade_frequency": 42.119417680568255,
+  "avg_hold_time_minutes": 112.43928829045444,
+  "total_trades": 4159,
+  "winning_trades": 1686,
+  "losing_trades": 2473,
+  "gross_profit": 1483688.1682668924,
+  "gross_loss": 1338602.043895796,
+  "final_equity": 155473.171875,
+  "initial_equity": 9999.900000399999
+}
