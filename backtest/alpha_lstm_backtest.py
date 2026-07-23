@@ -26,6 +26,22 @@ logger = logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+def _infer_lstm_input_dim(state_dict: dict) -> int:
+    """Infer the expected input dimension from an LSTM checkpoint."""
+    key = "lstm.weight_ih_l0"
+    if key not in state_dict:
+        raise ValueError(f"Checkpoint is missing {key}; cannot infer input dimension.")
+    return int(state_dict[key].shape[1])
+
+
+def _load_state_dict(model_path: Path) -> dict:
+    """Load a PyTorch checkpoint from .pth or .zip serialization."""
+    checkpoint = torch.load(model_path, map_location=DEVICE)
+    if not isinstance(checkpoint, dict):
+        raise ValueError(f"Unsupported checkpoint format in {model_path}")
+    return checkpoint
+
 class AlphaLSTMVectorizedBacktester:
     """
     Ultra-fast vectorized backtester for Alpha LSTM models.
@@ -88,7 +104,7 @@ class AlphaLSTMVectorizedBacktester:
             with torch.no_grad():
                 for i in range(0, len(sequences), self.batch_size):
                     batch_seq = sequences[i:i+self.batch_size]
-                    batch_tensor = torch.from_numpy(batch_seq).to(DEVICE)
+                    batch_tensor = torch.from_numpy(batch_seq.copy()).to(DEVICE)
                     logits = self.model(batch_tensor)
                     probs = torch.softmax(logits, dim=1).cpu().numpy()
                     
@@ -125,6 +141,7 @@ class AlphaLSTMVectorizedBacktester:
         timestamps = self.normalized_df.index
         
         logger.info(f"Starting vectorized backtest execution (ADX Threshold: {self.adx_thresh})...")
+        metrics.add_equity_point(timestamps[self.sequence_length - 1], float(equity))
         
         # We start from sequence_length - 1
         for idx in tqdm(range(self.sequence_length - 1, n_steps - 1)):
@@ -190,16 +207,17 @@ class AlphaLSTMVectorizedBacktester:
                         # Process Close
                         price_change_pct = (exit_price - p['entry_price']) / p['entry_price'] * p['direction']
                         pnl = price_change_pct * (p['size'] * self.leverage)
-                        
-                        fee = p['size'] * 0.00004 # round trip
-                        equity += (pnl - fee)
+
+                        fee = p['entry_fee'] + (p['size'] * 0.00002)
+                        net_pnl = pnl - fee
+                        equity += pnl - (p['size'] * 0.00002)
                         
                         metrics.add_trade({
                             'timestamp': ts,
                             'asset': asset,
                             'pnl': float(pnl),
                             'fees': float(fee),
-                            'net_pnl': float(pnl - fee),
+                            'net_pnl': float(net_pnl),
                             'entry_price': float(p['entry_price']),
                             'exit_price': float(exit_price),
                             'size': float(p['size']),
@@ -222,18 +240,19 @@ class AlphaLSTMVectorizedBacktester:
                     sl = entry_price - (direction * sl_dist)
                     tp = entry_price + (direction * tp_dist)
                     
+                    entry_fee = size * 0.00002
                     positions[asset] = {
                         'direction': direction,
                         'entry_price': entry_price,
                         'size': size,
+                        'entry_fee': entry_fee,
                         'sl': sl,
                         'tp': tp,
                         'entry_timestamp': ts,
                         'entry_idx': idx,
                         'equity_before': equity
                     }
-                    # Small entry fee (already accounted in round trip above for metrics, but we deduct for equity)
-                    equity -= size * 0.00002
+                    equity -= entry_fee
 
             metrics.add_equity_point(ts, float(equity))
 
@@ -247,14 +266,15 @@ class AlphaLSTMVectorizedBacktester:
                 exit_price = close_prices[asset][final_idx] - (p['direction'] * half_spread)
                 price_change_pct = (exit_price - p['entry_price']) / p['entry_price'] * p['direction']
                 pnl = price_change_pct * (p['size'] * self.leverage)
-                fee = p['size'] * 0.00004
-                equity += (pnl - fee)
+                fee = p['entry_fee'] + (p['size'] * 0.00002)
+                net_pnl = pnl - fee
+                equity += pnl - (p['size'] * 0.00002)
                 metrics.add_trade({
                     'timestamp': timestamps[final_idx],
                     'asset': asset,
                     'pnl': float(pnl),
                     'fees': float(fee),
-                    'net_pnl': float(pnl - fee),
+                    'net_pnl': float(net_pnl),
                     'entry_price': float(p['entry_price']),
                     'exit_price': float(exit_price),
                     'size': float(p['size']),
@@ -268,7 +288,7 @@ class AlphaLSTMVectorizedBacktester:
 
 def main():
     parser = argparse.ArgumentParser(description="Ultra-Fast Vectorized Alpha LSTM Backtester")
-    parser.add_argument("--model-path", type=str, default="Alpha/models/alpha_model.pth")
+    parser.add_argument("--model-path", type=str, default="Alpha/models/alpha_model.zip")
     parser.add_argument("--data-dir", type=str, default="backtest/data")
     parser.add_argument("--output-dir", type=str, default="backtest/results")
     parser.add_argument("--steps", type=int, default=None)
@@ -281,6 +301,7 @@ def main():
     parser.add_argument("--adx-thresh", type=float, default=25.0)
     parser.add_argument("--max-hold-bars", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=2048)
+    parser.add_argument("--no-charts", action="store_true", help="Skip chart generation after saving metrics/trades")
     args = parser.parse_args()
 
     model_path = PROJECT_ROOT / args.model_path
@@ -300,8 +321,19 @@ def main():
     if not model_path.exists():
         logger.error(f"Model not found at {model_path}")
         return
-        
-    model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+
+    checkpoint = _load_state_dict(model_path)
+    checkpoint_input_dim = _infer_lstm_input_dim(checkpoint)
+    if checkpoint_input_dim != input_dim:
+        logger.error(
+            "Model/input mismatch: checkpoint expects %d features but backtest engine builds %d.",
+            checkpoint_input_dim,
+            input_dim,
+        )
+        return
+    logger.info("Model/input feature check passed: checkpoint=%d, backtest_engine=%d", checkpoint_input_dim, input_dim)
+
+    model.load_state_dict(checkpoint)
     model.eval()
 
     bt = AlphaLSTMVectorizedBacktester(
@@ -344,7 +376,7 @@ def main():
         asset_file = output_dir / f"asset_breakdown_alpha_lstm_vectorized_{timestamp}.csv"
         pd.DataFrame(per_asset).T.to_csv(asset_file)
 
-    if metrics.equity_curve and metrics.trades:
+    if metrics.equity_curve and metrics.trades and not args.no_charts:
         generate_all_charts(metrics, per_asset, "AlphaLSTM_Vectorized", output_dir, timestamp)
 
     logger.info("\n=== RESULTS ===")

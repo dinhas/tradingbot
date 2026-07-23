@@ -79,7 +79,7 @@ class Labeler:
 
         n = len(df)
         # Full-length outputs: one row per input bar. 'valid' marks bars that pass
-        # the ADX/ATR/trend filters. Invalid rows are KEPT (direction=0, valid=False)
+        # the ADX/ATR filters. Invalid rows are KEPT (direction=0, valid=False)
         # so downstream sequence building stays contiguous in time.
         directions = np.zeros(n, dtype=np.float32)
         valid = np.zeros(n, dtype=bool)
@@ -93,7 +93,7 @@ class Labeler:
             mid_price = prices_close[i]
             atr = atrs_5m[i]
             
-            if np.isnan(atr) or atr == 0 or np.isnan(current_trend):
+            if np.isnan(atr) or atr == 0:
                 continue
                 
             # ADX Filter: Only train on candles that pass the ADX threshold
@@ -109,6 +109,8 @@ class Labeler:
             direction = 0 # Default: No barrier hit or Neutral (Vertical Barrier / Timeout)
             
             # --- SPREAD-AWARE TRIPLE BARRIER LOGIC ---
+            # During HTF EMA warmup the trend is unavailable; keep the bar valid
+            # but leave it neutral instead of dropping it from the dataset.
             if current_trend == 1: # Bullish Trend -> ONLY Look for BUYS
                 # Buy at Ask, Exit at Bid
                 entry_ask = mid_price + (spread / 2.0)

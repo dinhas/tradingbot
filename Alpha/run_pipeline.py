@@ -48,6 +48,7 @@ SESSION_COL = "is_late_session"
 # Label / split hygiene
 LABEL_MAX_BARS = 6      # must match Labeler.max_bars (vertical barrier)
 BAR_MINUTES = 5
+CLASS_WEIGHT_MAX_RATIO = 3.0
 # Purge: drop train/val samples whose label horizon crosses the split boundary.
 PURGE_TD = np.timedelta64(LABEL_MAX_BARS * BAR_MINUTES, 'm')
 # Embargo: gap after each split cut so no input window or label horizon straddles it.
@@ -124,6 +125,21 @@ def _build_sequences_for_asset(features: np.ndarray, labels: np.ndarray, valid_m
     y_seq = labels[end_indices].astype(np.float32)
 
     return X_seq, y_seq, end_indices
+
+
+def _softened_class_weights(counts, total_samples: int, max_ratio: float = CLASS_WEIGHT_MAX_RATIO) -> np.ndarray:
+    """Sqrt inverse-frequency weights, clipped to avoid neutral collapse."""
+    raw = np.array([
+        total_samples / (3 * max(1, counts.get(-1.0, 0))),
+        total_samples / (3 * max(1, counts.get(0.0, 0))),
+        total_samples / (3 * max(1, counts.get(1.0, 0))),
+    ], dtype=np.float32)
+
+    weights = np.sqrt(raw)
+    weights = weights / max(float(weights.mean()), 1e-8)
+    weights = np.minimum(weights, float(weights.min()) * max_ratio)
+    weights = weights / max(float(weights.mean()), 1e-8)
+    return weights.astype(np.float32)
 
 
 def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LENGTH):
@@ -321,16 +337,12 @@ def train_model(sequences_path, labels_path, model_save_path):
     from collections import Counter
     counts = Counter(directions.tolist())
     
-    # Calculate Inverse Frequency Weights 
-    # Formula: Total_Samples / (Num_Classes * Class_Count)
-    # The targets are mapped to indices [0, 1, 2] corresponding to [-1, 0, 1]
-    weight_minus_1 = total_samples / (3 * max(1, counts.get(-1.0, 1)))
-    weight_0       = total_samples / (3 * max(1, counts.get(0.0, 1)))
-    weight_plus_1  = total_samples / (3 * max(1, counts.get(1.0, 1)))
-    
-    class_weights = torch.tensor([weight_minus_1, weight_0, weight_plus_1], dtype=torch.float32).to(DEVICE)
+    # Full inverse-frequency weights made the model ignore neutral. Use softened,
+    # capped weights so rare buy/sell labels matter without dominating the loss.
+    class_weight_values = _softened_class_weights(counts, total_samples)
+    class_weights = torch.tensor(class_weight_values, dtype=torch.float32).to(DEVICE)
     logger.info(f"Class Distribution [-1, 0, 1]: Sell={counts.get(-1.0,0)} | Neutral={counts.get(0.0,0)} | Buy={counts.get(1.0,0)}")
-    logger.info(f"Applied Focal Loss Weights: {class_weights.cpu().numpy()}")
+    logger.info(f"Applied softened Focal Loss Weights: {class_weights.cpu().numpy()} (max_ratio={CLASS_WEIGHT_MAX_RATIO})")
 
     train_idx, val_idx, test_idx = _date_based_split_indices(timestamps)
     X_train, X_val = sequences[train_idx], sequences[val_idx]
