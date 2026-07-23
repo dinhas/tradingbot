@@ -30,18 +30,24 @@ class Labeler:
         return adx.adx()
 
     def _get_1h_trend(self, df: pd.DataFrame, asset: str) -> pd.Series:
-        """Calculates the 1H Trend using 100 EMA on resampled 1H data."""
+        """Calculates the 1H Trend using 100 EMA on resampled 1H data.
+
+        CAUSAL: the 1H series is shifted by one completed hour before being
+        reindexed to 5M, so a 5M bar only ever sees the last fully closed
+        1H candle (no intra-hour lookahead).
+        """
         close_5m = df[f"{asset}_close"]
-        
+
         # Resample to 1h to calculate the HTF Trend
         close_1h = close_5m.resample('1h').last().ffill()
         ema_1h = EMAIndicator(close_1h, window=self.ema_window).ema_indicator()
-        
-        # Determine Trend: 1 (Bullish), -1 (Bearish)
-        trend_1h = np.where(close_1h > ema_1h, 1, -1)
-        trend_series_1h = pd.Series(trend_1h, index=close_1h.index)
-        
-        # Reindex back to 5M to align with original data
+
+        # Determine Trend: 1 (Bullish), -1 (Bearish); NaN during EMA warmup
+        trend_series_1h = pd.Series(np.where(close_1h > ema_1h, 1.0, -1.0), index=close_1h.index)
+        trend_series_1h[ema_1h.isna()] = np.nan
+
+        # Shift by one completed hour, then reindex back to 5M
+        trend_series_1h = trend_series_1h.shift(1)
         return trend_series_1h.reindex(df.index, method='ffill')
 
     def label_data(self, df: pd.DataFrame, asset: str) -> pd.DataFrame:
@@ -69,15 +75,21 @@ class Labeler:
         atrs_5m = df[atr_col].values
         timestamps = df.index
         
-        labels = []
-        indices = []
-        
         spread = DEFAULT_SPREADS.get(asset, 0.0)
-        
+
         n = len(df)
+        # Full-length outputs: one row per input bar. 'valid' marks bars that pass
+        # the ADX/ATR/trend filters. Invalid rows are KEPT (direction=0, valid=False)
+        # so downstream sequence building stays contiguous in time.
+        directions = np.zeros(n, dtype=np.float32)
+        valid = np.zeros(n, dtype=bool)
+
+        trend_vals = trend_1h.values
+        adx_vals = adx_series.values
+
         for i in range(n - 1):
-            current_trend = trend_1h.iloc[i]
-            current_adx = adx_series.iloc[i]
+            current_trend = trend_vals[i]
+            current_adx = adx_vals[i]
             mid_price = prices_close[i]
             atr = atrs_5m[i]
             
@@ -87,6 +99,8 @@ class Labeler:
             # ADX Filter: Only train on candles that pass the ADX threshold
             if current_adx < self.adx_threshold:
                 continue
+
+            valid[i] = True
 
             # Define barriers based on 5M ATR
             tp_dist = self.tp_mult * atr
@@ -130,10 +144,9 @@ class Labeler:
                         direction = 0 # SL Hit (at Ask price)
                         break
             
-            labels.append({'direction': direction})
-            indices.append(timestamps[i])
-            
-        return pd.DataFrame(labels, index=indices)
+            directions[i] = direction
+
+        return pd.DataFrame({'direction': directions, 'valid': valid}, index=timestamps)
 
 if __name__ == "__main__":
     pass

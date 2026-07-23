@@ -1,0 +1,146 @@
+2026-07-23 17:33:35,724 - INFO - Starting optimized LSTM training...
+2026-07-23 17:33:35,780 - INFO - Class Distribution [-1, 0, 1]: Sell=415 | Neutral=1189 | Buy=396
+2026-07-23 17:33:35,781 - INFO - Applied Focal Loss Weights: [1.6064258 0.5606953 1.6835017]
+2026-07-23 17:33:35,789 - INFO - Date split: train=1394 (2025-01-01T00:00:00.000000000 to 2025-01-05T20:05:00.000000000), val=238 (2025-01-06T01:20:00.000000000 to 2025-01-06T21:05:00.000000000), holdout_test=244 (2025-01-07T02:20:00.000000000 to 2025-01-07T22:35:00.000000000)
+Epoch 1:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 1:   5%|4         | 1/22 [00:22<07:51, 22.45s/it]Epoch 1:  18%|#8        | 4/22 [00:22<01:16,  4.28s/it]Epoch 1:  36%|###6      | 8/22 [00:22<00:23,  1.70s/it]Epoch 1:  55%|#####4    | 12/22 [00:22<00:09,  1.08it/s]Epoch 1:  73%|#######2  | 16/22 [00:22<00:03,  1.76it/s]Epoch 1:  91%|######### | 20/22 [00:23<00:00,  2.68it/s]Epoch 1: 100%|##########| 22/22 [00:24<00:00,  1.11s/it]
+2026-07-23 17:34:26,210 - INFO - Epoch 1: Train Loss = 0.5727 | Val Loss = 0.5640 | Val Acc = 0.210 | Grad Norm = 0.195 | Buy edge = +0.000 | Sell edge = -0.202
+2026-07-23 17:34:26,211 - INFO - \u2728 New best Val Loss (0.5640)! Saving model to Alpha\models\_diag_test_model.pth
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2728' in position 33: character maps to <undefined>
+Call stack:
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 43, in <module>
+    main()
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 35, in main
+    train_model(
+  File "e:\tradingbot\Alpha\run_pipeline.py", line 466, in train_model
+    logger.info(f"\u2728 New best Val Loss ({avg_val_loss:.4f})! Saving model to {model_save_path}")
+Message: '\u2728 New best Val Loss (0.5640)! Saving model to Alpha\\models\\_diag_test_model.pth'
+Arguments: ()
+Epoch 2:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 2:   5%|4         | 1/22 [00:21<07:37, 21.80s/it]Epoch 2:  23%|##2       | 5/22 [00:21<00:55,  3.27s/it]Epoch 2:  41%|####      | 9/22 [00:22<00:19,  1.49s/it]Epoch 2:  59%|#####9    | 13/22 [00:22<00:07,  1.17it/s]Epoch 2:  77%|#######7  | 17/22 [00:22<00:02,  1.87it/s]Epoch 2:  95%|#########5| 21/22 [00:22<00:00,  2.80it/s]Epoch 2: 100%|##########| 22/22 [00:23<00:00,  1.08s/it]
+2026-07-23 17:35:12,923 - INFO - Epoch 2: Train Loss = 0.5608 | Val Loss = 0.5570 | Val Acc = 0.210 | Grad Norm = 0.161 | Buy edge = +0.000 | Sell edge = -0.202
+2026-07-23 17:35:12,923 - INFO - \u2728 New best Val Loss (0.5570)! Saving model to Alpha\models\_diag_test_model.pth
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2728' in position 33: character maps to <undefined>
+Call stack:
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 43, in <module>
+    main()
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 35, in main
+    train_model(
+  File "e:\tradingbot\Alpha\run_pipeline.py", line 466, in train_model
+    logger.info(f"\u2728 New best Val Loss ({avg_val_loss:.4f})! Saving model to {model_save_path}")
+Message: '\u2728 New best Val Loss (0.5570)! Saving model to Alpha\\models\\_diag_test_model.pth'
+Arguments: ()
+Epoch 3:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 3:   5%|4         | 1/22 [00:21<07:34, 21.65s/it]Epoch 3:  23%|##2       | 5/22 [00:21<00:55,  3.25s/it]Epoch 3:  41%|####      | 9/22 [00:21<00:19,  1.48s/it]Epoch 3:  59%|#####9    | 13/22 [00:22<00:07,  1.18it/s]Epoch 3:  77%|#######7  | 17/22 [00:22<00:02,  1.88it/s]Epoch 3:  95%|#########5| 21/22 [00:22<00:00,  2.84it/s]Epoch 3: 100%|##########| 22/22 [00:23<00:00,  1.07s/it]
+2026-07-23 17:35:59,307 - INFO - Epoch 3: Train Loss = 0.5556 | Val Loss = 0.5577 | Val Acc = 0.202 | Grad Norm = 0.158 | Buy edge = -0.210 | Sell edge = +0.000
+Epoch 4:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 4:   5%|4         | 1/22 [00:22<07:52, 22.51s/it]Epoch 4:  18%|#8        | 4/22 [00:22<01:17,  4.29s/it]Epoch 4:  32%|###1      | 7/22 [00:22<00:30,  2.01s/it]Epoch 4:  45%|####5     | 10/22 [00:22<00:13,  1.15s/it]Epoch 4:  64%|######3   | 14/22 [00:22<00:05,  1.55it/s]Epoch 4:  82%|########1 | 18/22 [00:23<00:01,  2.49it/s]Epoch 4: 100%|##########| 22/22 [00:23<00:00,  3.73it/s]Epoch 4: 100%|##########| 22/22 [00:24<00:00,  1.11s/it]
+2026-07-23 17:36:46,650 - INFO - Epoch 4: Train Loss = 0.5548 | Val Loss = 0.5570 | Val Acc = 0.210 | Grad Norm = 0.171 | Buy edge = -0.004 | Sell edge = +0.011
+Epoch 5:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 5:   5%|4         | 1/22 [00:21<07:33, 21.59s/it]Epoch 5:  23%|##2       | 5/22 [00:21<00:55,  3.24s/it]Epoch 5:  41%|####      | 9/22 [00:21<00:19,  1.48s/it]Epoch 5:  59%|#####9    | 13/22 [00:21<00:07,  1.19it/s]Epoch 5:  77%|#######7  | 17/22 [00:22<00:02,  1.89it/s]Epoch 5:  95%|#########5| 21/22 [00:22<00:00,  2.84it/s]Epoch 5: 100%|##########| 22/22 [00:23<00:00,  1.07s/it]
+2026-07-23 17:37:33,151 - INFO - Epoch 5: Train Loss = 0.5573 | Val Loss = 0.5571 | Val Acc = 0.193 | Grad Norm = 0.178 | Buy edge = -0.021 | Sell edge = +0.006
+Epoch 6:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 6:   5%|4         | 1/22 [00:23<08:03, 23.02s/it]Epoch 6:  23%|##2       | 5/22 [00:23<00:58,  3.45s/it]Epoch 6:  41%|####      | 9/22 [00:23<00:20,  1.58s/it]Epoch 6:  59%|#####9    | 13/22 [00:23<00:08,  1.11it/s]Epoch 6:  77%|#######7  | 17/22 [00:23<00:02,  1.78it/s]Epoch 6:  95%|#########5| 21/22 [00:23<00:00,  2.68it/s]Epoch 6: 100%|##########| 22/22 [00:24<00:00,  1.13s/it]
+2026-07-23 17:38:21,160 - INFO - Epoch 6: Train Loss = 0.5526 | Val Loss = 0.5568 | Val Acc = 0.210 | Grad Norm = 0.125 | Buy edge = -0.025 | Sell edge = +0.012
+2026-07-23 17:38:21,160 - INFO - \u2728 New best Val Loss (0.5568)! Saving model to Alpha\models\_diag_test_model.pth
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2728' in position 33: character maps to <undefined>
+Call stack:
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 43, in <module>
+    main()
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 35, in main
+    train_model(
+  File "e:\tradingbot\Alpha\run_pipeline.py", line 466, in train_model
+    logger.info(f"\u2728 New best Val Loss ({avg_val_loss:.4f})! Saving model to {model_save_path}")
+Message: '\u2728 New best Val Loss (0.5568)! Saving model to Alpha\\models\\_diag_test_model.pth'
+Arguments: ()
+Epoch 7:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 7:   5%|4         | 1/22 [00:22<08:01, 22.95s/it]Epoch 7:  23%|##2       | 5/22 [00:23<00:58,  3.45s/it]Epoch 7:  41%|####      | 9/22 [00:23<00:20,  1.57s/it]Epoch 7:  59%|#####9    | 13/22 [00:23<00:08,  1.12it/s]Epoch 7:  77%|#######7  | 17/22 [00:23<00:02,  1.78it/s]Epoch 7:  95%|#########5| 21/22 [00:23<00:00,  2.69it/s]Epoch 7: 100%|##########| 22/22 [00:24<00:00,  1.13s/it]
+2026-07-23 17:39:10,020 - INFO - Epoch 7: Train Loss = 0.5548 | Val Loss = 0.5563 | Val Acc = 0.214 | Grad Norm = 0.168 | Buy edge = -0.005 | Sell edge = +0.018
+2026-07-23 17:39:10,020 - INFO - \u2728 New best Val Loss (0.5563)! Saving model to Alpha\models\_diag_test_model.pth
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2728' in position 33: character maps to <undefined>
+Call stack:
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 43, in <module>
+    main()
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 35, in main
+    train_model(
+  File "e:\tradingbot\Alpha\run_pipeline.py", line 466, in train_model
+    logger.info(f"\u2728 New best Val Loss ({avg_val_loss:.4f})! Saving model to {model_save_path}")
+Message: '\u2728 New best Val Loss (0.5563)! Saving model to Alpha\\models\\_diag_test_model.pth'
+Arguments: ()
+Epoch 8:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 8:   5%|4         | 1/22 [00:25<08:56, 25.53s/it]Epoch 8:  23%|##2       | 5/22 [00:25<01:05,  3.83s/it]Epoch 8:  41%|####      | 9/22 [00:25<00:22,  1.75s/it]Epoch 8:  59%|#####9    | 13/22 [00:25<00:08,  1.01it/s]Epoch 8:  77%|#######7  | 17/22 [00:26<00:03,  1.60it/s]Epoch 8:  95%|#########5| 21/22 [00:26<00:00,  2.42it/s]Epoch 8: 100%|##########| 22/22 [00:27<00:00,  1.25s/it]
+2026-07-23 17:40:01,013 - INFO - Epoch 8: Train Loss = 0.5558 | Val Loss = 0.5572 | Val Acc = 0.214 | Grad Norm = 0.165 | Buy edge = +0.023 | Sell edge = +0.010
+Epoch 9:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 9:   5%|4         | 1/22 [00:21<07:38, 21.83s/it]Epoch 9:  23%|##2       | 5/22 [00:21<00:55,  3.28s/it]Epoch 9:  41%|####      | 9/22 [00:22<00:19,  1.51s/it]Epoch 9:  59%|#####9    | 13/22 [00:22<00:07,  1.16it/s]Epoch 9:  77%|#######7  | 17/22 [00:22<00:02,  1.85it/s]Epoch 9:  95%|#########5| 21/22 [00:22<00:00,  2.79it/s]Epoch 9: 100%|##########| 22/22 [00:23<00:00,  1.08s/it]
+2026-07-23 17:40:48,250 - INFO - Epoch 9: Train Loss = 0.5505 | Val Loss = 0.5562 | Val Acc = 0.218 | Grad Norm = 0.193 | Buy edge = +0.002 | Sell edge = +0.019
+2026-07-23 17:40:48,250 - INFO - \u2728 New best Val Loss (0.5562)! Saving model to Alpha\models\_diag_test_model.pth
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2728' in position 33: character maps to <undefined>
+Call stack:
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 43, in <module>
+    main()
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 35, in main
+    train_model(
+  File "e:\tradingbot\Alpha\run_pipeline.py", line 466, in train_model
+    logger.info(f"\u2728 New best Val Loss ({avg_val_loss:.4f})! Saving model to {model_save_path}")
+Message: '\u2728 New best Val Loss (0.5562)! Saving model to Alpha\\models\\_diag_test_model.pth'
+Arguments: ()
+Epoch 10:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 10:   5%|4         | 1/22 [00:21<07:34, 21.66s/it]Epoch 10:  23%|##2       | 5/22 [00:21<00:55,  3.25s/it]Epoch 10:  41%|####      | 9/22 [00:21<00:19,  1.48s/it]Epoch 10:  59%|#####9    | 13/22 [00:22<00:07,  1.18it/s]Epoch 10:  77%|#######7  | 17/22 [00:22<00:02,  1.88it/s]Epoch 10:  95%|#########5| 21/22 [00:22<00:00,  2.82it/s]Epoch 10: 100%|##########| 22/22 [00:23<00:00,  1.07s/it]
+2026-07-23 17:41:35,151 - INFO - Epoch 10: Train Loss = 0.5518 | Val Loss = 0.5552 | Val Acc = 0.189 | Grad Norm = 0.174 | Buy edge = -0.016 | Sell edge = -0.018
+2026-07-23 17:41:35,151 - INFO - \u2728 New best Val Loss (0.5552)! Saving model to Alpha\models\_diag_test_model.pth
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2728' in position 33: character maps to <undefined>
+Call stack:
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 43, in <module>
+    main()
+  File "e:\tradingbot\scripts\_diag_smoke.py", line 35, in main
+    train_model(
+  File "e:\tradingbot\Alpha\run_pipeline.py", line 466, in train_model
+    logger.info(f"\u2728 New best Val Loss ({avg_val_loss:.4f})! Saving model to {model_save_path}")
+Message: '\u2728 New best Val Loss (0.5552)! Saving model to Alpha\\models\\_diag_test_model.pth'
+Arguments: ()
+Epoch 11:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 11:   5%|4         | 1/22 [00:21<07:35, 21.69s/it]Epoch 11:  23%|##2       | 5/22 [00:21<00:55,  3.26s/it]Epoch 11:  41%|####      | 9/22 [00:21<00:19,  1.49s/it]Epoch 11:  59%|#####9    | 13/22 [00:22<00:07,  1.18it/s]Epoch 11:  77%|#######7  | 17/22 [00:22<00:02,  1.88it/s]Epoch 11:  95%|#########5| 21/22 [00:22<00:00,  2.82it/s]Epoch 11: 100%|##########| 22/22 [00:23<00:00,  1.07s/it]
+2026-07-23 17:42:21,629 - INFO - Epoch 11: Train Loss = 0.5499 | Val Loss = 0.5564 | Val Acc = 0.198 | Grad Norm = 0.231 | Buy edge = -0.017 | Sell edge = +0.003
+Epoch 12:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 12:   5%|4         | 1/22 [00:21<07:36, 21.75s/it]Epoch 12:  23%|##2       | 5/22 [00:21<00:55,  3.27s/it]Epoch 12:  41%|####      | 9/22 [00:21<00:19,  1.49s/it]Epoch 12:  59%|#####9    | 13/22 [00:22<00:07,  1.18it/s]Epoch 12:  77%|#######7  | 17/22 [00:22<00:02,  1.87it/s]Epoch 12:  95%|#########5| 21/22 [00:22<00:00,  2.82it/s]Epoch 12: 100%|##########| 22/22 [00:23<00:00,  1.07s/it]
+2026-07-23 17:43:09,401 - INFO - Epoch 12: Train Loss = 0.5490 | Val Loss = 0.5559 | Val Acc = 0.202 | Grad Norm = 0.223 | Buy edge = -0.017 | Sell edge = +0.008
+Epoch 13:   0%|          | 0/22 [00:00<?, ?it/s]Epoch 13:   5%|4         | 1/22 [00:22<08:00, 22.88s/it]Epoch 13:  18%|#8        | 4/22 [00:22<01:18,  4.36s/it]Epoch 13:  32%|###1      | 7/22 [00:23<00:30,  2.04s/it]Epoch 13:  45%|####5     | 10/22 [00:23<00:14,  1.17s/it]Epoch 13:  59%|#####9    | 13/22 [00:23<00:06,  1.36it/s]Epoch 13:  77%|#######7  | 17/22 [00:23<00:02,  2.28it/s]Epoch 13:  91%|######### | 20/22 [00:23<00:00,  3.20it/s]Epoch 13: 100%|##########| 22/22 [00:25<00:00,  1.15s/it]
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\multiprocessing\spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Geeth\AppData\Local\Programs\Python\Python312\Lib\multiprocessing\spawn.py", line 132, in _main
+    self = reduction.pickle.load(from_parent)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_pickle.UnpicklingError: pickle data was truncated

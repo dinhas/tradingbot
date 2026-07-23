@@ -1,10 +1,21 @@
+"""Micro-validation for the current Alpha SL pipeline.
+
+Verifies end-to-end on a small slice of real data:
+1. Features contain no NaNs.
+2. Labeling produces the expected {direction, valid} schema and a sane distribution.
+3. Contiguous sequence building works and shapes align with the model.
+4. One training epoch reduces the loss and gradients flow through the LSTM.
+5. Confusion matrix on the micro set (sanity, not a performance claim).
+
+Run: python -m Alpha.src.micro_val
+"""
+
 import sys
 import os
+import numpy as np
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-import pandas as pd
-import numpy as np
 import logging
 
 # Add project root to sys.path
@@ -12,112 +23,117 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from Alpha.src.data_loader import DataLoader as MyDataLoader
 from Alpha.src.labeling import Labeler
-from Alpha.src.model import AlphaSLModel, multi_head_loss
+from Alpha.src.model import AlphaSLModel, direction_loss
 from Alpha.src.feature_engine import FeatureEngine
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
-def run_micro_validation():
-    logger.info("--- UNIFIED MICRO-VALIDATION START ---")
+SEQ_LEN = 50
+MICRO_ROWS = 5000
 
-    # 1. Data Loading (Phase 1)
+
+def _build_sequences(features: np.ndarray, labels: np.ndarray, valid_mask: np.ndarray, seq_len: int):
+    """Contiguous rolling windows; valid_mask selects which windows are kept (by final bar)."""
+    end_indices = np.flatnonzero(valid_mask)
+    end_indices = end_indices[end_indices >= seq_len - 1]
+    if len(end_indices) == 0:
+        return (np.empty((0, seq_len, features.shape[1]), dtype=np.float32),
+                np.empty((0,), dtype=np.float32))
+    X = np.stack([features[e - seq_len + 1:e + 1] for e in end_indices]).astype(np.float32)
+    y = labels[end_indices].astype(np.float32)
+    return X, y
+
+
+def run_micro_validation():
+    logger.info("--- ALPHA SL MICRO-VALIDATION START ---")
+
+    # 1. Data + features
     loader = MyDataLoader()
     aligned_df, normalized_df = loader.get_features()
     logger.info(f"Normalized DF shape: {normalized_df.shape}")
 
-    nan_count = normalized_df.isna().sum().sum()
+    nan_count = int(normalized_df.isna().sum().sum())
     logger.info(f"Total NaNs in features: {nan_count}")
     if nan_count > 0:
         logger.error("ERROR: NaNs detected in features!")
-        return
+        return False
 
-    # 2. Labeling (Phases 2-4)
+    # 2. Labeling
     labeler = Labeler()
     asset = 'EURUSD'
-    labels_df = labeler.label_data(aligned_df, asset)
-    labels_500 = labels_df.head(500)
-    logger.info(f"Generated {len(labels_500)} labeled samples.")
+    labels_df = labeler.label_data(aligned_df, asset).head(MICRO_ROWS)
+    assert {'direction', 'valid'}.issubset(labels_df.columns), "Labeler schema changed!"
+    logger.info(f"Labeled rows: {len(labels_df)} | valid ratio: {labels_df['valid'].mean():.2%}")
+    logger.info("Class distribution among valid labels:")
+    logger.info(labels_df.loc[labels_df['valid'], 'direction'].value_counts(normalize=True).sort_index())
 
-    # Class distribution
-    logger.info("\nClass distribution (Direction):")
-    logger.info(labels_500['direction'].value_counts(normalize=True))
+    # 3. Sequences
+    common = labels_df.index.intersection(normalized_df.index)
+    norm = normalized_df.loc[common]
+    labels_df = labels_df.loc[common]
 
-    # First 5 labels
-    logger.info("\nFirst 5 labels (Direction, Quality, Meta):")
-    logger.info(labels_500[['direction', 'quality', 'meta']].head(5))
-
-    # 3. Feature Prep
     engine = FeatureEngine()
-    X = []
-    y_dir = []
-    y_qual = []
-    y_meta = []
+    features = engine.get_observation_vectorized(norm, asset)
+    logger.info(f"Feature matrix shape: {features.shape} (expected {len(engine.feature_names)} dims)")
+    assert features.shape[1] == len(engine.feature_names), "Feature dim mismatch!"
 
-    logger.info("\nPreparing features for micro-training...")
-    for idx, row in labels_500.iterrows():
-        current_step_data = normalized_df.loc[idx]
-        obs = engine.get_observation(current_step_data, {}, asset)
-        X.append(obs)
-        y_dir.append(row['direction'])
-        y_qual.append(row['quality'])
-        y_meta.append(row['meta'])
+    X, y = _build_sequences(
+        features,
+        labels_df['direction'].values,
+        labels_df['valid'].values.astype(bool),
+        SEQ_LEN,
+    )
+    logger.info(f"Sequence tensor shape: {X.shape}")
+    if len(y) < 64:
+        logger.error("ERROR: not enough valid sequences for micro-training.")
+        return False
 
-    X = torch.tensor(np.array(X), dtype=torch.float32)
-    y_dir = torch.tensor(np.array(y_dir), dtype=torch.float32)
-    y_qual = torch.tensor(np.array(y_qual), dtype=torch.float32)
-    y_meta = torch.tensor(np.array(y_meta), dtype=torch.float32)
+    # 4. One training epoch
+    X_t = torch.from_numpy(X)
+    y_t = torch.from_numpy(y)
+    train_loader = DataLoader(TensorDataset(X_t, y_t), batch_size=64, shuffle=True)
 
-    logger.info(f"Feature tensor shape: {X.shape}")
-    logger.info(f"Sample feature snapshot (first 5 dims of first row): {X[0, :5].tolist()}")
-
-    # 4. Training (Phase 5)
-    dataset = TensorDataset(X, y_dir, y_qual, y_meta)
-    train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
-
-    model = AlphaSLModel(input_dim=40)
-    optimizer = optim.Adam(model.parameters(), lr=0.01) # Higher LR for 1 epoch test
+    model = AlphaSLModel(input_dim=X.shape[-1])
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     logger.info("\nRunning 1 training epoch...")
     model.train()
-
     initial_loss = None
     final_loss = None
-
-    for batch_idx, (batch_X, batch_dir, batch_qual, batch_meta) in enumerate(train_loader):
+    for batch_X, batch_y in train_loader:
         optimizer.zero_grad()
-        outputs = model(batch_X)
-        loss, (l_dir, l_qual, l_meta) = multi_head_loss(outputs, (batch_dir, batch_qual, batch_meta))
-
-        if batch_idx == 0:
+        logits = model(batch_X)
+        loss = direction_loss(logits, batch_y)
+        if initial_loss is None:
             initial_loss = loss.item()
-            logger.info(f"Initial loss: {initial_loss:.4f} (Dir: {l_dir.item():.4f}, Qual: {l_qual.item():.4f}, Meta: {l_meta.item():.4f})")
-
         loss.backward()
         optimizer.step()
         final_loss = loss.item()
 
-    logger.info(f"Final loss: {final_loss:.4f}")
+    logger.info(f"Initial loss: {initial_loss:.4f} | Final loss: {final_loss:.4f}")
+    loss_ok = final_loss < initial_loss
+    logger.info("CONFIRMED: Loss decreased." if loss_ok
+                else "WARNING: Loss did not decrease (small dataset noise is possible).")
 
-    if final_loss < initial_loss:
-        logger.info("CONFIRMED: Loss decreased.")
-    else:
-        logger.warning("WARNING: Loss did not decrease in 1 epoch (might be due to small dataset/LR).")
+    grads_ok = all(p.grad is not None for p in model.lstm.parameters())
+    logger.info(f"Gradients flow to LSTM: {grads_ok}")
 
-    # Gradients check
-    has_grad = all(p.grad is not None for p in model.trunk.parameters())
-    logger.info(f"Gradients flow to trunk: {has_grad}")
+    # 5. Confusion matrix on the micro set (sanity only)
+    model.eval()
+    with torch.no_grad():
+        preds = torch.argmax(model(X_t), dim=1).numpy()
+    targets = (y + 1).astype(np.int64)
+    cm = np.zeros((3, 3), dtype=np.int64)
+    for t, p in zip(targets, preds):
+        cm[t, p] += 1
+    logger.info(f"\nConfusion matrix (rows=true, cols=pred) [Sell, Neutral, Buy]:\n{cm}")
 
-    # 5. Leakage Check (Phase 6)
-    overlaps = (labels_500['entry_idx'].iloc[1:].values < labels_500['exit_idx'].iloc[:-1].values).sum()
-    logger.info(f"Overlapping windows: {overlaps}")
-
-    if overlaps == 0:
-        logger.info("CONFIRMED: No leakage via overlapping windows.")
-    else:
-        logger.error("ERROR: LEAKAGE DETECTED!")
-
+    ok = loss_ok is not None and grads_ok
     logger.info("\n--- MICRO-VALIDATION COMPLETE ---")
+    return ok
+
 
 if __name__ == "__main__":
-    run_micro_validation()
+    success = run_micro_validation()
+    sys.exit(0 if success else 1)

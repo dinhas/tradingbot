@@ -28,12 +28,13 @@ def verify():
     print(f"Observation vector shape: {obs.shape}")
 
     model = AlphaSLModel(input_dim=obs.shape[1])
-    # Dummy forward pass (batch=1, seq=50, dim=11)
+    # Dummy forward pass (batch=1, seq=50, dim=len(feature_names))
     dummy_input = torch.randn(1, 50, obs.shape[1])
     output = model(dummy_input)
     print(f"Model output shape: {output.shape}")
 
-    assert obs.shape[1] == 11, f"Expected 11 features, got {obs.shape[1]}"
+    expected_dims = len(fe.feature_names)
+    assert obs.shape[1] == expected_dims, f"Expected {expected_dims} features, got {obs.shape[1]}"
     print("Verification SUCCESS: Feature Engine and Model are aligned.")
 
 if __name__ == "__main__":

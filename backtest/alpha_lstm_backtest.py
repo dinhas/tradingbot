@@ -19,7 +19,7 @@ from Alpha.src.model import AlphaSLModel
 from Alpha.src.data_loader import DataLoader as AlphaDataLoader
 from RiskLayer.src.feature_engine import FeatureEngine
 from backtest.rl_backtest import BacktestMetrics, generate_all_charts, NumpyEncoder
-from shared_constants import FX_ALPHA_ASSETS
+from shared_constants import FX_ALPHA_ASSETS, DEFAULT_SPREADS
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -42,7 +42,8 @@ class AlphaLSTMVectorizedBacktester:
         position_size_pct: float,
         sl_mult: float,
         tp_mult: float,
-        adx_thresh: float = 20.0,
+        adx_thresh: float = 25.0,
+        max_hold_bars: int = 6,
         leverage: float = 100.0,
         batch_size: int = 1024
     ):
@@ -56,10 +57,12 @@ class AlphaLSTMVectorizedBacktester:
         self.sl_mult = sl_mult
         self.tp_mult = tp_mult
         self.adx_thresh = adx_thresh
+        self.max_hold_bars = max_hold_bars
         self.leverage = leverage
         self.batch_size = batch_size
         
         self.assets = FX_ALPHA_ASSETS
+        self.spreads = DEFAULT_SPREADS
         self.feature_engine = FeatureEngine()
         
     def _precompute_predictions(self):
@@ -142,35 +145,45 @@ class AlphaLSTMVectorizedBacktester:
                     direction = int(np.argmax(probs) - 1)
                 
                 current_pos = positions[asset]
-                entry_price = close_prices[asset][idx]
+                mid_close = close_prices[asset][idx]
                 atr = atrs[asset][idx]
+                half_spread = self.spreads.get(asset, 0.0) / 2.0
                 
                 # Close Logic / Management
                 if current_pos is not None:
                     # SL/TP Evaluation on the current candle (since we entered at idx-1 or earlier)
-                    # For simplicity and robustness, we check if the high/low hit the barriers
+                    # Spread-aware: longs exit at Bid, shorts exit at Ask
                     exit_price = None
                     reason = ""
                     
                     p = current_pos
-                    if p['direction'] == 1: # Long
-                        if low_prices[asset][idx] <= p['sl']:
+                    if p['direction'] == 1: # Long -> exits at Bid
+                        bid_low = low_prices[asset][idx] - half_spread
+                        bid_high = high_prices[asset][idx] - half_spread
+                        if bid_low <= p['sl']:
                             exit_price = p['sl']
                             reason = "SL"
-                        elif high_prices[asset][idx] >= p['tp']:
+                        elif bid_high >= p['tp']:
                             exit_price = p['tp']
                             reason = "TP"
-                    else: # Short
-                        if high_prices[asset][idx] >= p['sl']:
+                    else: # Short -> exits at Ask
+                        ask_high = high_prices[asset][idx] + half_spread
+                        ask_low = low_prices[asset][idx] + half_spread
+                        if ask_high >= p['sl']:
                             exit_price = p['sl']
                             reason = "SL"
-                        elif low_prices[asset][idx] <= p['tp']:
+                        elif ask_low <= p['tp']:
                             exit_price = p['tp']
                             reason = "TP"
-                            
+
+                    # Vertical barrier: mirrors the 6-bar timeout used in labeling
+                    if exit_price is None and (idx - p['entry_idx']) >= self.max_hold_bars:
+                        exit_price = mid_close - (p['direction'] * half_spread)
+                        reason = "Timeout"
+
                     # Model Flip Signal (Only if ADX allows acting)
                     if exit_price is None and can_act and (direction == 0 or direction != p['direction']):
-                        exit_price = entry_price
+                        exit_price = mid_close - (p['direction'] * half_spread)
                         reason = "Signal Flip"
                         
                     if exit_price is not None:
@@ -200,8 +213,9 @@ class AlphaLSTMVectorizedBacktester:
 
                 # Open Logic (Only if ADX allows acting)
                 if positions[asset] is None and can_act and direction != 0:
-                    # Open position
+                    # Open position (spread-aware: buy at Ask, sell at Bid)
                     size = self.position_size_pct * equity
+                    entry_price = mid_close + (direction * half_spread)
                     sl_dist = self.sl_mult * atr
                     tp_dist = self.tp_mult * atr
                     
@@ -215,6 +229,7 @@ class AlphaLSTMVectorizedBacktester:
                         'sl': sl,
                         'tp': tp,
                         'entry_timestamp': ts,
+                        'entry_idx': idx,
                         'equity_before': equity
                     }
                     # Small entry fee (already accounted in round trip above for metrics, but we deduct for equity)
@@ -228,7 +243,8 @@ class AlphaLSTMVectorizedBacktester:
         for asset in self.assets:
             p = positions[asset]
             if p:
-                exit_price = close_prices[asset][final_idx]
+                half_spread = self.spreads.get(asset, 0.0) / 2.0
+                exit_price = close_prices[asset][final_idx] - (p['direction'] * half_spread)
                 price_change_pct = (exit_price - p['entry_price']) / p['entry_price'] * p['direction']
                 pnl = price_change_pct * (p['size'] * self.leverage)
                 fee = p['size'] * 0.00004
@@ -259,9 +275,11 @@ def main():
     parser.add_argument("--confidence-thresh", type=float, default=0.45)
     parser.add_argument("--initial-equity", type=float, default=10000.0)
     parser.add_argument("--pos-size", type=float, default=0.1, help="Position size as % of equity (0.1 = 10%)")
-    parser.add_argument("--sl-mult", type=float, default=2.0)
-    parser.add_argument("--tp-mult", type=float, default=4.0)
-    parser.add_argument("--adx-thresh", type=float, default=20.0)
+    # Defaults now MIRROR the Labeler geometry (tp=1.0 ATR, sl=0.5 ATR, 6-bar timeout, ADX 25)
+    parser.add_argument("--sl-mult", type=float, default=0.5)
+    parser.add_argument("--tp-mult", type=float, default=1.0)
+    parser.add_argument("--adx-thresh", type=float, default=25.0)
+    parser.add_argument("--max-hold-bars", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=2048)
     args = parser.parse_args()
 
@@ -275,8 +293,8 @@ def main():
     loader = AlphaDataLoader(data_dir=str(data_dir))
     aligned_df, normalized_df = loader.get_features(engine=rk_engine)
 
-    # Model parameters
-    input_dim = 11 # Aligned with V3 regime-aware features
+    # Model parameters (derived from the feature engine so train/backtest never drift)
+    input_dim = len(rk_engine.feature_names)
     model = AlphaSLModel(input_dim=input_dim, lstm_units=64, dense_units=32, dropout=0.3)
     
     if not model_path.exists():
@@ -297,6 +315,7 @@ def main():
         sl_mult=args.sl_mult,
         tp_mult=args.tp_mult,
         adx_thresh=args.adx_thresh,
+        max_hold_bars=args.max_hold_bars,
         batch_size=args.batch_size
     )
 

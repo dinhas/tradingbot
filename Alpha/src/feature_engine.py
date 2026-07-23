@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import logging
 from ta.momentum import RSIIndicator
-from ta.trend import MACD, ADXIndicator
+from ta.trend import MACD, ADXIndicator, EMAIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
 from shared_constants import FX_ALPHA_ASSETS
 
@@ -56,10 +56,11 @@ class FeatureEngine:
         return pd.Series(fd, index=series.index)
 
     def _define_feature_names(self):
-        """Defines the list of 11 V3 features based on regime-aware research."""
+        """Defines the list of 14 V4 features: V3 regime-aware set + causal HTF (1H) trend features."""
         self.feature_names = [
             "bollinger_pB", "ema_diff", "macd_hist", "rsi_momentum", "rsi",
-            "bb_width", "volatility", "atr_norm", "hour", "regime", "is_tradeable"
+            "bb_width", "volatility", "atr_norm", "hour", "regime", "is_tradeable",
+            "htf_trend", "htf_ema_dist", "htf_rsi"
         ]
 
     def preprocess_data(self, data_dict):
@@ -153,7 +154,30 @@ class FeatureEngine:
         new_cols[f"{asset}_regime"] = is_trending.astype(np.float32) # Trending (1) vs Other (0)
         new_cols[f"{asset}_is_tradeable"] = is_trending.astype(np.float32)
 
-        # 6. Backward Compatibility for Backtester (Not in model features)
+        # 6. Higher-Timeframe (1H) Trend Features — CAUSAL (only fully completed hours).
+        # These expose the same trend context used by the Labeler so the model can
+        # actually learn the +1 vs -1 distinction. shift(1) guarantees no lookahead:
+        # a 5M bar only ever sees the last fully closed 1H candle.
+        close_1h = raw_close.ffill().resample('1h').last().ffill()
+        ema_1h = EMAIndicator(close_1h, window=100).ema_indicator()
+
+        trend_1h = pd.Series(np.where(close_1h > ema_1h, 1.0, -1.0), index=close_1h.index)
+        trend_1h[ema_1h.isna()] = np.nan
+        trend_1h_5m = trend_1h.shift(1).reindex(df.index, method='ffill')
+        new_cols[f"{asset}_htf_trend"] = trend_1h_5m.fillna(0).astype(np.float32)
+
+        # Normalized distance of price to the 1H EMA-100 (scale-free via ATR units).
+        # NOT z-scored so the trend level information is preserved.
+        ema_1h_5m = ema_1h.shift(1).reindex(df.index, method='ffill')
+        htf_dist = (raw_close - ema_1h_5m) / (atr * 20.0 + 1e-8)
+        new_cols[f"{asset}_htf_ema_dist"] = htf_dist.clip(-3.0, 3.0).fillna(0).astype(np.float32)
+
+        # 1H RSI, centered to [-1, 1] to preserve absolute level (not z-scored).
+        rsi_1h = RSIIndicator(close_1h, window=14).rsi()
+        rsi_1h_5m = rsi_1h.shift(1).reindex(df.index, method='ffill')
+        new_cols[f"{asset}_htf_rsi"] = ((rsi_1h_5m - 50.0) / 50.0).fillna(0).astype(np.float32)
+
+        # 7. Backward Compatibility for Backtester (Not in model features)
         new_cols[f"{asset}_atr"] = atr
         new_cols[f"{asset}_adx"] = adx
         
@@ -192,7 +216,8 @@ class FeatureEngine:
             f"{asset}_bollinger_pB", f"{asset}_ema_diff", f"{asset}_macd_hist",
             f"{asset}_rsi_momentum", f"{asset}_rsi", f"{asset}_bb_width",
             f"{asset}_volatility", f"{asset}_atr_norm", 'hour_of_day',
-            f"{asset}_regime", f"{asset}_is_tradeable"
+            f"{asset}_regime", f"{asset}_is_tradeable",
+            f"{asset}_htf_trend", f"{asset}_htf_ema_dist", f"{asset}_htf_rsi"
         ]
 
         return df.reindex(columns=obs_cols, fill_value=0).values.astype(np.float32)
@@ -209,6 +234,9 @@ class FeatureEngine:
             current_step_data.get(f"{asset}_atr_norm", 0),
             current_step_data.get('hour_of_day', 0),
             current_step_data.get(f"{asset}_regime", 0),
-            current_step_data.get(f"{asset}_is_tradeable", 0)
+            current_step_data.get(f"{asset}_is_tradeable", 0),
+            current_step_data.get(f"{asset}_htf_trend", 0),
+            current_step_data.get(f"{asset}_htf_ema_dist", 0),
+            current_step_data.get(f"{asset}_htf_rsi", 0)
         ]
         return np.array(obs, dtype=np.float32)

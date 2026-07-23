@@ -3,7 +3,7 @@
   "provider": {
     "agentrouter": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "AgentRouter (OpenAI Compatible)",
+      "name": "AgentRouter",
       "options": {
         "baseURL": "https://agentrouter.org/v1",
         "apiKey": "sk-vIrnaDJTR5u0IvsBhJFfTtW1VsCbj2yoN4yYQMa50TblvFIm"
@@ -11,22 +11,12 @@
       "models": {
         "gpt-5.5": {
           "name": "gpt-5.5"
-        }
-      }
-    },
-    "agentrouter-anthropic": {
-      "npm": "@ai-sdk/anthropic",
-      "name": "AgentRouter (Anthropic)",
-      "options": {
-        "baseURL": "https://agentrouter.org",
-        "apiKey": "sk-vIrnaDJTR5u0IvsBhJFfTtW1VsCbj2yoN4yYQMa50TblvFIm"
-      },
-      "models": {
+        },
         "claude-opus-4-8": {
           "name": "claude-opus-4-8"
         }
       }
     }
   },
-  "model": "agentrouter/gpt-5.5"
+  "model": "agentrouter/claude-opus-4-8"
 }
