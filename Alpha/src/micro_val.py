@@ -23,7 +23,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from Alpha.src.data_loader import DataLoader as MyDataLoader
 from Alpha.src.labeling import Labeler
-from Alpha.src.model import AlphaSLModel, trade_direction_loss
+from Alpha.src.model import AlphaSLModel, action_opportunity_loss
 from Alpha.src.feature_engine import FeatureEngine
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -33,18 +33,16 @@ SEQ_LEN = 50
 MICRO_ROWS = 5000
 
 
-def _build_sequences(features: np.ndarray, tradeable: np.ndarray, directions: np.ndarray, valid_mask: np.ndarray, seq_len: int):
+def _build_sequences(features: np.ndarray, actions: np.ndarray, valid_mask: np.ndarray, seq_len: int):
     """Contiguous rolling windows; valid_mask selects which windows are kept (by final bar)."""
     end_indices = np.flatnonzero(valid_mask)
     end_indices = end_indices[end_indices >= seq_len - 1]
     if len(end_indices) == 0:
         return (np.empty((0, seq_len, features.shape[1]), dtype=np.float32),
-                np.empty((0,), dtype=np.float32),
-                np.empty((0,), dtype=np.int64))
+                np.empty((0, 2), dtype=np.float32))
     X = np.stack([features[e - seq_len + 1:e + 1] for e in end_indices]).astype(np.float32)
-    y_trade = tradeable[end_indices].astype(np.float32)
-    y_dir = directions[end_indices].astype(np.int64)
-    return X, y_trade, y_dir
+    y_actions = actions[end_indices].astype(np.float32)
+    return X, y_actions
 
 
 def run_micro_validation():
@@ -65,7 +63,7 @@ def run_micro_validation():
     labeler = Labeler()
     asset = 'EURUSD'
     labels_df = labeler.label_data(aligned_df, asset).head(MICRO_ROWS)
-    assert {'tradeable', 'direction', 'net_r', 'valid'}.issubset(labels_df.columns), "Labeler schema changed!"
+    assert {'short_tradeable', 'long_tradeable', 'valid'}.issubset(labels_df.columns), "Labeler schema changed!"
     logger.info(f"Labeled rows: {len(labels_df)} | valid ratio: {labels_df['valid'].mean():.2%}")
     logger.info("Tradeability distribution among valid labels:")
     logger.info(labels_df.loc[labels_df['valid'], 'tradeable'].value_counts(normalize=True).sort_index())
@@ -80,23 +78,22 @@ def run_micro_validation():
     logger.info(f"Feature matrix shape: {features.shape} (expected {len(engine.feature_names)} dims)")
     assert features.shape[1] == len(engine.feature_names), "Feature dim mismatch!"
 
-    X, y_trade, y_dir = _build_sequences(
+    X, y_actions = _build_sequences(
         features,
-        labels_df['tradeable'].values,
-        labels_df['direction'].values,
+        labels_df[['short_tradeable', 'long_tradeable']].values,
         labels_df['valid'].values.astype(bool),
         SEQ_LEN,
     )
     logger.info(f"Sequence tensor shape: {X.shape}")
-    if len(y_trade) < 64:
+    if len(y_actions) < 64:
         logger.error("ERROR: not enough valid sequences for micro-training.")
         return False
 
     # 4. One training epoch
     X_t = torch.from_numpy(X)
-    y_trade_t = torch.from_numpy(y_trade)
-    y_dir_t = torch.from_numpy(y_dir)
-    train_loader = DataLoader(TensorDataset(X_t, y_trade_t, y_dir_t), batch_size=64, shuffle=True)
+    y_actions_t = torch.from_numpy(y_actions)
+    asset_t = torch.zeros(len(X), dtype=torch.long)
+    train_loader = DataLoader(TensorDataset(X_t, y_actions_t, asset_t), batch_size=64, shuffle=True)
 
     model = AlphaSLModel(input_dim=X.shape[-1])
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
@@ -105,10 +102,10 @@ def run_micro_validation():
     model.train()
     initial_loss = None
     final_loss = None
-    for batch_X, batch_trade, batch_dir in train_loader:
+    for batch_X, batch_actions, batch_assets in train_loader:
         optimizer.zero_grad()
-        outputs = model(batch_X, return_dict=True)
-        loss = trade_direction_loss(outputs, batch_trade, batch_dir)
+        outputs = model(batch_X, batch_assets, return_dict=True)
+        loss = action_opportunity_loss(outputs, batch_actions)
         if initial_loss is None:
             initial_loss = loss.item()
         loss.backward()
@@ -126,9 +123,9 @@ def run_micro_validation():
     # 5. Confusion matrix on the micro set (sanity only)
     model.eval()
     with torch.no_grad():
-        outputs = model(X_t, return_dict=True)
-        preds = (torch.sigmoid(outputs['trade_logit']) >= 0.5).long().numpy()
-    targets = y_trade.astype(np.int64)
+        outputs = model(X_t, asset_t, return_dict=True)
+        preds = (torch.sigmoid(outputs['action_logits']).max(dim=1).values >= 0.5).long().numpy()
+    targets = (y_actions.max(axis=1) > 0.5).astype(np.int64)
     cm = np.zeros((2, 2), dtype=np.int64)
     for t, p in zip(targets, preds):
         cm[t, p] += 1

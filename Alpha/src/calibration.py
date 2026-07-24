@@ -65,11 +65,19 @@ def expected_calibration_error(probs: np.ndarray, targets: np.ndarray, bins: int
     return round(float(ece), 6)
 
 
-def save_calibration(path: str | Path, temperature: float, threshold: float = 0.5) -> Path:
+def save_calibration(path: str | Path, temperature: float | None = None, threshold: float = 0.5,
+                     action_temperatures: list[float] | None = None) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
-        json.dump({"trade_temperature": float(temperature), "trade_threshold": float(threshold)}, f, indent=2)
+        payload = {"action_threshold": float(threshold)}
+        if action_temperatures is not None:
+            payload["action_temperatures"] = [float(v) for v in action_temperatures]
+        elif temperature is not None:
+            payload.update({"trade_temperature": float(temperature), "trade_threshold": float(threshold)})
+        else:
+            raise ValueError("Provide temperature or action_temperatures.")
+        json.dump(payload, f, indent=2)
     return path
 
 
@@ -78,14 +86,14 @@ def load_calibration(path: str | Path) -> dict:
         return json.load(f)
 
 
-def collect_trade_logits(model, sequences, indices, device, batch_size: int = 512) -> tuple[np.ndarray, np.ndarray]:
+def collect_action_logits(model, sequences, asset_ids, indices, device,
+                          batch_size: int = 512) -> np.ndarray:
     logits = []
-    dir_probs = []
     model.eval()
     with torch.no_grad():
         for i in range(0, len(indices), batch_size):
             batch = np.asarray(sequences[indices[i:i + batch_size]], dtype=np.float32)
-            outputs = model(torch.from_numpy(batch).to(device), return_dict=True)
-            logits.append(outputs["trade_logit"].float().cpu().numpy())
-            dir_probs.append(torch.softmax(outputs["direction_logits"].float(), dim=1).cpu().numpy())
-    return np.concatenate(logits), np.concatenate(dir_probs)
+            batch_assets = torch.from_numpy(asset_ids[indices[i:i + batch_size]].astype(np.int64)).to(device)
+            outputs = model(torch.from_numpy(batch).to(device), batch_assets, return_dict=True)
+            logits.append(outputs["action_logits"].float().cpu().numpy())
+    return np.concatenate(logits)

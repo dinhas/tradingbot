@@ -56,11 +56,14 @@ class FeatureEngine:
         return pd.Series(fd, index=series.index)
 
     def _define_feature_names(self):
-        """Defines the list of 14 V4 features: V3 regime-aware set + causal HTF (1H) trend features."""
+        """Defines causal multi-asset features, including side-selection information."""
         self.feature_names = [
             "bollinger_pB", "ema_diff", "macd_hist", "rsi_momentum", "rsi",
-            "bb_width", "volatility", "atr_norm", "hour", "regime", "is_tradeable",
-            "htf_trend", "htf_ema_dist", "htf_rsi"
+            "bb_width", "volatility", "atr_norm", "hour", "regime",
+            "htf_trend", "htf_ema_dist", "htf_rsi",
+            "return_1_atr", "return_3_atr", "return_6_atr", "return_12_atr",
+            "body_atr", "close_in_range", "ema_slope_atr", "di_spread",
+            "breakout_position",
         ]
 
     def preprocess_data(self, data_dict):
@@ -152,7 +155,30 @@ class FeatureEngine:
         # Trending = High ADX + Moderate Vol
         is_trending = (adx > 25) & (atr_norm_raw < atr_q75)
         new_cols[f"{asset}_regime"] = is_trending.astype(np.float32) # Trending (1) vs Other (0)
-        new_cols[f"{asset}_is_tradeable"] = is_trending.astype(np.float32)
+        price_atr = atr.replace(0, np.nan)
+        for bars in (1, 3, 6, 12):
+            new_cols[f"{asset}_return_{bars}_atr"] = (
+                (raw_close - raw_close.shift(bars)) / price_atr
+            ).clip(-10.0, 10.0)
+        new_cols[f"{asset}_body_atr"] = (
+            (raw_close - df[f"{asset}_open"]) / price_atr
+        ).clip(-5.0, 5.0)
+        new_cols[f"{asset}_close_in_range"] = (
+            ((raw_close - raw_low) / (raw_high - raw_low + 1e-8)) * 2.0 - 1.0
+        ).clip(-1.0, 1.0)
+        ema_20 = raw_close.ewm(span=20, adjust=False).mean()
+        new_cols[f"{asset}_ema_slope_atr"] = (
+            (ema_20 - ema_20.shift(3)) / price_atr
+        ).clip(-5.0, 5.0)
+        new_cols[f"{asset}_di_spread"] = (
+            (ADXIndicator(raw_high, raw_low, raw_close, window=14).adx_pos()
+             - ADXIndicator(raw_high, raw_low, raw_close, window=14).adx_neg()) / 100.0
+        ).clip(-1.0, 1.0)
+        rolling_high = raw_high.shift(1).rolling(20).max()
+        rolling_low = raw_low.shift(1).rolling(20).min()
+        new_cols[f"{asset}_breakout_position"] = (
+            ((raw_close - rolling_low) / (rolling_high - rolling_low + 1e-8)) * 2.0 - 1.0
+        ).clip(-2.0, 2.0)
 
         # 6. Higher-Timeframe (1H) Trend Features — CAUSAL (only fully completed hours).
         # These expose the same trend context used by the Labeler so the model can
@@ -216,8 +242,10 @@ class FeatureEngine:
             f"{asset}_bollinger_pB", f"{asset}_ema_diff", f"{asset}_macd_hist",
             f"{asset}_rsi_momentum", f"{asset}_rsi", f"{asset}_bb_width",
             f"{asset}_volatility", f"{asset}_atr_norm", 'hour_of_day',
-            f"{asset}_regime", f"{asset}_is_tradeable",
-            f"{asset}_htf_trend", f"{asset}_htf_ema_dist", f"{asset}_htf_rsi"
+            f"{asset}_regime", f"{asset}_htf_trend", f"{asset}_htf_ema_dist", f"{asset}_htf_rsi",
+            f"{asset}_return_1_atr", f"{asset}_return_3_atr", f"{asset}_return_6_atr",
+            f"{asset}_return_12_atr", f"{asset}_body_atr", f"{asset}_close_in_range",
+            f"{asset}_ema_slope_atr", f"{asset}_di_spread", f"{asset}_breakout_position"
         ]
 
         return df.reindex(columns=obs_cols, fill_value=0).values.astype(np.float32)
@@ -234,9 +262,17 @@ class FeatureEngine:
             current_step_data.get(f"{asset}_atr_norm", 0),
             current_step_data.get('hour_of_day', 0),
             current_step_data.get(f"{asset}_regime", 0),
-            current_step_data.get(f"{asset}_is_tradeable", 0),
             current_step_data.get(f"{asset}_htf_trend", 0),
             current_step_data.get(f"{asset}_htf_ema_dist", 0),
-            current_step_data.get(f"{asset}_htf_rsi", 0)
+            current_step_data.get(f"{asset}_htf_rsi", 0),
+            current_step_data.get(f"{asset}_return_1_atr", 0),
+            current_step_data.get(f"{asset}_return_3_atr", 0),
+            current_step_data.get(f"{asset}_return_6_atr", 0),
+            current_step_data.get(f"{asset}_return_12_atr", 0),
+            current_step_data.get(f"{asset}_body_atr", 0),
+            current_step_data.get(f"{asset}_close_in_range", 0),
+            current_step_data.get(f"{asset}_ema_slope_atr", 0),
+            current_step_data.get(f"{asset}_di_spread", 0),
+            current_step_data.get(f"{asset}_breakout_position", 0)
         ]
         return np.array(obs, dtype=np.float32)

@@ -15,7 +15,7 @@ from Alpha.run_pipeline import _date_based_split_indices
 from Alpha.src.calibration import (
     apply_temperature,
     brier_score,
-    collect_trade_logits,
+    collect_action_logits,
     expected_calibration_error,
     fit_temperature,
     reliability_table,
@@ -43,33 +43,40 @@ def main():
 
     sequences = np.load(sequences_path, mmap_mode="r")
     labels = np.load(labels_path)
-    if "tradeable" not in labels:
-        raise RuntimeError("labels.npz does not contain tradeability targets. Regenerate the dataset.")
-    tradeable = labels["tradeable"].astype(np.float32)
+    if "action_targets" not in labels or "asset_id" not in labels:
+        raise RuntimeError("labels.npz does not contain V3 action targets. Regenerate the dataset.")
+    action_targets = labels["action_targets"].astype(np.float32)
+    asset_ids = labels["asset_id"].astype(np.int64)
     timestamps = labels["timestamp"]
     _, val_idx, _ = _date_based_split_indices(timestamps)
 
     checkpoint = torch.load(model_path, map_location=DEVICE)
-    input_dim = int(checkpoint["lstm.weight_ih_l0"].shape[1])
-    model = AlphaSLModel(input_dim=input_dim, lstm_units=64, dense_units=32, dropout=0.3).to(DEVICE)
-    model.load_state_dict(checkpoint)
+    if checkpoint.get("format_version") != 3:
+        raise RuntimeError("Expected a V3 action-head checkpoint.")
+    model = AlphaSLModel(**checkpoint["model_config"]).to(DEVICE)
+    model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    logits, _ = collect_trade_logits(model, sequences, val_idx, DEVICE, batch_size=args.batch_size)
-    targets = tradeable[val_idx]
-    temperature = fit_temperature(logits, targets)
-    calibrated = apply_temperature(logits, temperature)
-    uncalibrated = apply_temperature(logits, 1.0)
+    logits = collect_action_logits(model, sequences, asset_ids, val_idx, DEVICE, batch_size=args.batch_size)
+    targets = action_targets[val_idx]
+    temperatures = [fit_temperature(logits[:, side], targets[:, side]) for side in range(2)]
+    calibrated = np.column_stack([
+        apply_temperature(logits[:, side], temperatures[side]) for side in range(2)
+    ])
+    uncalibrated = 1.0 / (1.0 + np.exp(-logits))
 
-    save_calibration(output_path, temperature=temperature, threshold=0.5)
+    save_calibration(output_path, action_temperatures=temperatures, threshold=0.5)
     report = {
         "validation_samples": int(len(val_idx)),
-        "temperature": round(float(temperature), 4),
-        "uncalibrated_brier": brier_score(uncalibrated, targets),
-        "calibrated_brier": brier_score(calibrated, targets),
-        "uncalibrated_ece": expected_calibration_error(uncalibrated, targets),
-        "calibrated_ece": expected_calibration_error(calibrated, targets),
-        "calibrated_reliability": reliability_table(calibrated, targets),
+        "action_temperatures": [round(float(t), 4) for t in temperatures],
+        "uncalibrated_brier": [brier_score(uncalibrated[:, side], targets[:, side]) for side in range(2)],
+        "calibrated_brier": [brier_score(calibrated[:, side], targets[:, side]) for side in range(2)],
+        "uncalibrated_ece": [expected_calibration_error(uncalibrated[:, side], targets[:, side]) for side in range(2)],
+        "calibrated_ece": [expected_calibration_error(calibrated[:, side], targets[:, side]) for side in range(2)],
+        "calibrated_reliability": {
+            "short": reliability_table(calibrated[:, 0], targets[:, 0]),
+            "long": reliability_table(calibrated[:, 1], targets[:, 1]),
+        },
     }
     report_path = output_path.with_suffix(".report.json")
     with open(report_path, "w") as f:

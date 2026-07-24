@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.data_loader import DataLoader as AlphaDataLoader
 from Alpha.src.calibration import apply_temperature, load_calibration
+from Alpha.src.trade_simulator import TradeConfig, TradeSimulator
 from RiskLayer.src.feature_engine import FeatureEngine
 from backtest.rl_backtest import BacktestMetrics, generate_all_charts, NumpyEncoder
 from shared_constants import FX_ALPHA_ASSETS, DEFAULT_SPREADS
@@ -79,6 +80,12 @@ class AlphaLSTMVectorizedBacktester:
         self.leverage = leverage
         self.batch_size = batch_size
         self.calibration = calibration or {}
+        self.simulator = TradeSimulator(TradeConfig(
+            tp_mult=tp_mult,
+            sl_mult=sl_mult,
+            max_hold_bars=max_hold_bars,
+            leverage=leverage,
+        ))
         
         self.assets = FX_ALPHA_ASSETS
         self.spreads = DEFAULT_SPREADS
@@ -87,12 +94,11 @@ class AlphaLSTMVectorizedBacktester:
     def _precompute_predictions(self):
         """Precomputes model predictions for all assets in batches."""
         logger.info(f"Precomputing predictions for {len(self.assets)} assets...")
-        all_trade_probs = {}
-        all_dir_probs = {}
+        all_action_probs = {}
         
         n_steps = len(self.normalized_df)
         
-        for asset in self.assets:
+        for asset_id, asset in enumerate(self.assets):
             logger.info(f"Predicting for {asset}...")
             obs = self.feature_engine.get_observation_vectorized(self.normalized_df, asset)
             
@@ -101,40 +107,49 @@ class AlphaLSTMVectorizedBacktester:
             sequences = np.lib.stride_tricks.sliding_window_view(
                 obs, (self.sequence_length, obs.shape[1])
             ).squeeze(1)
+            breaks = np.zeros(n_steps, dtype=np.int64)
+            breaks[1:] = np.diff(self.normalized_df.index.to_numpy(dtype="datetime64[ns]")) != np.timedelta64(5, "m")
+            segment_ids = np.cumsum(breaks)
+            end_indices = np.arange(self.sequence_length - 1, n_steps)
+            valid_sequences = segment_ids[end_indices] == segment_ids[end_indices - self.sequence_length + 1]
             
-            asset_trade_probs = np.zeros(n_steps, dtype=np.float32)
-            asset_dir_probs = np.zeros((n_steps, 2), dtype=np.float32)
+            asset_action_probs = np.zeros((n_steps, 2), dtype=np.float32)
             
             self.model.eval()
             with torch.no_grad():
                 for i in range(0, len(sequences), self.batch_size):
+                    valid_batch = valid_sequences[i:i + self.batch_size]
+                    if not valid_batch.any():
+                        continue
                     batch_seq = sequences[i:i+self.batch_size]
-                    batch_tensor = torch.from_numpy(batch_seq.copy()).to(DEVICE)
-                    outputs = self.model(batch_tensor, return_dict=True)
-                    trade_logits = outputs["trade_logit"].float().cpu().numpy()
+                    batch_tensor = torch.from_numpy(batch_seq[valid_batch].copy()).to(DEVICE)
+                    batch_assets = torch.full((int(valid_batch.sum()),), asset_id, dtype=torch.long, device=DEVICE)
+                    outputs = self.model(batch_tensor, batch_assets, return_dict=True)
+                    action_logits = outputs["action_logits"].float().cpu().numpy()
                     if hasattr(self, "calibration") and self.calibration:
-                        trade_probs = apply_temperature(trade_logits, self.calibration.get("trade_temperature", 1.0))
+                        temperatures = self.calibration.get("action_temperatures", [1.0, 1.0])
+                        action_probs = np.column_stack([
+                            apply_temperature(action_logits[:, side], temperatures[side])
+                            for side in range(2)
+                        ])
                     else:
-                        trade_probs = torch.sigmoid(outputs["trade_logit"].float()).cpu().numpy()
-                    dir_probs = torch.softmax(outputs["direction_logits"].float(), dim=1).cpu().numpy()
+                        action_probs = torch.sigmoid(outputs["action_logits"].float()).cpu().numpy()
                     
                     # Align probabilities back to original indices
                     # sequences[i] corresponds to normalized_df.index[i + sequence_length - 1]
                     start_idx = i + self.sequence_length - 1
-                    end_idx = start_idx + len(trade_probs)
-                    asset_trade_probs[start_idx:end_idx] = trade_probs
-                    asset_dir_probs[start_idx:end_idx] = dir_probs
+                    batch_end_indices = end_indices[i:i + self.batch_size][valid_batch]
+                    asset_action_probs[batch_end_indices] = action_probs
             
-            all_trade_probs[asset] = asset_trade_probs
-            all_dir_probs[asset] = asset_dir_probs
+            all_action_probs[asset] = asset_action_probs
             
-        return all_trade_probs, all_dir_probs
+        return all_action_probs
 
     def run(self, max_steps: int | None = None) -> BacktestMetrics:
         metrics = BacktestMetrics()
         
         # 1. Vectorized Inference
-        all_trade_probs, all_dir_probs = self._precompute_predictions()
+        all_action_probs = self._precompute_predictions()
         
         # 2. Sequential Trade Logic (Still sequential in time, but extremely fast due to precomputed probs)
         n_steps = len(self.normalized_df)
@@ -146,6 +161,7 @@ class AlphaLSTMVectorizedBacktester:
         
         # Extract necessary arrays for speed
         close_prices = {asset: self.aligned_df[f"{asset}_close"].values for asset in self.assets}
+        open_prices = {asset: self.aligned_df[f"{asset}_open"].values for asset in self.assets}
         high_prices = {asset: self.aligned_df[f"{asset}_high"].values for asset in self.assets}
         low_prices = {asset: self.aligned_df[f"{asset}_low"].values for asset in self.assets}
         atrs = {asset: self.aligned_df[f"{asset}_atr"].values for asset in self.assets}
@@ -165,12 +181,11 @@ class AlphaLSTMVectorizedBacktester:
                 # ADX Filter: Only consider model decisions if ADX is above threshold
                 can_act = current_adx >= self.adx_thresh
 
-                # Prediction logic: trade gate first, conditional direction second.
-                trade_prob = all_trade_probs[asset][idx]
-                dir_probs = all_dir_probs[asset][idx]
+                action_probs = all_action_probs[asset][idx]
                 direction = 0
-                if can_act and trade_prob >= self.confidence_thresh:
-                    direction = 1 if int(np.argmax(dir_probs)) == 1 else -1
+                action_idx = int(np.argmax(action_probs))
+                if can_act and action_probs[action_idx] >= self.confidence_thresh:
+                    direction = -1 if action_idx == 0 else 1
                 
                 current_pos = positions[asset]
                 mid_close = close_prices[asset][idx]
@@ -185,43 +200,30 @@ class AlphaLSTMVectorizedBacktester:
                     reason = ""
                     
                     p = current_pos
-                    if p['direction'] == 1: # Long -> exits at Bid
-                        bid_low = low_prices[asset][idx] - half_spread
-                        bid_high = high_prices[asset][idx] - half_spread
-                        if bid_low <= p['sl']:
-                            exit_price = p['sl']
-                            reason = "SL"
-                        elif bid_high >= p['tp']:
-                            exit_price = p['tp']
-                            reason = "TP"
-                    else: # Short -> exits at Ask
-                        ask_high = high_prices[asset][idx] + half_spread
-                        ask_low = low_prices[asset][idx] + half_spread
-                        if ask_high >= p['sl']:
-                            exit_price = p['sl']
-                            reason = "SL"
-                        elif ask_low <= p['tp']:
-                            exit_price = p['tp']
-                            reason = "TP"
+                    exit_price, reason = self.simulator.barrier_exit(
+                        high_prices[asset][idx], low_prices[asset][idx], p['direction'],
+                        self.spreads.get(asset, 0.0), p['sl'], p['tp']
+                    )
 
                     # Vertical barrier: mirrors the 6-bar timeout used in labeling
-                    if exit_price is None and (idx - p['entry_idx']) >= self.max_hold_bars:
-                        exit_price = mid_close - (p['direction'] * half_spread)
+                    if exit_price is None and (idx - p['entry_idx']) >= self.max_hold_bars - 1:
+                        exit_price = self.simulator.market_exit_price(
+                            mid_close, p['direction'], self.spreads.get(asset, 0.0)
+                        )
                         reason = "Timeout"
 
-                    # Model Flip Signal (Only if ADX allows acting)
-                    if exit_price is None and can_act and (direction == 0 or direction != p['direction']):
-                        exit_price = mid_close - (p['direction'] * half_spread)
-                        reason = "Signal Flip"
-                        
+                    # Note: No signal-flip exit — labels hold to SL/TP/timeout only.
+                    # Exit policy is kept in sync with the Labeler's triple-barrier.
+                    
                     if exit_price is not None:
                         # Process Close
-                        price_change_pct = (exit_price - p['entry_price']) / p['entry_price'] * p['direction']
-                        pnl = price_change_pct * (p['size'] * self.leverage)
-
-                        fee = p['entry_fee'] + (p['size'] * 0.00002)
-                        net_pnl = pnl - fee
-                        equity += pnl - (p['size'] * 0.00002)
+                        gross_return, net_return, net_r = self.simulator.returns(
+                            p['entry_price'], exit_price, p['direction'], p['atr']
+                        )
+                        pnl = gross_return * p['size']
+                        fee = 2.0 * self.simulator.config.commission_rate_per_side * p['size']
+                        net_pnl = net_return * p['size']
+                        equity += net_pnl
                         
                         metrics.add_trade({
                             'timestamp': ts,
@@ -235,35 +237,36 @@ class AlphaLSTMVectorizedBacktester:
                             'equity_before': float(p['equity_before']),
                             'equity_after': float(equity),
                             'hold_time': (ts - p['entry_timestamp']).total_seconds() / 60.0,
-                            'reason': reason
+                            'reason': reason,
+                            'net_r': float(net_r),
                         })
                         positions[asset] = None
                         current_pos = None
 
-                # Open Logic (Only if ADX allows acting)
-                if positions[asset] is None and can_act and direction != 0:
-                    # Open position (spread-aware: buy at Ask, sell at Bid)
+                # Features from idx become executable at the next bar open.
+                if positions[asset] is None and can_act and direction != 0 and idx + 1 < n_steps:
                     size = self.position_size_pct * equity
-                    entry_price = mid_close + (direction * half_spread)
+                    entry_idx = idx + 1
+                    entry_price = self.simulator.entry_price(
+                        open_prices[asset][entry_idx], direction, self.spreads.get(asset, 0.0)
+                    )
                     sl_dist = self.sl_mult * atr
                     tp_dist = self.tp_mult * atr
                     
                     sl = entry_price - (direction * sl_dist)
                     tp = entry_price + (direction * tp_dist)
                     
-                    entry_fee = size * 0.00002
                     positions[asset] = {
                         'direction': direction,
                         'entry_price': entry_price,
                         'size': size,
-                        'entry_fee': entry_fee,
+                        'atr': atr,
                         'sl': sl,
                         'tp': tp,
-                        'entry_timestamp': ts,
-                        'entry_idx': idx,
+                        'entry_timestamp': timestamps[entry_idx],
+                        'entry_idx': entry_idx,
                         'equity_before': equity
                     }
-                    equity -= entry_fee
 
             metrics.add_equity_point(ts, float(equity))
 
@@ -273,13 +276,16 @@ class AlphaLSTMVectorizedBacktester:
         for asset in self.assets:
             p = positions[asset]
             if p:
-                half_spread = self.spreads.get(asset, 0.0) / 2.0
-                exit_price = close_prices[asset][final_idx] - (p['direction'] * half_spread)
-                price_change_pct = (exit_price - p['entry_price']) / p['entry_price'] * p['direction']
-                pnl = price_change_pct * (p['size'] * self.leverage)
-                fee = p['entry_fee'] + (p['size'] * 0.00002)
-                net_pnl = pnl - fee
-                equity += pnl - (p['size'] * 0.00002)
+                exit_price = self.simulator.market_exit_price(
+                    close_prices[asset][final_idx], p['direction'], self.spreads.get(asset, 0.0)
+                )
+                gross_return, net_return, net_r = self.simulator.returns(
+                    p['entry_price'], exit_price, p['direction'], p['atr']
+                )
+                pnl = gross_return * p['size']
+                fee = 2.0 * self.simulator.config.commission_rate_per_side * p['size']
+                net_pnl = net_return * p['size']
+                equity += net_pnl
                 metrics.add_trade({
                     'timestamp': timestamps[final_idx],
                     'asset': asset,
@@ -292,7 +298,8 @@ class AlphaLSTMVectorizedBacktester:
                     'equity_before': float(p['equity_before']),
                     'equity_after': float(equity),
                     'hold_time': (timestamps[final_idx] - p['entry_timestamp']).total_seconds() / 60.0,
-                    'reason': "End of Backtest"
+                    'reason': "End of Backtest",
+                    'net_r': float(net_r),
                 })
         
         return metrics
@@ -326,16 +333,20 @@ def main():
     loader = AlphaDataLoader(data_dir=str(data_dir))
     aligned_df, normalized_df = loader.get_features(engine=rk_engine)
 
-    # Model parameters (derived from the feature engine so train/backtest never drift)
-    input_dim = len(rk_engine.feature_names)
-    model = AlphaSLModel(input_dim=input_dim, lstm_units=64, dense_units=32, dropout=0.3)
-    
     if not model_path.exists():
         logger.error(f"Model not found at {model_path}")
         return
 
     checkpoint = _load_state_dict(model_path)
-    checkpoint_input_dim = _infer_lstm_input_dim(checkpoint)
+    if checkpoint.get("format_version") != 3:
+        logger.error("Expected a V3 action-head checkpoint. Regenerate data and retrain Alpha.")
+        return
+
+    input_dim = len(rk_engine.feature_names)
+    model_config = checkpoint["model_config"]
+    model = AlphaSLModel(**model_config)
+    state_dict = checkpoint["model_state_dict"]
+    checkpoint_input_dim = _infer_lstm_input_dim(state_dict)
     if checkpoint_input_dim != input_dim:
         logger.error(
             "Model/input mismatch: checkpoint expects %d features but backtest engine builds %d.",
@@ -344,8 +355,11 @@ def main():
         )
         return
     logger.info("Model/input feature check passed: checkpoint=%d, backtest_engine=%d", checkpoint_input_dim, input_dim)
+    if checkpoint.get("feature_names") != rk_engine.feature_names:
+        logger.error("Checkpoint feature names/order do not match backtest feature engine.")
+        return
 
-    model.load_state_dict(checkpoint)
+    model.load_state_dict(state_dict)
     model.eval()
 
     calibration = load_calibration(PROJECT_ROOT / args.calibration_path) if args.calibration_path else None

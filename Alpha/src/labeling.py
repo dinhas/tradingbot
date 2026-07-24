@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from ta.trend import EMAIndicator, ADXIndicator
 from shared_constants import DEFAULT_SPREADS
+from Alpha.src.trade_simulator import TradeConfig, TradeSimulator
 
 class Labeler:
     def __init__(self, tp_mult: float = 1.0, sl_mult: float = 0.5, ema_window: int = 100,
@@ -23,55 +24,11 @@ class Labeler:
         self.max_bars = max_bars
         self.adx_threshold = adx_threshold
         self.min_edge_r = min_edge_r
-
-    def _simulate_trade(self, prices_close: np.ndarray, prices_high: np.ndarray, prices_low: np.ndarray,
-                        timestamps: pd.Index, asset: str, i: int, direction: int, atr: float,
-                        spread: float) -> tuple[float, bool]:
-        """Simulates a single long or short candidate and returns a normalized net-R estimate.
-
-        direction: +1 for buy, -1 for sell.
-        The target is not a raw barrier event; it is a net edge proxy after spread.
-        """
-        mid_price = prices_close[i]
-        tp_dist = self.tp_mult * atr
-        sl_dist = self.sl_mult * atr
-        half_spread = spread / 2.0
-
-        entry_price = mid_price + (direction * half_spread)
-        sl = entry_price - (direction * sl_dist)
-        tp = entry_price + (direction * tp_dist)
-
-        exit_price = None
-        for j in range(i + 1, min(i + 1 + self.max_bars, len(prices_close))):
-            if direction == 1:
-                bid_low = prices_low[j] - half_spread
-                bid_high = prices_high[j] - half_spread
-                if bid_low <= sl:
-                    exit_price = sl
-                    break
-                if bid_high >= tp:
-                    exit_price = tp
-                    break
-            else:
-                ask_high = prices_high[j] + half_spread
-                ask_low = prices_low[j] + half_spread
-                if ask_high >= sl:
-                    exit_price = sl
-                    break
-                if ask_low <= tp:
-                    exit_price = tp
-                    break
-
-        if exit_price is None:
-            final_idx = min(i + self.max_bars, len(prices_close) - 1)
-            exit_price = prices_close[final_idx] - (direction * half_spread)
-
-        # Normalize by initial risk so tradeability can be thresholded consistently.
-        gross_r = (exit_price - entry_price) * direction / max(sl_dist, 1e-8)
-        roundtrip_spread_r = spread / max(sl_dist, 1e-8)
-        fee_r = (entry_price * 0.00004) / max(sl_dist, 1e-8)
-        net_r = gross_r - roundtrip_spread_r - fee_r
-        return float(net_r), bool(net_r > 0)
+        self.simulator = TradeSimulator(TradeConfig(
+            tp_mult=tp_mult,
+            sl_mult=sl_mult,
+            max_hold_bars=max_bars,
+        ))
 
     def _get_adx(self, df: pd.DataFrame, asset: str) -> pd.Series:
         """Calculates the 14-period ADX to measure trend strength."""
@@ -114,12 +71,13 @@ class Labeler:
             - valid: bars that pass the ADX/ATR/trend hygiene filters.
         """
         close_col = f"{asset}_close"
+        open_col = f"{asset}_open"
         high_col = f"{asset}_high"
         low_col = f"{asset}_low"
         atr_col = f"{asset}_atr"
         adx_col = f"{asset}_adx"
 
-        if close_col not in df.columns or atr_col not in df.columns or adx_col not in df.columns:
+        if any(col not in df.columns for col in (open_col, close_col, high_col, low_col, atr_col, adx_col)):
             raise ValueError(f"Required columns missing for {asset}")
         
         # 1. Calculate the 1H Trend for all timestamps
@@ -128,6 +86,7 @@ class Labeler:
         # 2. Use pre-calculated ADX
         adx_series = df[adx_col].fillna(0)
         
+        prices_open = df[open_col].values
         prices_close = df[close_col].values
         prices_high = df[high_col].values
         prices_low = df[low_col].values
@@ -143,12 +102,18 @@ class Labeler:
         tradeable = np.zeros(n, dtype=np.float32)
         directions = np.zeros(n, dtype=np.float32)
         net_r = np.zeros(n, dtype=np.float32)
+        long_net_r = np.zeros(n, dtype=np.float32)
+        short_net_r = np.zeros(n, dtype=np.float32)
+        long_tradeable = np.zeros(n, dtype=np.float32)
+        short_tradeable = np.zeros(n, dtype=np.float32)
         valid = np.zeros(n, dtype=bool)
 
         trend_vals = trend_1h.values
         adx_vals = adx_series.values
+        timestamp_values = timestamps.to_numpy(dtype="datetime64[ns]")
+        expected_delta = np.timedelta64(5, "m")
 
-        for i in range(n - 1):
+        for i in range(n - self.max_bars):
             current_adx = adx_vals[i]
             atr = atrs_5m[i]
 
@@ -159,21 +124,46 @@ class Labeler:
             if current_adx < self.adx_threshold:
                 continue
 
+            horizon_deltas = np.diff(timestamp_values[i:i + self.max_bars + 1])
+            if len(horizon_deltas) != self.max_bars or np.any(horizon_deltas != expected_delta):
+                continue
+
             valid[i] = True
 
-            long_net_r, _ = self._simulate_trade(prices_close, prices_high, prices_low, timestamps, asset, i, 1, atr, spread)
-            short_net_r, _ = self._simulate_trade(prices_close, prices_high, prices_low, timestamps, asset, i, -1, atr, spread)
+            long_outcome = self.simulator.simulate(
+                prices_open, prices_high, prices_low, prices_close, i, 1, atr, spread
+            )
+            short_outcome = self.simulator.simulate(
+                prices_open, prices_high, prices_low, prices_close, i, -1, atr, spread
+            )
+            if long_outcome is None or short_outcome is None:
+                valid[i] = False
+                continue
 
-            if long_net_r >= short_net_r:
+            long_net_r[i] = long_outcome.net_r
+            short_net_r[i] = short_outcome.net_r
+            long_tradeable[i] = float(long_outcome.net_r > self.min_edge_r)
+            short_tradeable[i] = float(short_outcome.net_r > self.min_edge_r)
+
+            if long_net_r[i] >= short_net_r[i]:
                 directions[i] = 1.0
-                net_r[i] = long_net_r
+                net_r[i] = long_net_r[i]
             else:
                 directions[i] = 0.0
-                net_r[i] = short_net_r
+                net_r[i] = short_net_r[i]
 
             tradeable[i] = 1.0 if net_r[i] > self.min_edge_r else 0.0
 
-        return pd.DataFrame({'tradeable': tradeable, 'direction': directions, 'net_r': net_r, 'valid': valid}, index=timestamps)
+        return pd.DataFrame({
+            'tradeable': tradeable,
+            'direction': directions,
+            'net_r': net_r,
+            'long_tradeable': long_tradeable,
+            'short_tradeable': short_tradeable,
+            'long_net_r': long_net_r,
+            'short_net_r': short_net_r,
+            'valid': valid,
+        }, index=timestamps)
 
 if __name__ == "__main__":
     pass
