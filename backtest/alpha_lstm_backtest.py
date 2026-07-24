@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Alpha.src.model import AlphaSLModel
+from Alpha.src.model import AlphaSLModel, HOLD, SHORT, LONG
 from Alpha.src.data_loader import DataLoader as AlphaDataLoader
 from Alpha.src.calibration import apply_temperature, load_calibration
 from Alpha.src.trade_simulator import TradeConfig, TradeSimulator
@@ -127,13 +127,10 @@ class AlphaLSTMVectorizedBacktester:
                     outputs = self.model(batch_tensor, batch_assets, return_dict=True)
                     action_logits = outputs["action_logits"].float().cpu().numpy()
                     if hasattr(self, "calibration") and self.calibration:
-                        temperatures = self.calibration.get("action_temperatures", [1.0, 1.0])
-                        action_probs = np.column_stack([
-                            apply_temperature(action_logits[:, side], temperatures[side])
-                            for side in range(2)
-                        ])
+                        temperature = self.calibration.get("temperature", 1.0)
+                        action_probs = apply_temperature(action_logits, temperature)
                     else:
-                        action_probs = torch.sigmoid(outputs["action_logits"].float()).cpu().numpy()
+                        action_probs = torch.softmax(outputs["action_logits"].float(), dim=1).cpu().numpy()
                     
                     # Align probabilities back to original indices
                     # sequences[i] corresponds to normalized_df.index[i + sequence_length - 1]
@@ -182,10 +179,10 @@ class AlphaLSTMVectorizedBacktester:
                 can_act = current_adx >= self.adx_thresh
 
                 action_probs = all_action_probs[asset][idx]
-                direction = 0
                 action_idx = int(np.argmax(action_probs))
-                if can_act and action_probs[action_idx] >= self.confidence_thresh:
-                    direction = -1 if action_idx == 0 else 1
+                direction = 0
+                if can_act and action_idx != HOLD and action_probs[action_idx] >= self.confidence_thresh:
+                    direction = -1 if action_idx == SHORT else 1
                 
                 current_pos = positions[asset]
                 mid_close = close_prices[asset][idx]
@@ -250,11 +247,7 @@ class AlphaLSTMVectorizedBacktester:
                     entry_price = self.simulator.entry_price(
                         open_prices[asset][entry_idx], direction, self.spreads.get(asset, 0.0)
                     )
-                    sl_dist = self.sl_mult * atr
-                    tp_dist = self.tp_mult * atr
-                    
-                    sl = entry_price - (direction * sl_dist)
-                    tp = entry_price + (direction * tp_dist)
+                    sl, tp = self.simulator.barriers(entry_price, direction, atr)
                     
                     positions[asset] = {
                         'direction': direction,
@@ -314,11 +307,11 @@ def main():
     parser.add_argument("--calibration-path", type=str, default=None, help="Optional JSON calibration file for tradeability logits")
     parser.add_argument("--initial-equity", type=float, default=10000.0)
     parser.add_argument("--pos-size", type=float, default=0.1, help="Position size as % of equity (0.1 = 10%)")
-    # Defaults now MIRROR the Labeler geometry (tp=1.0 ATR, sl=0.5 ATR, 6-bar timeout, ADX 25)
+    # Defaults now MIRROR the Labeler geometry (tp=1.0 ATR, sl=0.5 ATR, 12-bar timeout, ADX 25)
     parser.add_argument("--sl-mult", type=float, default=0.5)
     parser.add_argument("--tp-mult", type=float, default=1.0)
     parser.add_argument("--adx-thresh", type=float, default=25.0)
-    parser.add_argument("--max-hold-bars", type=int, default=6)
+    parser.add_argument("--max-hold-bars", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--no-charts", action="store_true", help="Skip chart generation after saving metrics/trades")
     args = parser.parse_args()
@@ -338,8 +331,8 @@ def main():
         return
 
     checkpoint = _load_state_dict(model_path)
-    if checkpoint.get("format_version") != 3:
-        logger.error("Expected a V3 action-head checkpoint. Regenerate data and retrain Alpha.")
+    if checkpoint.get("format_version") not in (3, 4):
+        logger.error("Expected a V3/V4 action-head checkpoint. Regenerate data and retrain Alpha.")
         return
 
     input_dim = len(rk_engine.feature_names)

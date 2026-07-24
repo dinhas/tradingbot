@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import logging
 from ta.momentum import RSIIndicator
-from ta.trend import MACD, ADXIndicator, EMAIndicator
+from ta.trend import ADXIndicator, EMAIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
 from shared_constants import FX_ALPHA_ASSETS
 
@@ -58,12 +58,14 @@ class FeatureEngine:
     def _define_feature_names(self):
         """Defines causal multi-asset features, including side-selection information."""
         self.feature_names = [
-            "bollinger_pB", "ema_diff", "macd_hist", "rsi_momentum", "rsi",
-            "bb_width", "volatility", "atr_norm", "hour", "regime",
+            "bollinger_pB", "ema_diff", "rsi_momentum", "rsi",
+            "volatility", "atr_norm", "hour", "regime",
             "htf_trend", "htf_ema_dist", "htf_rsi",
-            "return_1_atr", "return_3_atr", "return_6_atr", "return_12_atr",
-            "body_atr", "close_in_range", "ema_slope_atr", "di_spread",
+            "return_3_atr", "return_6_atr", "return_12_atr",
+            "ema_slope_atr", "di_spread",
             "breakout_position",
+            "momentum_3", "momentum_6",
+            "bar_strength", "intraday_position",
         ]
 
     def preprocess_data(self, data_dict):
@@ -129,12 +131,9 @@ class FeatureEngine:
         
         # 2. Core V3 Technical Features (Calculated on denoised price)
         new_cols[f"{asset}_rsi"] = RSIIndicator(close, window=14).rsi()
-        macd = MACD(close)
-        new_cols[f"{asset}_macd_hist"] = macd.macd_diff()
         
         bb = BollingerBands(close, window=20, window_dev=2)
         new_cols[f"{asset}_bollinger_pB"] = (close - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-8)
-        new_cols[f"{asset}_bb_width"] = bb.bollinger_wband()
         
         # 3. Distance and Interaction features
         new_cols[f"{asset}_ema_diff"] = (close - close.rolling(20).mean()) / (close.rolling(20).std() + 1e-8)
@@ -156,16 +155,10 @@ class FeatureEngine:
         is_trending = (adx > 25) & (atr_norm_raw < atr_q75)
         new_cols[f"{asset}_regime"] = is_trending.astype(np.float32) # Trending (1) vs Other (0)
         price_atr = atr.replace(0, np.nan)
-        for bars in (1, 3, 6, 12):
+        for bars in (3, 6, 12):
             new_cols[f"{asset}_return_{bars}_atr"] = (
                 (raw_close - raw_close.shift(bars)) / price_atr
             ).clip(-10.0, 10.0)
-        new_cols[f"{asset}_body_atr"] = (
-            (raw_close - df[f"{asset}_open"]) / price_atr
-        ).clip(-5.0, 5.0)
-        new_cols[f"{asset}_close_in_range"] = (
-            ((raw_close - raw_low) / (raw_high - raw_low + 1e-8)) * 2.0 - 1.0
-        ).clip(-1.0, 1.0)
         ema_20 = raw_close.ewm(span=20, adjust=False).mean()
         new_cols[f"{asset}_ema_slope_atr"] = (
             (ema_20 - ema_20.shift(3)) / price_atr
@@ -179,6 +172,14 @@ class FeatureEngine:
         new_cols[f"{asset}_breakout_position"] = (
             ((raw_close - rolling_low) / (rolling_high - rolling_low + 1e-8)) * 2.0 - 1.0
         ).clip(-2.0, 2.0)
+
+        # 5b. Directional OHLCV features — pure price action for short vs long
+        raw_open = df[f"{asset}_open"]
+        new_cols[f"{asset}_momentum_3"] = (raw_close / raw_close.shift(3) - 1.0).clip(-0.05, 0.05)
+        new_cols[f"{asset}_momentum_6"] = (raw_close / raw_close.shift(6) - 1.0).clip(-0.10, 0.10)
+        bar_range = (raw_high - raw_low + 1e-8)
+        new_cols[f"{asset}_bar_strength"] = ((raw_close - raw_open) / bar_range).clip(-1.0, 1.0)
+        new_cols[f"{asset}_intraday_position"] = ((raw_close - raw_low) / bar_range).clip(0.0, 1.0)
 
         # 6. Higher-Timeframe (1H) Trend Features — CAUSAL (only fully completed hours).
         # These expose the same trend context used by the Labeler so the model can
@@ -221,9 +222,10 @@ class FeatureEngine:
         """V3 Normalization: Rolling 200-window Z-Score."""
         for asset in self.assets:
             cols_to_scale = [
-                f"{asset}_bollinger_pB", f"{asset}_ema_diff", f"{asset}_macd_hist",
-                f"{asset}_rsi_momentum", f"{asset}_rsi", f"{asset}_bb_width",
-                f"{asset}_volatility", f"{asset}_atr_norm"
+                f"{asset}_bollinger_pB", f"{asset}_ema_diff",
+                f"{asset}_rsi_momentum", f"{asset}_rsi",
+                f"{asset}_volatility", f"{asset}_atr_norm",
+                f"{asset}_momentum_3", f"{asset}_momentum_6",
             ]
             for col in cols_to_scale:
                 if col in df.columns:
@@ -239,13 +241,15 @@ class FeatureEngine:
 
     def get_observation_vectorized(self, df, asset):
         obs_cols = [
-            f"{asset}_bollinger_pB", f"{asset}_ema_diff", f"{asset}_macd_hist",
-            f"{asset}_rsi_momentum", f"{asset}_rsi", f"{asset}_bb_width",
+            f"{asset}_bollinger_pB", f"{asset}_ema_diff",
+            f"{asset}_rsi_momentum", f"{asset}_rsi",
             f"{asset}_volatility", f"{asset}_atr_norm", 'hour_of_day',
             f"{asset}_regime", f"{asset}_htf_trend", f"{asset}_htf_ema_dist", f"{asset}_htf_rsi",
-            f"{asset}_return_1_atr", f"{asset}_return_3_atr", f"{asset}_return_6_atr",
-            f"{asset}_return_12_atr", f"{asset}_body_atr", f"{asset}_close_in_range",
-            f"{asset}_ema_slope_atr", f"{asset}_di_spread", f"{asset}_breakout_position"
+            f"{asset}_return_3_atr", f"{asset}_return_6_atr",
+            f"{asset}_return_12_atr",
+            f"{asset}_ema_slope_atr", f"{asset}_di_spread", f"{asset}_breakout_position",
+            f"{asset}_momentum_3", f"{asset}_momentum_6",
+            f"{asset}_bar_strength", f"{asset}_intraday_position",
         ]
 
         return df.reindex(columns=obs_cols, fill_value=0).values.astype(np.float32)
@@ -254,10 +258,8 @@ class FeatureEngine:
         obs = [
             current_step_data.get(f"{asset}_bollinger_pB", 0),
             current_step_data.get(f"{asset}_ema_diff", 0),
-            current_step_data.get(f"{asset}_macd_hist", 0),
             current_step_data.get(f"{asset}_rsi_momentum", 0),
             current_step_data.get(f"{asset}_rsi", 0),
-            current_step_data.get(f"{asset}_bb_width", 0),
             current_step_data.get(f"{asset}_volatility", 0),
             current_step_data.get(f"{asset}_atr_norm", 0),
             current_step_data.get('hour_of_day', 0),
@@ -265,14 +267,15 @@ class FeatureEngine:
             current_step_data.get(f"{asset}_htf_trend", 0),
             current_step_data.get(f"{asset}_htf_ema_dist", 0),
             current_step_data.get(f"{asset}_htf_rsi", 0),
-            current_step_data.get(f"{asset}_return_1_atr", 0),
             current_step_data.get(f"{asset}_return_3_atr", 0),
             current_step_data.get(f"{asset}_return_6_atr", 0),
             current_step_data.get(f"{asset}_return_12_atr", 0),
-            current_step_data.get(f"{asset}_body_atr", 0),
-            current_step_data.get(f"{asset}_close_in_range", 0),
             current_step_data.get(f"{asset}_ema_slope_atr", 0),
             current_step_data.get(f"{asset}_di_spread", 0),
-            current_step_data.get(f"{asset}_breakout_position", 0)
+            current_step_data.get(f"{asset}_breakout_position", 0),
+            current_step_data.get(f"{asset}_momentum_3", 0),
+            current_step_data.get(f"{asset}_momentum_6", 0),
+            current_step_data.get(f"{asset}_bar_strength", 0),
+            current_step_data.get(f"{asset}_intraday_position", 0),
         ]
         return np.array(obs, dtype=np.float32)

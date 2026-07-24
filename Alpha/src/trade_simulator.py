@@ -7,7 +7,7 @@ import numpy as np
 class TradeConfig:
     tp_mult: float = 1.0
     sl_mult: float = 0.5
-    max_hold_bars: int = 6
+    max_hold_bars: int = 12
     leverage: float = 100.0
     commission_rate_per_side: float = 0.00002
 

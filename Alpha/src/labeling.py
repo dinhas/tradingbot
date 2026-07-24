@@ -6,7 +6,7 @@ from Alpha.src.trade_simulator import TradeConfig, TradeSimulator
 
 class Labeler:
     def __init__(self, tp_mult: float = 1.0, sl_mult: float = 0.5, ema_window: int = 100,
-                 max_bars: int = 6, adx_threshold: float = 25.0, min_edge_r: float = 0.10):
+                 max_bars: int = 12, adx_threshold: float = 25.0, min_edge_r: float = 0.25):
         """
         Trend-Following Triple Barrier Labeler.
         Optimized for V3 Regime-Aware Denoising.
@@ -14,7 +14,7 @@ class Labeler:
             tp_mult: Take Profit multiplier for 5M ATR (Optimized: 1.0).
             sl_mult: Stop Loss multiplier for 5M ATR (Optimized: 0.5).
             ema_window: Window for the 1H Trend EMA (e.g., 100).
-            max_bars: Vertical barrier (30m on 5M). Optimized: 6.
+            max_bars: Vertical barrier (60m on 5M). Optimized: 12.
             adx_threshold: Minimum trend strength. Optimized: 25.0.
             min_edge_r: Minimum net R buffer required before a setup is labeled tradeable.
         """
@@ -154,6 +154,18 @@ class Labeler:
 
             tradeable[i] = 1.0 if net_r[i] > self.min_edge_r else 0.0
 
+        # 3-class action target: 0=hold, 1=short, 2=long
+        action_class = np.zeros(n, dtype=np.float32)
+        for i in range(n):
+            s = short_tradeable[i]
+            l = long_tradeable[i]
+            if s > 0.5 and l > 0.5:
+                action_class[i] = 2.0 if long_net_r[i] >= short_net_r[i] else 1.0
+            elif s > 0.5:
+                action_class[i] = 1.0
+            elif l > 0.5:
+                action_class[i] = 2.0
+
         return pd.DataFrame({
             'tradeable': tradeable,
             'direction': directions,
@@ -162,6 +174,7 @@ class Labeler:
             'short_tradeable': short_tradeable,
             'long_net_r': long_net_r,
             'short_net_r': short_net_r,
+            'action_class': action_class,
             'valid': valid,
         }, index=timestamps)
 

@@ -23,7 +23,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 MAX_ZIP_MB = 10.0
-CLASS_NAMES = ["sell", "neutral", "buy"]  # indices 0, 1, 2 <-> labels -1, 0, +1
+CLASS_NAMES = ["hold", "short", "long"]  # indices 0, 1, 2
 
 
 class NumpyJSONEncoder(json.JSONEncoder):

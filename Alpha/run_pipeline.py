@@ -17,7 +17,7 @@ sys.path.append(PROJECT_ROOT)
 
 from Alpha.src.data_loader import DataLoader as MyDataLoader
 from Alpha.src.labeling import Labeler
-from Alpha.src.model import AlphaSLModel, action_opportunity_loss
+from Alpha.src.model import AlphaSLModel, action_opportunity_loss, HOLD, SHORT, LONG, NUM_CLASSES
 from Alpha.src.feature_engine import FeatureEngine
 from Alpha.src.diagnostics import (
     DiagnosticsRecorder, NumpyJSONEncoder,
@@ -46,9 +46,10 @@ DROPOUT = 0.3
 SESSION_COL = "is_late_session"
 
 GRAD_CLIP_NORM = 1.0
+LABEL_SMOOTHING = 0.05
 
 # Label / split hygiene
-LABEL_MAX_BARS = 6      # must match Labeler.max_bars (vertical barrier)
+LABEL_MAX_BARS = 12      # must match Labeler.max_bars (vertical barrier)
 BAR_MINUTES = 5
 # Purge: drop train/val samples whose label horizon crosses the split boundary.
 PURGE_TD = np.timedelta64(LABEL_MAX_BARS * BAR_MINUTES, 'm')
@@ -69,7 +70,7 @@ class AlphaSequenceDataset(Dataset):
         x_seq = self.sequences[idx].copy()
         return (
             torch.from_numpy(x_seq),
-            torch.from_numpy(self.action_targets[idx].copy()).float(),
+            torch.tensor(int(self.action_targets[idx]), dtype=torch.long),
             torch.tensor(self.asset_ids[idx], dtype=torch.long),
         )
 
@@ -117,7 +118,7 @@ def _build_sequences_for_asset(features: np.ndarray, action_targets: np.ndarray,
     """
     empty = (
         np.empty((0, seq_len, features.shape[1]), dtype=np.float32),
-        np.empty((0, 2), dtype=np.float32),
+        np.empty((0,), dtype=np.int64),
         np.empty((0, 2), dtype=np.float32),
         np.empty((0,), dtype=np.int64),
     )
@@ -136,16 +137,11 @@ def _build_sequences_for_asset(features: np.ndarray, action_targets: np.ndarray,
         return empty
 
     X_seq = np.stack([features[e - seq_len + 1:e + 1] for e in end_indices]).astype(np.float32)
-    y_actions = action_targets[end_indices].astype(np.float32)
+    y_actions = action_targets[end_indices].astype(np.int64)
     y_action_net_r = action_net_r[end_indices].astype(np.float32)
 
     return X_seq, y_actions, y_action_net_r, end_indices
 
-
-def _capped_pos_weight(positives: int, negatives: int, cap: float = 5.0) -> float:
-    if positives <= 0 or negatives <= 0:
-        return 1.0
-    return float(min(np.sqrt(negatives / positives), cap))
 
 
 def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LENGTH):
@@ -164,7 +160,7 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
     all_tradeable = []
     all_directions = []
     all_net_r = []
-    all_action_targets = []
+    all_action_classes = []
     all_action_net_r = []
     all_timestamps = []
     all_asset_ids = []
@@ -195,13 +191,13 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
         asset_tradeable = filtered_labels_df['tradeable'].values.astype(np.float32)
         asset_direction = filtered_labels_df['direction'].values.astype(np.int64)
         asset_net_r = filtered_labels_df['net_r'].values.astype(np.float32)
-        asset_action_targets = filtered_labels_df[['short_tradeable', 'long_tradeable']].values.astype(np.float32)
+        asset_action_class = filtered_labels_df['action_class'].values.astype(np.int64)
         asset_action_net_r = filtered_labels_df[['short_net_r', 'long_net_r']].values.astype(np.float32)
         asset_valid = filtered_labels_df['valid'].values.astype(bool)
         asset_timestamps = common_indices.to_numpy(dtype="datetime64[ns]")
 
         X_seq, y_actions, y_action_net_r, end_indices = _build_sequences_for_asset(
-            asset_X, asset_action_targets, asset_action_net_r, asset_valid,
+            asset_X, asset_action_class, asset_action_net_r, asset_valid,
             asset_timestamps, seq_len
         )
         if len(y_actions) == 0:
@@ -220,7 +216,7 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
         all_tradeable.append(y_trade)
         all_directions.append(y_dir)
         all_net_r.append(y_net_r)
-        all_action_targets.append(y_actions)
+        all_action_classes.append(y_actions)
         all_action_net_r.append(y_action_net_r)
         all_timestamps.append(asset_timestamps[end_indices])
         all_asset_ids.append(np.full(len(y_actions), asset_id, dtype=np.int8))
@@ -228,13 +224,13 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
         asset_total = len(y_actions)
 
         # Per-asset dataset diagnostics
-        dir_cls, dir_cnt = np.unique(y_dir[y_trade > 0.5], return_counts=True)
+        cls_cls, cls_cnt = np.unique(y_actions, return_counts=True)
         asset_stats[asset] = {
             "sequences": int(asset_total),
             "valid_ratio": round(float(filtered_labels_df['valid'].mean()), 4),
             "tradeable_count": int(y_trade.sum()),
             "tradeable_rate": round(float(y_trade.mean()), 4),
-            "direction_counts_tradeable": {str(int(c)): int(n) for c, n in zip(dir_cls, dir_cnt)},
+            "action_class_counts": {str(int(c)): int(n) for c, n in zip(cls_cls, cls_cnt)},
             "net_r_mean": round(float(y_net_r.mean()), 4),
             "net_r_p90": round(float(np.percentile(y_net_r, 90)), 4),
         }
@@ -248,7 +244,7 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
     y_trade_np = np.concatenate(all_tradeable, axis=0).astype(np.float32)
     y_dir_np = np.concatenate(all_directions, axis=0).astype(np.int64)
     y_net_r_np = np.concatenate(all_net_r, axis=0).astype(np.float32)
-    action_targets_np = np.concatenate(all_action_targets, axis=0).astype(np.float32)
+    action_classes_np = np.concatenate(all_action_classes, axis=0).astype(np.int64)
     action_net_r_np = np.concatenate(all_action_net_r, axis=0).astype(np.float32)
     timestamps_np = np.concatenate(all_timestamps, axis=0).astype("datetime64[ns]")
     asset_ids_np = np.concatenate(all_asset_ids, axis=0).astype(np.int8)
@@ -258,7 +254,7 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
     y_trade_np = y_trade_np[order]
     y_dir_np = y_dir_np[order]
     y_net_r_np = y_net_r_np[order]
-    action_targets_np = action_targets_np[order]
+    action_classes_np = action_classes_np[order]
     action_net_r_np = action_net_r_np[order]
     timestamps_np = timestamps_np[order]
     asset_ids_np = asset_ids_np[order]
@@ -289,7 +285,7 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
         tradeable=y_trade_np,
         direction=y_dir_np,
         net_r=y_net_r_np,
-        action_targets=action_targets_np,
+        action_classes=action_classes_np,
         action_net_r=action_net_r_np,
         timestamp=timestamps_np,
         asset_id=asset_ids_np,
@@ -301,11 +297,11 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
     logger.info("Computing dataset diagnostics...")
     trade_count = int(y_trade_np.sum())
     no_trade_count = int(len(y_trade_np) - trade_count)
-    dir_cls, dir_cnt = np.unique(y_dir_np[y_trade_np > 0.5], return_counts=True)
+    cls_cls, cls_cnt = np.unique(action_classes_np, return_counts=True)
 
     # Label distribution per month: a moving target here explains unstable training
     ts_index = pd.DatetimeIndex(timestamps_np)
-    monthly = pd.crosstab(ts_index.to_period('M').astype(str), y_trade_np)
+    monthly = pd.crosstab(ts_index.to_period('M').astype(str), action_classes_np)
     monthly_dist = {
         str(month): {str(int(c)): int(v) for c, v in row.items()}
         for month, row in monthly.iterrows()
@@ -323,7 +319,7 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
         "total_sequences": int(len(y_trade_np)),
         "tradeable_counts_total": {"0": no_trade_count, "1": trade_count},
         "tradeable_rate": round(float(y_trade_np.mean()), 4),
-        "direction_counts_tradeable": {str(int(c)): int(n) for c, n in zip(dir_cls, dir_cnt)},
+        "action_class_counts": {str(int(c)): int(n) for c, n in zip(cls_cls, cls_cnt)},
         "net_r_mean": round(float(y_net_r_np.mean()), 4),
         "net_r_p90": round(float(np.percentile(y_net_r_np, 90)), 4),
         "assets": asset_stats,
@@ -350,47 +346,50 @@ def generate_dataset(data_dir, output_dir, smoke_test=False, seq_len=SEQUENCE_LE
     return sequences_path, labels_path
 
 
-def _binary_metrics(targets: np.ndarray, probs: np.ndarray, threshold: float = 0.5) -> dict:
-    preds = (probs >= threshold).astype(np.int64)
-    targets = targets.astype(np.int64)
-    tp = int(((preds == 1) & (targets == 1)).sum())
-    fp = int(((preds == 1) & (targets == 0)).sum())
-    tn = int(((preds == 0) & (targets == 0)).sum())
-    fn = int(((preds == 0) & (targets == 1)).sum())
-    total = max(1, len(targets))
-    precision = tp / max(1, tp + fp)
-    recall = tp / max(1, tp + fn)
-    base_rate = float(targets.mean()) if len(targets) else 0.0
-    return {
-        "threshold": threshold,
-        "accuracy": round((tp + tn) / total, 4),
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "f1": round(2 * precision * recall / max(1e-12, precision + recall), 4),
-        "base_rate": round(base_rate, 4),
-        "edge": round(precision - base_rate, 4),
-        "confusion_matrix": [[tn, fp], [fn, tp]],
-    }
+def _multiclass_metrics(targets: np.ndarray, probs: np.ndarray) -> dict:
+    """Per-class precision/recall for 3-class (hold/short/long)."""
+    preds = np.argmax(probs, axis=1)
+    results = {}
+    class_names = ["hold", "short", "long"]
+    for cls_idx, cls_name in enumerate(class_names):
+        tp = int(((preds == cls_idx) & (targets == cls_idx)).sum())
+        fp = int(((preds == cls_idx) & (targets != cls_idx)).sum())
+        fn = int(((preds != cls_idx) & (targets == cls_idx)).sum())
+        total = max(1, len(targets))
+        precision = tp / max(1, tp + fp)
+        recall = tp / max(1, tp + fn)
+        base_rate = float((targets == cls_idx).mean()) if len(targets) else 0.0
+        results[cls_name] = {
+            "precision": round(precision, 4),
+            "recall": round(recall, 4),
+            "f1": round(2 * precision * recall / max(1e-12, precision + recall), 4),
+            "base_rate": round(base_rate, 4),
+            "edge": round(precision - base_rate, 4),
+        }
+    results["accuracy"] = round(float((preds == targets).mean()), 4)
+    return results
 
 
-def _policy_metrics(targets: np.ndarray, probs: np.ndarray, threshold: float = 0.5) -> dict:
+def _policy_metrics_3class(targets: np.ndarray, probs: np.ndarray,
+                           threshold: float = 0.5) -> dict:
+    """Evaluate trading policy: pick argmax class, skip if confidence < threshold."""
     chosen = np.argmax(probs, axis=1)
     confidence = probs[np.arange(len(probs)), chosen]
-    selected = confidence >= threshold
-    selected_targets = targets[np.arange(len(targets)), chosen]
+    is_trade = chosen != HOLD
+    selected = (confidence >= threshold) & is_trade
     trades = int(selected.sum())
-    wins = int(selected_targets[selected].sum()) if trades else 0
+    correct = int((chosen[selected] == targets[selected]).sum()) if trades else 0
     return {
         "threshold": threshold,
         "trades": trades,
-        "wins": wins,
-        "win_rate": round(wins / trades, 4) if trades else None,
+        "correct": correct,
+        "accuracy": round(correct / trades, 4) if trades else None,
         "coverage": round(trades / max(1, len(targets)), 4),
     }
 
 
-def _evaluate_holdout(model, sequences, action_targets, asset_ids, test_idx, batch_size=512) -> dict:
-    """Evaluates executable short/long opportunity selection on untouched data."""
+def _evaluate_holdout(model, sequences, action_classes, asset_ids, test_idx, batch_size=512) -> dict:
+    """Evaluates 3-class hold/short/long on untouched data."""
     model.eval()
     action_probs_list = []
     with torch.no_grad():
@@ -402,20 +401,19 @@ def _evaluate_holdout(model, sequences, action_targets, asset_ids, test_idx, bat
                 torch.from_numpy(asset_ids[idx].astype(np.int64)).to(DEVICE),
                 return_dict=True,
             )
-            action_probs_list.append(torch.sigmoid(outputs["action_logits"].float()).cpu().numpy())
+            action_probs_list.append(torch.softmax(outputs["action_logits"].float(), dim=1).cpu().numpy())
 
     action_probs = np.concatenate(action_probs_list)
-    targets = action_targets[test_idx].astype(np.float32)
-    policy = _policy_metrics(targets, action_probs)
-    logger.info("Holdout selected-action win rate: %s over %d trades",
-                policy["win_rate"], policy["trades"])
+    targets = action_classes[test_idx].astype(np.int64)
+    policy = _policy_metrics_3class(targets, action_probs)
+    logger.info("Holdout policy accuracy: %s over %d trades",
+                policy["accuracy"], policy["trades"])
 
     return {
         "n_samples": int(len(test_idx)),
-        "short_opportunity": _binary_metrics(targets[:, 0], action_probs[:, 0]),
-        "long_opportunity": _binary_metrics(targets[:, 1], action_probs[:, 1]),
+        "class_metrics": _multiclass_metrics(targets, action_probs),
         "selected_action": policy,
-        "selected_confidence": confidence_histogram(action_probs.max(axis=1)),
+        "confidence_histogram": confidence_histogram(action_probs.max(axis=1)),
     }
 
 
@@ -436,9 +434,9 @@ def train_model(sequences_path, labels_path, model_save_path):
 
     sequences = np.load(sequences_path, mmap_mode='r')
     labels_data = np.load(labels_path)
-    if 'action_targets' not in labels_data or 'asset_id' not in labels_data:
-        raise RuntimeError("labels.npz is missing action targets or asset IDs. Regenerate the dataset.")
-    action_targets = labels_data['action_targets'].astype(np.float32)
+    if 'action_classes' not in labels_data or 'asset_id' not in labels_data:
+        raise RuntimeError("labels.npz is missing action_classes or asset IDs. Regenerate the dataset.")
+    action_classes = labels_data['action_classes'].astype(np.int64)
     asset_ids = labels_data['asset_id'].astype(np.int64)
     if 'timestamp' not in labels_data:
         raise RuntimeError("labels.npz is missing timestamp metadata. Regenerate the dataset before training.")
@@ -450,15 +448,18 @@ def train_model(sequences_path, labels_path, model_save_path):
 
     train_idx, val_idx, test_idx = _date_based_split_indices(timestamps)
     X_train, X_val = sequences[train_idx], sequences[val_idx]
-    y_action_train, y_action_val = action_targets[train_idx], action_targets[val_idx]
+    y_train, y_val = action_classes[train_idx], action_classes[val_idx]
     asset_train, asset_val = asset_ids[train_idx], asset_ids[val_idx]
-    train_positives = y_action_train.sum(axis=0).astype(int)
-    train_negatives = len(y_action_train) - train_positives
-    action_pos_weight = np.array([
-        _capped_pos_weight(int(p), int(n)) for p, n in zip(train_positives, train_negatives)
-    ], dtype=np.float32)
-    logger.info("Train action positives: short=%d long=%d | pos_weight=%s",
-                train_positives[0], train_positives[1], action_pos_weight.tolist())
+
+    # Class weights for CrossEntropyLoss: inverse frequency
+    class_counts = np.bincount(y_train, minlength=NUM_CLASSES).astype(np.float64)
+    class_counts = np.maximum(class_counts, 1.0)
+    total_train = class_counts.sum()
+    class_weights = total_train / (NUM_CLASSES * class_counts)
+    class_weights = np.clip(class_weights, 1.0, 10.0).astype(np.float32)
+    logger.info("Class distribution: %s | Class weights: %s",
+                {i: int(class_counts[i]) for i in range(NUM_CLASSES)},
+                [round(float(w), 4) for w in class_weights])
     logger.info(
         "Date split: train=%d (%s to %s), val=%d (%s to %s), holdout_test=%d (%s to %s)",
         len(train_idx), np.asarray(timestamps[train_idx[0]]).astype(str), np.asarray(timestamps[train_idx[-1]]).astype(str),
@@ -466,8 +467,8 @@ def train_model(sequences_path, labels_path, model_save_path):
         len(test_idx), np.asarray(timestamps[test_idx[0]]).astype(str), np.asarray(timestamps[test_idx[-1]]).astype(str),
     )
 
-    train_dataset = AlphaSequenceDataset(X_train, y_action_train, asset_train)
-    val_dataset = AlphaSequenceDataset(X_val, y_action_val, asset_val)
+    train_dataset = AlphaSequenceDataset(X_train, y_train, asset_train)
+    val_dataset = AlphaSequenceDataset(X_val, y_val, asset_val)
 
     num_workers = max(0, min(4, os.cpu_count() or 1))
     pin_memory = DEVICE.type == "cuda"
@@ -476,9 +477,9 @@ def train_model(sequences_path, labels_path, model_save_path):
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
     input_dim = X_train.shape[-1]
-    model = AlphaSLModel(input_dim=input_dim, lstm_units=64, dense_units=32, dropout=DROPOUT).to(DEVICE)
+    model = AlphaSLModel(input_dim=input_dim, lstm_units=128, dense_units=64, dropout=DROPOUT).to(DEVICE)
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5)
     scaler = torch.amp.GradScaler(enabled=False)
 
     recorder.set_config(
@@ -487,12 +488,14 @@ def train_model(sequences_path, labels_path, model_save_path):
         learning_rate=LEARNING_RATE,
         dropout=DROPOUT,
         input_dim=int(input_dim),
-        lstm_units=64,
-        dense_units=32,
+        lstm_units=128,
+        dense_units=64,
+        num_layers=2,
         weight_decay=1e-4,
         device=str(DEVICE),
-        action_pos_weight=[round(float(v), 4) for v in action_pos_weight],
-        action_positive_counts={"short": int(train_positives[0]), "long": int(train_positives[1])},
+        label_smoothing=LABEL_SMOOTHING,
+        class_weights=[round(float(w), 4) for w in class_weights],
+        class_counts={i: int(class_counts[i]) for i in range(NUM_CLASSES)},
         num_assets=int(asset_ids.max()) + 1,
         asset_embedding_dim=4,
         grad_clip_norm=GRAD_CLIP_NORM,
@@ -516,10 +519,10 @@ def train_model(sequences_path, labels_path, model_save_path):
     )
 
     best_val_loss = float('inf')
-    early_stop_patience = 10
+    early_stop_patience = 15
     epochs_no_improve = 0
 
-    for epoch in range(100):
+    for epoch in range(200):
         model.train()
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}")
 
@@ -534,7 +537,8 @@ def train_model(sequences_path, labels_path, model_save_path):
 
             optimizer.zero_grad(set_to_none=True)
             outputs = model(b_X, b_assets, return_dict=True)
-            loss = action_opportunity_loss(outputs, b_actions, action_pos_weight)
+            loss = action_opportunity_loss(outputs, b_actions, class_weights=class_weights,
+                                           label_smoothing=LABEL_SMOOTHING)
 
             if not torch.isfinite(loss):
                 raise RuntimeError(f"Non-finite training loss at epoch {epoch + 1}: {loss.item()}")
@@ -552,7 +556,7 @@ def train_model(sequences_path, labels_path, model_save_path):
         avg_train_loss = train_loss_sum / max(1, train_batches)
         avg_grad_norm = grad_norm_sum / max(1, train_batches)
 
-        # Validation: loss + tradeability metrics + direction accuracy on tradeable samples
+        # Validation
         model.eval()
         val_loss = 0.0
         val_action_probs_list = []
@@ -563,9 +567,10 @@ def train_model(sequences_path, labels_path, model_save_path):
                 b_actions = b_actions.to(DEVICE, non_blocking=True)
                 b_assets = b_assets.to(DEVICE, non_blocking=True)
                 outputs = model(b_X, b_assets, return_dict=True)
-                loss = action_opportunity_loss(outputs, b_actions, action_pos_weight)
+                loss = action_opportunity_loss(outputs, b_actions, class_weights=class_weights,
+                                               label_smoothing=LABEL_SMOOTHING)
                 val_loss += loss.item()
-                val_action_probs_list.append(torch.sigmoid(outputs["action_logits"].float()).cpu().numpy())
+                val_action_probs_list.append(torch.softmax(outputs["action_logits"].float(), dim=1).cpu().numpy())
                 val_action_targets_list.append(b_actions.cpu().numpy())
 
         avg_val_loss = val_loss / max(1, len(val_loader))
@@ -573,7 +578,8 @@ def train_model(sequences_path, labels_path, model_save_path):
 
         val_action_probs = np.concatenate(val_action_probs_list)
         val_action_targets = np.concatenate(val_action_targets_list)
-        val_policy = _policy_metrics(val_action_targets, val_action_probs)
+        val_policy = _policy_metrics_3class(val_action_targets, val_action_probs)
+        val_multiclass = _multiclass_metrics(val_action_targets, val_action_probs)
 
         recorder.log_epoch(
             epoch=epoch + 1,
@@ -581,14 +587,13 @@ def train_model(sequences_path, labels_path, model_save_path):
             val_loss=round(avg_val_loss, 5),
             lr=optimizer.param_groups[0]['lr'],
             grad_norm=round(avg_grad_norm, 5),
-            val_short_opportunity=_binary_metrics(val_action_targets[:, 0], val_action_probs[:, 0]),
-            val_long_opportunity=_binary_metrics(val_action_targets[:, 1], val_action_probs[:, 1]),
+            val_class_metrics=val_multiclass,
             val_selected_action=val_policy,
-            val_action_confidence=confidence_histogram(val_action_probs.max(axis=1)),
+            val_confidence_histogram=confidence_histogram(val_action_probs.max(axis=1)),
         )
         logger.info(
             f"Epoch {epoch + 1}: Train Loss = {avg_train_loss:.4f} | Val Loss = {avg_val_loss:.4f} | "
-            f"Selected Win Rate = {val_policy['win_rate']} | Trades = {val_policy['trades']} | "
+            f"Val Acc = {val_multiclass['accuracy']} | Policy Trades = {val_policy['trades']} | "
             f"Grad Norm = {avg_grad_norm:.3f}"
         )
 
@@ -596,17 +601,17 @@ def train_model(sequences_path, labels_path, model_save_path):
             logger.info(f"New best Val Loss ({avg_val_loss:.4f})! Saving model to {model_save_path}")
             best_val_loss = avg_val_loss
             torch.save({
-                "format_version": 3,
+                "format_version": 4,
                 "model_state_dict": model.state_dict(),
                 "model_config": {
-                    "input_dim": int(input_dim), "lstm_units": 64, "dense_units": 32,
+                    "input_dim": int(input_dim), "lstm_units": 128, "dense_units": 64,
                     "dropout": DROPOUT, "num_assets": int(asset_ids.max()) + 1,
                     "asset_embedding_dim": 4,
                 },
                 "feature_names": FeatureEngine().feature_names,
                 "sequence_length": SEQUENCE_LENGTH,
                 "asset_names": labels_data['asset_names'].tolist(),
-                "output_semantics": ["short_opportunity", "long_opportunity"],
+                "output_semantics": ["hold", "short", "long"],
             }, model_save_path)
             epochs_no_improve = 0
         else:
@@ -615,12 +620,12 @@ def train_model(sequences_path, labels_path, model_save_path):
                 logger.info("Early stopping triggered.")
                 break
 
-    # Final report card: per-class precision/recall on the untouched holdout period
+    # Final report card on the untouched holdout period
     if os.path.exists(model_save_path):
         checkpoint = torch.load(model_save_path, map_location=DEVICE)
         model.load_state_dict(checkpoint["model_state_dict"])
     logger.info("Evaluating best model on holdout test period...")
-    holdout_report = _evaluate_holdout(model, sequences, action_targets, asset_ids, test_idx)
+    holdout_report = _evaluate_holdout(model, sequences, action_classes, asset_ids, test_idx)
     recorder.set_holdout(holdout_report)
     recorder.set_config(best_val_loss=round(best_val_loss, 5), epochs_trained=len(recorder.report["training"]["epochs"]))
 
@@ -636,6 +641,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", type=str, default="../data")
     parser.add_argument("--skip-gen", action="store_true")
+    parser.add_argument("--gen-only", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
     args = parser.parse_args()
 
@@ -646,6 +652,9 @@ def main():
 
     if not args.skip_gen:
         generate_dataset(data_dir, dataset_dir, smoke_test=args.smoke_test)
+
+    if args.gen_only:
+        return
 
     train_model(
         os.path.join(dataset_dir, "sequences.npy"),
