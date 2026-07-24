@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Alpha.src.model import AlphaSLModel
 from Alpha.src.data_loader import DataLoader as AlphaDataLoader
+from Alpha.src.calibration import apply_temperature, load_calibration
 from RiskLayer.src.feature_engine import FeatureEngine
 from backtest.rl_backtest import BacktestMetrics, generate_all_charts, NumpyEncoder
 from shared_constants import FX_ALPHA_ASSETS, DEFAULT_SPREADS
@@ -61,7 +62,8 @@ class AlphaLSTMVectorizedBacktester:
         adx_thresh: float = 25.0,
         max_hold_bars: int = 6,
         leverage: float = 100.0,
-        batch_size: int = 1024
+        batch_size: int = 1024,
+        calibration: dict | None = None
     ):
         self.model = model.to(DEVICE)
         self.aligned_df = aligned_df
@@ -76,6 +78,7 @@ class AlphaLSTMVectorizedBacktester:
         self.max_hold_bars = max_hold_bars
         self.leverage = leverage
         self.batch_size = batch_size
+        self.calibration = calibration or {}
         
         self.assets = FX_ALPHA_ASSETS
         self.spreads = DEFAULT_SPREADS
@@ -84,7 +87,8 @@ class AlphaLSTMVectorizedBacktester:
     def _precompute_predictions(self):
         """Precomputes model predictions for all assets in batches."""
         logger.info(f"Precomputing predictions for {len(self.assets)} assets...")
-        all_probs = {}
+        all_trade_probs = {}
+        all_dir_probs = {}
         
         n_steps = len(self.normalized_df)
         
@@ -98,31 +102,39 @@ class AlphaLSTMVectorizedBacktester:
                 obs, (self.sequence_length, obs.shape[1])
             ).squeeze(1)
             
-            asset_probs = np.zeros((n_steps, 3), dtype=np.float32)
+            asset_trade_probs = np.zeros(n_steps, dtype=np.float32)
+            asset_dir_probs = np.zeros((n_steps, 2), dtype=np.float32)
             
             self.model.eval()
             with torch.no_grad():
                 for i in range(0, len(sequences), self.batch_size):
                     batch_seq = sequences[i:i+self.batch_size]
                     batch_tensor = torch.from_numpy(batch_seq.copy()).to(DEVICE)
-                    logits = self.model(batch_tensor)
-                    probs = torch.softmax(logits, dim=1).cpu().numpy()
+                    outputs = self.model(batch_tensor, return_dict=True)
+                    trade_logits = outputs["trade_logit"].float().cpu().numpy()
+                    if hasattr(self, "calibration") and self.calibration:
+                        trade_probs = apply_temperature(trade_logits, self.calibration.get("trade_temperature", 1.0))
+                    else:
+                        trade_probs = torch.sigmoid(outputs["trade_logit"].float()).cpu().numpy()
+                    dir_probs = torch.softmax(outputs["direction_logits"].float(), dim=1).cpu().numpy()
                     
                     # Align probabilities back to original indices
                     # sequences[i] corresponds to normalized_df.index[i + sequence_length - 1]
                     start_idx = i + self.sequence_length - 1
-                    end_idx = start_idx + len(probs)
-                    asset_probs[start_idx:end_idx] = probs
+                    end_idx = start_idx + len(trade_probs)
+                    asset_trade_probs[start_idx:end_idx] = trade_probs
+                    asset_dir_probs[start_idx:end_idx] = dir_probs
             
-            all_probs[asset] = asset_probs
+            all_trade_probs[asset] = asset_trade_probs
+            all_dir_probs[asset] = asset_dir_probs
             
-        return all_probs
+        return all_trade_probs, all_dir_probs
 
     def run(self, max_steps: int | None = None) -> BacktestMetrics:
         metrics = BacktestMetrics()
         
         # 1. Vectorized Inference
-        all_probs = self._precompute_predictions()
+        all_trade_probs, all_dir_probs = self._precompute_predictions()
         
         # 2. Sequential Trade Logic (Still sequential in time, but extremely fast due to precomputed probs)
         n_steps = len(self.normalized_df)
@@ -153,13 +165,12 @@ class AlphaLSTMVectorizedBacktester:
                 # ADX Filter: Only consider model decisions if ADX is above threshold
                 can_act = current_adx >= self.adx_thresh
 
-                # Prediction logic
-                probs = all_probs[asset][idx]
-                max_prob = np.max(probs)
-                
+                # Prediction logic: trade gate first, conditional direction second.
+                trade_prob = all_trade_probs[asset][idx]
+                dir_probs = all_dir_probs[asset][idx]
                 direction = 0
-                if can_act and max_prob >= self.confidence_thresh:
-                    direction = int(np.argmax(probs) - 1)
+                if can_act and trade_prob >= self.confidence_thresh:
+                    direction = 1 if int(np.argmax(dir_probs)) == 1 else -1
                 
                 current_pos = positions[asset]
                 mid_close = close_prices[asset][idx]
@@ -288,11 +299,12 @@ class AlphaLSTMVectorizedBacktester:
 
 def main():
     parser = argparse.ArgumentParser(description="Ultra-Fast Vectorized Alpha LSTM Backtester")
-    parser.add_argument("--model-path", type=str, default="Alpha/models/alpha_model.zip")
+    parser.add_argument("--model-path", type=str, default="Alpha/models/alpha_model.pth")
     parser.add_argument("--data-dir", type=str, default="backtest/data")
     parser.add_argument("--output-dir", type=str, default="backtest/results")
     parser.add_argument("--steps", type=int, default=None)
-    parser.add_argument("--confidence-thresh", type=float, default=0.45)
+    parser.add_argument("--confidence-thresh", type=float, default=0.55, help="Minimum calibrated tradeability probability")
+    parser.add_argument("--calibration-path", type=str, default=None, help="Optional JSON calibration file for tradeability logits")
     parser.add_argument("--initial-equity", type=float, default=10000.0)
     parser.add_argument("--pos-size", type=float, default=0.1, help="Position size as % of equity (0.1 = 10%)")
     # Defaults now MIRROR the Labeler geometry (tp=1.0 ATR, sl=0.5 ATR, 6-bar timeout, ADX 25)
@@ -336,6 +348,8 @@ def main():
     model.load_state_dict(checkpoint)
     model.eval()
 
+    calibration = load_calibration(PROJECT_ROOT / args.calibration_path) if args.calibration_path else None
+
     bt = AlphaLSTMVectorizedBacktester(
         model=model,
         aligned_df=aligned_df,
@@ -348,7 +362,8 @@ def main():
         tp_mult=args.tp_mult,
         adx_thresh=args.adx_thresh,
         max_hold_bars=args.max_hold_bars,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        calibration=calibration,
     )
 
     start_time = datetime.now()

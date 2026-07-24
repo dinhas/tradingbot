@@ -41,10 +41,11 @@ class AlphaSLModel(nn.Module):
         self.fc1 = nn.Linear(lstm_units, dense_units)
         self.dropout = nn.Dropout(dropout)
 
-        # 4. Output head for classification (3 classes: Sell, Neutral, Buy)
-        self.fc_out = nn.Linear(dense_units, 3)
+        # 4. Output heads: tradeability gate + conditional direction
+        self.trade_head = nn.Linear(dense_units, 1)
+        self.direction_head = nn.Linear(dense_units, 2)
 
-    def forward(self, x):
+    def forward(self, x, return_dict: bool = False):
         # x shape: (batch, seq_len, input_dim)
         
         # LSTM output
@@ -59,16 +60,48 @@ class AlphaSLModel(nn.Module):
         x = F.relu(self.fc1(context_vector))
         x = self.dropout(x)
         
-        # Output Logits
-        logits = self.fc_out(x)
-        
-        return logits
+        trade_logit = self.trade_head(x).squeeze(-1)
+        direction_logits = self.direction_head(x)
 
-def direction_loss(logits, target, alpha_dir=None):
+        if return_dict:
+            return {
+                "trade_logit": trade_logit,
+                "direction_logits": direction_logits,
+            }
+
+        # Backward-compatible default: return direction logits for legacy callers.
+        return direction_logits
+
+
+def trade_direction_loss(outputs, trade_target, direction_target, trade_weight: float = 0.65,
+                         direction_weight: float = 0.35, trade_pos_weight=None,
+                         direction_class_weights=None):
     """
-    Computes Focal Loss for the directional classification.
-    Maps targets [-1, 0, 1] to class indices [0, 1, 2].
+    Two-head loss:
+    - tradeability: binary BCEWithLogitsLoss
+    - direction: masked CE over tradeable samples only
     """
-    target_mapped = (target + 1).long()
-    focal_criterion = FocalLoss(alpha=alpha_dir)
-    return focal_criterion(logits, target_mapped)
+    trade_logit = outputs["trade_logit"]
+    direction_logits = outputs["direction_logits"]
+
+    trade_target = trade_target.float()
+    direction_target = direction_target.long()
+
+    if trade_pos_weight is not None:
+        trade_pos_weight = torch.as_tensor(trade_pos_weight, device=trade_logit.device, dtype=torch.float32)
+        trade_loss_fn = nn.BCEWithLogitsLoss(pos_weight=trade_pos_weight)
+    else:
+        trade_loss_fn = nn.BCEWithLogitsLoss()
+
+    trade_loss = trade_loss_fn(trade_logit, trade_target)
+
+    trade_mask = trade_target > 0.5
+    if trade_mask.any():
+        if direction_class_weights is not None:
+            direction_class_weights = torch.as_tensor(direction_class_weights, device=direction_logits.device, dtype=torch.float32)
+        direction_loss_fn = nn.CrossEntropyLoss(weight=direction_class_weights)
+        direction_loss = direction_loss_fn(direction_logits[trade_mask], direction_target[trade_mask])
+    else:
+        direction_loss = trade_loss.new_tensor(0.0)
+
+    return (trade_weight * trade_loss) + (direction_weight * direction_loss)

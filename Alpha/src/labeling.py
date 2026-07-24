@@ -4,7 +4,8 @@ from ta.trend import EMAIndicator, ADXIndicator
 from shared_constants import DEFAULT_SPREADS
 
 class Labeler:
-    def __init__(self, tp_mult: float = 1.0, sl_mult: float = 0.5, ema_window: int = 100, max_bars: int = 6, adx_threshold: float = 25.0):
+    def __init__(self, tp_mult: float = 1.0, sl_mult: float = 0.5, ema_window: int = 100,
+                 max_bars: int = 6, adx_threshold: float = 25.0, min_edge_r: float = 0.10):
         """
         Trend-Following Triple Barrier Labeler.
         Optimized for V3 Regime-Aware Denoising.
@@ -14,12 +15,63 @@ class Labeler:
             ema_window: Window for the 1H Trend EMA (e.g., 100).
             max_bars: Vertical barrier (30m on 5M). Optimized: 6.
             adx_threshold: Minimum trend strength. Optimized: 25.0.
+            min_edge_r: Minimum net R buffer required before a setup is labeled tradeable.
         """
         self.tp_mult = tp_mult
         self.sl_mult = sl_mult
         self.ema_window = ema_window
         self.max_bars = max_bars
         self.adx_threshold = adx_threshold
+        self.min_edge_r = min_edge_r
+
+    def _simulate_trade(self, prices_close: np.ndarray, prices_high: np.ndarray, prices_low: np.ndarray,
+                        timestamps: pd.Index, asset: str, i: int, direction: int, atr: float,
+                        spread: float) -> tuple[float, bool]:
+        """Simulates a single long or short candidate and returns a normalized net-R estimate.
+
+        direction: +1 for buy, -1 for sell.
+        The target is not a raw barrier event; it is a net edge proxy after spread.
+        """
+        mid_price = prices_close[i]
+        tp_dist = self.tp_mult * atr
+        sl_dist = self.sl_mult * atr
+        half_spread = spread / 2.0
+
+        entry_price = mid_price + (direction * half_spread)
+        sl = entry_price - (direction * sl_dist)
+        tp = entry_price + (direction * tp_dist)
+
+        exit_price = None
+        for j in range(i + 1, min(i + 1 + self.max_bars, len(prices_close))):
+            if direction == 1:
+                bid_low = prices_low[j] - half_spread
+                bid_high = prices_high[j] - half_spread
+                if bid_low <= sl:
+                    exit_price = sl
+                    break
+                if bid_high >= tp:
+                    exit_price = tp
+                    break
+            else:
+                ask_high = prices_high[j] + half_spread
+                ask_low = prices_low[j] + half_spread
+                if ask_high >= sl:
+                    exit_price = sl
+                    break
+                if ask_low <= tp:
+                    exit_price = tp
+                    break
+
+        if exit_price is None:
+            final_idx = min(i + self.max_bars, len(prices_close) - 1)
+            exit_price = prices_close[final_idx] - (direction * half_spread)
+
+        # Normalize by initial risk so tradeability can be thresholded consistently.
+        gross_r = (exit_price - entry_price) * direction / max(sl_dist, 1e-8)
+        roundtrip_spread_r = spread / max(sl_dist, 1e-8)
+        fee_r = (entry_price * 0.00004) / max(sl_dist, 1e-8)
+        net_r = gross_r - roundtrip_spread_r - fee_r
+        return float(net_r), bool(net_r > 0)
 
     def _get_adx(self, df: pd.DataFrame, asset: str) -> pd.Series:
         """Calculates the 14-period ADX to measure trend strength."""
@@ -52,7 +104,14 @@ class Labeler:
 
     def label_data(self, df: pd.DataFrame, asset: str) -> pd.DataFrame:
         """
-        Labels data using Triple Barrier Method filtered by 1H Trend and a Vertical Barrier.
+        Labels data using a spread-aware triple-barrier simulation, then converts the
+        outcome into a net-tradeability target.
+
+        Output schema:
+            - tradeable: 1 if the best long/short candidate clears min_edge_r.
+            - direction: 1 for buy, 0 for sell. Meaningful when tradeable=1.
+            - net_r: normalized net edge proxy for the best candidate.
+            - valid: bars that pass the ADX/ATR/trend hygiene filters.
         """
         close_col = f"{asset}_close"
         high_col = f"{asset}_high"
@@ -78,21 +137,21 @@ class Labeler:
         spread = DEFAULT_SPREADS.get(asset, 0.0)
 
         n = len(df)
-        # Full-length outputs: one row per input bar. 'valid' marks bars that pass
-        # the ADX/ATR filters. Invalid rows are KEPT (direction=0, valid=False)
-        # so downstream sequence building stays contiguous in time.
+        # Full-length outputs: one row per input bar.
+        # Invalid rows are KEPT (tradeable=0, valid=False) so downstream sequence
+        # building stays contiguous in time.
+        tradeable = np.zeros(n, dtype=np.float32)
         directions = np.zeros(n, dtype=np.float32)
+        net_r = np.zeros(n, dtype=np.float32)
         valid = np.zeros(n, dtype=bool)
 
         trend_vals = trend_1h.values
         adx_vals = adx_series.values
 
         for i in range(n - 1):
-            current_trend = trend_vals[i]
             current_adx = adx_vals[i]
-            mid_price = prices_close[i]
             atr = atrs_5m[i]
-            
+
             if np.isnan(atr) or atr == 0:
                 continue
                 
@@ -102,53 +161,19 @@ class Labeler:
 
             valid[i] = True
 
-            # Define barriers based on 5M ATR
-            tp_dist = self.tp_mult * atr
-            sl_dist = self.sl_mult * atr
-            
-            direction = 0 # Default: No barrier hit or Neutral (Vertical Barrier / Timeout)
-            
-            # --- SPREAD-AWARE TRIPLE BARRIER LOGIC ---
-            # During HTF EMA warmup the trend is unavailable; keep the bar valid
-            # but leave it neutral instead of dropping it from the dataset.
-            if current_trend == 1: # Bullish Trend -> ONLY Look for BUYS
-                # Buy at Ask, Exit at Bid
-                entry_ask = mid_price + (spread / 2.0)
-                tp_barrier = entry_ask + tp_dist
-                sl_barrier = entry_ask - sl_dist
-                
-                # Look forward until a barrier is hit or max_bars reached
-                for j in range(i + 1, min(i + 1 + self.max_bars, n)):
-                    bid_high = prices_high[j] - (spread / 2.0)
-                    bid_low = prices_low[j] - (spread / 2.0)
-                    
-                    if bid_high >= tp_barrier:
-                        direction = 1 # TP Hit (at Bid price)
-                        break
-                    if bid_low <= sl_barrier:
-                        direction = 0 # SL Hit (at Bid price)
-                        break
-                        
-            elif current_trend == -1: # Bearish Trend -> ONLY Look for SELLS
-                # Sell at Bid, Exit at Ask
-                entry_bid = mid_price - (spread / 2.0)
-                tp_barrier = entry_bid - tp_dist
-                sl_barrier = entry_bid + sl_dist
-                
-                for j in range(i + 1, min(i + 1 + self.max_bars, n)):
-                    ask_low = prices_low[j] + (spread / 2.0)
-                    ask_high = prices_high[j] + (spread / 2.0)
-                    
-                    if ask_low <= tp_barrier:
-                        direction = -1 # TP Hit (at Ask price)
-                        break
-                    if ask_high >= sl_barrier:
-                        direction = 0 # SL Hit (at Ask price)
-                        break
-            
-            directions[i] = direction
+            long_net_r, _ = self._simulate_trade(prices_close, prices_high, prices_low, timestamps, asset, i, 1, atr, spread)
+            short_net_r, _ = self._simulate_trade(prices_close, prices_high, prices_low, timestamps, asset, i, -1, atr, spread)
 
-        return pd.DataFrame({'direction': directions, 'valid': valid}, index=timestamps)
+            if long_net_r >= short_net_r:
+                directions[i] = 1.0
+                net_r[i] = long_net_r
+            else:
+                directions[i] = 0.0
+                net_r[i] = short_net_r
+
+            tradeable[i] = 1.0 if net_r[i] > self.min_edge_r else 0.0
+
+        return pd.DataFrame({'tradeable': tradeable, 'direction': directions, 'net_r': net_r, 'valid': valid}, index=timestamps)
 
 if __name__ == "__main__":
     pass
