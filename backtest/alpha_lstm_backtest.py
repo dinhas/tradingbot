@@ -9,6 +9,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -44,6 +46,36 @@ def _load_state_dict(model_path: Path) -> dict:
         raise ValueError(f"Unsupported checkpoint format in {model_path}")
     return checkpoint
 
+
+class AlphaSLModelV3(nn.Module):
+    """Legacy V3 model: 1-layer LSTM(64), Dense(32), 2-class sigmoid output."""
+
+    def __init__(self, input_dim: int = 14, lstm_units: int = 64, dense_units: int = 32,
+                 dropout: float = 0.3, num_assets: int = 4, asset_embedding_dim: int = 4):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size=input_dim, hidden_size=lstm_units,
+                            num_layers=1, batch_first=True, bidirectional=False)
+        self.attention_weights = nn.Linear(lstm_units, 1)
+        self.asset_embedding = nn.Embedding(num_assets, asset_embedding_dim)
+        self.fc1 = nn.Linear(lstm_units + asset_embedding_dim, dense_units)
+        self.dropout = nn.Dropout(dropout)
+        self.action_head = nn.Linear(dense_units, 2)
+
+    def forward(self, x, asset_ids=None, return_dict=False):
+        lstm_out, _ = self.lstm(x)
+        attn_scores = self.attention_weights(lstm_out)
+        attn_weights = torch.softmax(attn_scores, dim=1)
+        context_vector = torch.sum(attn_weights * lstm_out, dim=1)
+        if asset_ids is None:
+            asset_ids = torch.zeros(x.shape[0], dtype=torch.long, device=x.device)
+        asset_context = self.asset_embedding(asset_ids.long())
+        x = F.relu(self.fc1(torch.cat([context_vector, asset_context], dim=1)))
+        x = self.dropout(x)
+        action_logits = self.action_head(x)
+        if return_dict:
+            return {"action_logits": action_logits}
+        return action_logits
+
 class AlphaLSTMVectorizedBacktester:
     """
     Ultra-fast vectorized backtester for Alpha LSTM models.
@@ -61,10 +93,11 @@ class AlphaLSTMVectorizedBacktester:
         sl_mult: float,
         tp_mult: float,
         adx_thresh: float = 25.0,
-        max_hold_bars: int = 6,
+        max_hold_bars: int = 12,
         leverage: float = 100.0,
         batch_size: int = 1024,
-        calibration: dict | None = None
+        calibration: dict | None = None,
+        format_version: int = 4,
     ):
         self.model = model.to(DEVICE)
         self.aligned_df = aligned_df
@@ -80,6 +113,7 @@ class AlphaLSTMVectorizedBacktester:
         self.leverage = leverage
         self.batch_size = batch_size
         self.calibration = calibration or {}
+        self.format_version = format_version
         self.simulator = TradeSimulator(TradeConfig(
             tp_mult=tp_mult,
             sl_mult=sl_mult,
@@ -113,7 +147,7 @@ class AlphaLSTMVectorizedBacktester:
             end_indices = np.arange(self.sequence_length - 1, n_steps)
             valid_sequences = segment_ids[end_indices] == segment_ids[end_indices - self.sequence_length + 1]
             
-            asset_action_probs = np.zeros((n_steps, 2), dtype=np.float32)
+            asset_action_probs = np.zeros((n_steps, 3), dtype=np.float32)
             
             self.model.eval()
             with torch.no_grad():
@@ -126,7 +160,17 @@ class AlphaLSTMVectorizedBacktester:
                     batch_assets = torch.full((int(valid_batch.sum()),), asset_id, dtype=torch.long, device=DEVICE)
                     outputs = self.model(batch_tensor, batch_assets, return_dict=True)
                     action_logits = outputs["action_logits"].float().cpu().numpy()
-                    if hasattr(self, "calibration") and self.calibration:
+                    if self.format_version == 3:
+                        # V3: 2-class sigmoid → map to 3-class [hold, short, long]
+                        sigmoids = 1.0 / (1.0 + np.exp(-action_logits))
+                        short_probs = sigmoids[:, 0]
+                        long_probs = sigmoids[:, 1]
+                        hold_probs = np.maximum(1.0 - short_probs - long_probs, 0.0)
+                        action_probs = np.column_stack([hold_probs, short_probs, long_probs])
+                        row_sums = action_probs.sum(axis=1, keepdims=True)
+                        row_sums = np.maximum(row_sums, 1e-8)
+                        action_probs = action_probs / row_sums
+                    elif hasattr(self, "calibration") and self.calibration:
                         temperature = self.calibration.get("temperature", 1.0)
                         action_probs = apply_temperature(action_logits, temperature)
                     else:
@@ -331,13 +375,13 @@ def main():
         return
 
     checkpoint = _load_state_dict(model_path)
-    if checkpoint.get("format_version") not in (3, 4):
+    fmt = checkpoint.get("format_version", 3)
+    if fmt not in (3, 4):
         logger.error("Expected a V3/V4 action-head checkpoint. Regenerate data and retrain Alpha.")
         return
 
     input_dim = len(rk_engine.feature_names)
     model_config = checkpoint["model_config"]
-    model = AlphaSLModel(**model_config)
     state_dict = checkpoint["model_state_dict"]
     checkpoint_input_dim = _infer_lstm_input_dim(state_dict)
     if checkpoint_input_dim != input_dim:
@@ -348,12 +392,20 @@ def main():
         )
         return
     logger.info("Model/input feature check passed: checkpoint=%d, backtest_engine=%d", checkpoint_input_dim, input_dim)
-    if checkpoint.get("feature_names") != rk_engine.feature_names:
-        logger.error("Checkpoint feature names/order do not match backtest feature engine.")
-        return
 
-    model.load_state_dict(state_dict)
+    if fmt == 3:
+        logger.info("Loading V3 legacy model (1-layer LSTM-64, 2-class sigmoid)")
+        model = AlphaSLModelV3(**model_config)
+        model.load_state_dict(state_dict)
+    else:
+        if checkpoint.get("feature_names") != rk_engine.feature_names:
+            logger.error("Checkpoint feature names/order do not match backtest feature engine.")
+            return
+        model = AlphaSLModel(**model_config)
+        model.load_state_dict(state_dict)
     model.eval()
+
+    logger.info("Format version: %d | Confidence threshold: %.2f", fmt, args.confidence_thresh)
 
     calibration = load_calibration(PROJECT_ROOT / args.calibration_path) if args.calibration_path else None
 
@@ -371,6 +423,7 @@ def main():
         max_hold_bars=args.max_hold_bars,
         batch_size=args.batch_size,
         calibration=calibration,
+        format_version=fmt,
     )
 
     start_time = datetime.now()
