@@ -54,6 +54,7 @@ evaluation_interval = 30
 roll_out_duration_seconds = 0
 
 [cerebrium.dependencies.pip]
+setuptools = "latest"
 ctrader-open-api = "latest"
 twisted = "latest"
 pandas = "latest"

@@ -1,3 +1,4 @@
+setuptools
 ctrader-open-api
 twisted
 pandas
