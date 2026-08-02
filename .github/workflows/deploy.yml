@@ -1,0 +1,91 @@
+name: Deploy to Hugging Face Spaces
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install huggingface_hub
+
+      - name: Sync code files to HF Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_ACCESS_TOKEN }}
+        run: |
+          git clone https://oauth2:${HF_TOKEN}@huggingface.co/spaces/dddddfdssaer/tradebot hf_space
+
+          rsync -av --delete \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'hf_space' \
+            --exclude '__pycache__' \
+            --exclude '*.pyc' \
+            --exclude 'venv' \
+            --exclude '.env' \
+            --exclude '*.db' \
+            --exclude '*.pth' \
+            --exclude '*.zip' \
+            --exclude '*.pkl' \
+            --exclude 'Alpha/data/' \
+            --exclude 'RiskLayer/data/' \
+            --exclude 'backtest/data' \
+            --exclude 'LiveExecution/data' \
+            --exclude 'Filter/data' \
+            --exclude 'smoke_out.txt' \
+            --exclude 'docs/' \
+            ./ hf_space/
+
+          cd hf_space
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No code changes to commit"
+          else
+            git commit -m "Deploy code from GitHub ${{ github.sha }}"
+            git push
+          fi
+
+      - name: Upload model files to HF Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_ACCESS_TOKEN }}
+        run: |
+          python -c "
+          import os
+          from huggingface_hub import HfApi
+
+          api = HfApi()
+          repo_id = 'dddddfdssaer/tradebot'
+
+          # Find and upload all model files
+          model_files = []
+          for root, dirs, files in os.walk('.'):
+              # skip excluded dirs
+              if any(skip in root for skip in ['.git', 'hf_space', '__pycache__', 'venv', '.github', 'Alpha/data', 'RiskLayer/data', 'backtest/data', 'LiveExecution/data', 'Filter/data', 'docs']):
+                  continue
+              for f in files:
+                  if f.endswith(('.pth', '.pkl', '.zip', '.joblib')):
+                      model_files.append(os.path.join(root, f))
+
+          if not model_files:
+              print('No model files found to upload')
+          else:
+              for f in model_files:
+                  # Keep same path structure in HF repo
+                  path_in_repo = f.replace('.\\\\', '').replace('\\\\', '/')
+                  print(f'Uploading {f} -> {path_in_repo}')
+                  api.upload_file(
+                      path_or_fileobj=f,
+                      path_in_repo=path_in_repo,
+                      repo_id=repo_id,
+                      repo_type='space',
+                  )
+              print(f'Uploaded {len(model_files)} model files')
+          "

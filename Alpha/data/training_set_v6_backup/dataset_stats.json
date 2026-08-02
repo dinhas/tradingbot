@@ -1,0 +1,79 @@
+{
+  "generated_at": "2026-07-28T17:17:48.906870",
+  "data_dir": "E:\\tradingbot\\data",
+  "sequence_length": 25,
+  "smoke_test": false,
+  "total_sequences": 543,
+  "tradeable_counts_total": {
+    "0": 0,
+    "1": 543
+  },
+  "tradeable_rate": 1.0,
+  "action_class_counts": {
+    "0": 264,
+    "1": 279
+  },
+  "net_r_mean": 1.4653,
+  "net_r_p90": 1.4991,
+  "assets": {
+    "EURUSD": {
+      "sequences": 774,
+      "valid_ratio": 0.8218,
+      "tradeable_count": 152,
+      "tradeable_rate": 0.1964,
+      "action_class_counts": {
+        "0": 622,
+        "1": 81,
+        "2": 71
+      },
+      "net_r_mean": 0.3366,
+      "net_r_p90": 1.4988
+    },
+    "GBPUSD": {
+      "sequences": 650,
+      "valid_ratio": 0.6927,
+      "tradeable_count": 129,
+      "tradeable_rate": 0.1985,
+      "action_class_counts": {
+        "0": 521,
+        "1": 59,
+        "2": 70
+      },
+      "net_r_mean": 0.3221,
+      "net_r_p90": 1.499
+    },
+    "USDJPY": {
+      "sequences": 724,
+      "valid_ratio": 0.7578,
+      "tradeable_count": 160,
+      "tradeable_rate": 0.221,
+      "action_class_counts": {
+        "0": 564,
+        "1": 73,
+        "2": 87
+      },
+      "net_r_mean": 0.6442,
+      "net_r_p90": 1.499
+    },
+    "USDCHF": {
+      "sequences": 741,
+      "valid_ratio": 0.7898,
+      "tradeable_count": 102,
+      "tradeable_rate": 0.1377,
+      "action_class_counts": {
+        "0": 639,
+        "1": 51,
+        "2": 51
+      },
+      "net_r_mean": -0.238,
+      "net_r_p90": 1.499
+    }
+  },
+  "monthly_class_distribution": {
+    "2025-12": {
+      "0": 264,
+      "1": 279
+    }
+  },
+  "feature_label_f_scores": {}
+}

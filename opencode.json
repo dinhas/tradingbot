@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "agentrouter": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "AgentRouter Gateway",
+      "apiKey": "integrated-via-headers",
+      "options": {
+        "baseURL": "https://api.tokenrouter.com/v1",
+        "headers": {
+          "Authorization": "sk-X8Zlu6iGLBzdF6Yy5OGWgKqDfUOhfPs6WEn0PKzqqBpQstPY"
+        }
+      },
+      "models": {
+        "moonshotai/kimi-k3-free": {
+          "name": "moonshotai/kimi-k3-free"
+        }
+      }
+    }
+  },
+  "model": "agentrouter/moonshotai/kimi-k3-free"
+}

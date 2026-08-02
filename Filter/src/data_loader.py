@@ -1,0 +1,87 @@
+import pandas as pd
+import numpy as np
+import os
+import sys
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+# Add project root to sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from Alpha.src.feature_engine import FeatureEngine
+from shared_constants import FX_ALPHA_ASSETS
+
+class DataLoader:
+    def __init__(self, data_dir: str = "data"):
+        self.data_dir = Path(data_dir)
+        self.assets = FX_ALPHA_ASSETS
+
+    def load_raw_data(self, max_rows: int = 0) -> Dict[str, pd.DataFrame]:
+        """
+        Loads OHLCV data for all assets from Parquet files.
+        Ensures sorted timestamps and no duplicates.
+        Args:
+            max_rows: If > 0, take only the last N rows per asset (for fast iteration).
+        """
+        data_dict = {}
+        for asset in self.assets:
+            candidate_paths = [
+                self.data_dir / f"{asset}_5m_backtest.parquet",
+                self.data_dir / f"{asset}_5m.parquet",
+                self.data_dir / f"{asset}_5m_2025.parquet",
+                self.data_dir / asset / f"{asset}_5m.parquet",
+            ]
+
+            file_path = next((p for p in candidate_paths if p.exists()), None)
+            if file_path is None:
+                print(f"Warning: Data file for {asset} not found in {[str(p) for p in candidate_paths]}")
+                continue
+
+            df = pd.read_parquet(file_path)
+
+            # Ensure timestamp is index and sorted
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df.set_index('timestamp', inplace=True)
+
+            df.sort_index(inplace=True)
+
+            # Limit rows for fast iteration (before dedup to save memory)
+            if max_rows > 0 and len(df) > max_rows:
+                df = df.tail(max_rows)
+
+            # Remove duplicates
+            df = df[~df.index.duplicated(keep='first')]
+
+            # Ensure required columns exist
+            required_cols = ['open', 'high', 'low', 'close', 'volume']
+            if not all(col in df.columns for col in required_cols):
+                print(f"Warning: {asset} data is missing some OHLCV columns.")
+
+            data_dict[asset] = df
+
+        return data_dict
+
+    def get_features(self, engine=None, max_rows: int = 0) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Generates features using FeatureEngine.
+        Returns (aligned_df, normalized_df).
+        """
+        data_dict = self.load_raw_data(max_rows=max_rows)
+        if not data_dict:
+            raise FileNotFoundError(
+                f"No parquet files found under data_dir={self.data_dir}."
+            )
+
+        if engine is None:
+            engine = FeatureEngine()
+
+        aligned_df, normalized_df = engine.preprocess_data(data_dict)
+        return aligned_df, normalized_df
+
+if __name__ == "__main__":
+    loader = DataLoader()
+    aligned_df, normalized_df = loader.get_features()
+    print(f"Aligned DF shape: {aligned_df.shape}")
+    print(f"Normalized DF shape: {normalized_df.shape}")
+    print(f"Columns: {normalized_df.columns[:10]}...")

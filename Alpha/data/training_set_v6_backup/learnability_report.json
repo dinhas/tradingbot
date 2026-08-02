@@ -1,0 +1,374 @@
+{
+  "generated_at": "2026-07-26T13:37:35.420485",
+  "data_dir": "E:\\tradingbot\\Alpha\\data\\training_set",
+  "total_sequences_full": 25975,
+  "sampled_sequences": 10000,
+  "sequence_shape": [
+    25975,
+    50,
+    31
+  ],
+  "n_features": 31,
+  "n_classes": 3,
+  "class_counts": {
+    "hold": {
+      "count": 8166,
+      "fraction": 0.8166
+    },
+    "short": {
+      "count": 920,
+      "fraction": 0.092
+    },
+    "long": {
+      "count": 914,
+      "fraction": 0.0914
+    }
+  },
+  "imbalance_ratio": 2.45,
+  "anova_f_scores": {
+    "bar_strength": 127.5314,
+    "consec_dir_bars": 76.3012,
+    "return_decel": 74.8174,
+    "intraday_position": 74.3889,
+    "asian_range_pos": 17.3975,
+    "pair_residual": 17.2385,
+    "breakout_position": 15.5946,
+    "breakout_conviction": 14.7496,
+    "atr_norm": 14.2877,
+    "vol_percentile": 13.0709,
+    "momentum_6": 11.2026,
+    "volatility": 9.072,
+    "hour": 8.0432,
+    "trend_momentum": 7.2703,
+    "activity_ratio": 6.5957,
+    "prev_session_range_pos": 5.9283,
+    "volume_accumulation": 5.7279,
+    "volume_pressure": 5.5285,
+    "wick_ratio": 5.4978,
+    "session_open_dist": 5.0198,
+    "atr_contraction": 4.5585,
+    "volume_session_rel": 4.1378,
+    "volume_climax": 3.3647,
+    "regime": 3.2881,
+    "return_12_atr": 3.1715,
+    "di_spread": 2.8969,
+    "ema_slope_atr": 1.2643,
+    "cross_pair_divergence": 1.0927,
+    "usd_index_return": 0.7001,
+    "volume_spike": 0.2865,
+    "adx_momentum": 0.0156
+  },
+  "anova_summary": {
+    "top_5": {
+      "bar_strength": 127.5314,
+      "consec_dir_bars": 76.3012,
+      "return_decel": 74.8174,
+      "intraday_position": 74.3889,
+      "asian_range_pos": 17.3975
+    },
+    "mean_f": 17.4207,
+    "features_above_3": 25,
+    "verdict": "STRONG"
+  },
+  "mutual_information": {
+    "bar_strength": 0.0183,
+    "consec_dir_bars": 0.0141,
+    "return_decel": 0.0114,
+    "intraday_position": 0.011,
+    "wick_ratio": 0.008,
+    "atr_norm": 0.0063,
+    "adx_momentum": 0.0061,
+    "breakout_position": 0.0053,
+    "trend_momentum": 0.0049,
+    "vol_percentile": 0.0045,
+    "breakout_conviction": 0.0043,
+    "volume_session_rel": 0.0041,
+    "session_open_dist": 0.0028,
+    "asian_range_pos": 0.0027,
+    "cross_pair_divergence": 0.0026,
+    "volume_climax": 0.0022,
+    "activity_ratio": 0.002,
+    "momentum_6": 0.0013,
+    "volume_pressure": 0.001,
+    "di_spread": 0.0008,
+    "pair_residual": 0.0006,
+    "volatility": 0.0005,
+    "usd_index_return": 0.0005,
+    "hour": 0.0,
+    "regime": 0.0,
+    "return_12_atr": 0.0,
+    "ema_slope_atr": 0.0,
+    "prev_session_range_pos": 0.0,
+    "atr_contraction": 0.0,
+    "volume_spike": 0.0,
+    "volume_accumulation": 0.0
+  },
+  "mi_summary": {
+    "mean_mi": 0.0037,
+    "top_5": {
+      "bar_strength": 0.0183,
+      "consec_dir_bars": 0.0141,
+      "return_decel": 0.0114,
+      "intraday_position": 0.011,
+      "wick_ratio": 0.008
+    },
+    "top10_mean_mi": 0.009,
+    "features_above_0.001": 18,
+    "verdict": "STRONG"
+  },
+  "rf_baseline": {
+    "n_samples": 10000,
+    "cv_accuracy_mean": 0.584,
+    "cv_accuracy_std": 0.0123,
+    "cv_f1_mean": 0.6331,
+    "cv_f1_std": 0.0087,
+    "chance_level": 0.3333,
+    "majority_baseline": 0.8166,
+    "accuracy_above_chance": 0.2507,
+    "accuracy_above_majority": -0.2326,
+    "oob_score": 0.5593,
+    "verdict": "SIGNAL"
+  },
+  "permutation_importance": {
+    "vol_percentile": 5e-05,
+    "volatility": 0.0,
+    "atr_norm": 0.0,
+    "hour": 0.0,
+    "regime": 0.0,
+    "return_12_atr": 0.0,
+    "ema_slope_atr": 0.0,
+    "di_spread": 0.0,
+    "breakout_position": 0.0,
+    "momentum_6": 0.0,
+    "bar_strength": 0.0,
+    "intraday_position": 0.0,
+    "adx_momentum": 0.0,
+    "activity_ratio": 0.0,
+    "trend_momentum": 0.0,
+    "breakout_conviction": 0.0,
+    "usd_index_return": 0.0,
+    "pair_residual": 0.0,
+    "cross_pair_divergence": 0.0,
+    "session_open_dist": 0.0,
+    "prev_session_range_pos": 0.0,
+    "asian_range_pos": 0.0,
+    "consec_dir_bars": 0.0,
+    "wick_ratio": 0.0,
+    "atr_contraction": 0.0,
+    "return_decel": 0.0,
+    "volume_spike": 0.0,
+    "volume_accumulation": 0.0,
+    "volume_pressure": 0.0,
+    "volume_climax": 0.0,
+    "volume_session_rel": 0.0
+  },
+  "label_stability": {
+    "k": 10,
+    "sample_size": 500,
+    "mean_neighbor_agreement": 0.6786,
+    "stable_fraction_gt80": 0.368,
+    "verdict": "STABLE"
+  },
+  "monthly_drift": {
+    "n_months": 2,
+    "psi_per_month": [
+      0.0003,
+      0.0001
+    ],
+    "psi_mean": 0.0002,
+    "psi_mean_excl_outliers": 0.0002,
+    "psi_max": 0.0003,
+    "outlier_months": 0,
+    "verdict": "STABLE"
+  },
+  "label_return_correlation": {
+    "hold": {
+      "corr": 0.1064,
+      "p_value": 0.0,
+      "n_samples": 8166,
+      "mean_return": 0.0001,
+      "verdict": "MISALIGNED"
+    },
+    "short": {
+      "corr": -0.4291,
+      "p_value": 0.0,
+      "n_samples": 920,
+      "mean_return": -0.0005,
+      "verdict": "ALIGNED"
+    },
+    "long": {
+      "corr": 0.2875,
+      "p_value": 0.0,
+      "n_samples": 914,
+      "mean_return": 0.0005,
+      "verdict": "ALIGNED"
+    }
+  },
+  "feature_return_correlation": {
+    "feature_correlations": {
+      "atr_norm": {
+        "corr": 0.1296,
+        "p_value": 0.0
+      },
+      "volatility": {
+        "corr": 0.1158,
+        "p_value": 0.0
+      },
+      "vol_percentile": {
+        "corr": 0.1048,
+        "p_value": 0.0
+      },
+      "hour": {
+        "corr": 0.0886,
+        "p_value": 0.0
+      },
+      "asian_range_pos": {
+        "corr": -0.0633,
+        "p_value": 0.0
+      },
+      "atr_contraction": {
+        "corr": 0.0441,
+        "p_value": 1e-05
+      },
+      "session_open_dist": {
+        "corr": -0.044,
+        "p_value": 1.1e-05
+      },
+      "volume_climax": {
+        "corr": 0.0429,
+        "p_value": 1.8e-05
+      },
+      "volume_session_rel": {
+        "corr": 0.033,
+        "p_value": 0.000948
+      },
+      "regime": {
+        "corr": -0.0285,
+        "p_value": 0.004401
+      },
+      "prev_session_range_pos": {
+        "corr": -0.0272,
+        "p_value": 0.006591
+      },
+      "wick_ratio": {
+        "corr": 0.0176,
+        "p_value": 0.079074
+      },
+      "cross_pair_divergence": {
+        "corr": 0.0156,
+        "p_value": 0.118213
+      },
+      "volume_spike": {
+        "corr": 0.0153,
+        "p_value": 0.12606
+      },
+      "ema_slope_atr": {
+        "corr": -0.0151,
+        "p_value": 0.131225
+      },
+      "intraday_position": {
+        "corr": -0.0126,
+        "p_value": 0.205967
+      },
+      "pair_residual": {
+        "corr": -0.0124,
+        "p_value": 0.214845
+      },
+      "breakout_conviction": {
+        "corr": -0.0115,
+        "p_value": 0.250748
+      },
+      "breakout_position": {
+        "corr": -0.0109,
+        "p_value": 0.274009
+      },
+      "return_12_atr": {
+        "corr": -0.0107,
+        "p_value": 0.282964
+      },
+      "activity_ratio": {
+        "corr": 0.0097,
+        "p_value": 0.331714
+      },
+      "adx_momentum": {
+        "corr": 0.0086,
+        "p_value": 0.390862
+      },
+      "return_decel": {
+        "corr": -0.0079,
+        "p_value": 0.429583
+      },
+      "bar_strength": {
+        "corr": -0.0056,
+        "p_value": 0.577159
+      },
+      "trend_momentum": {
+        "corr": -0.0052,
+        "p_value": 0.602058
+      },
+      "consec_dir_bars": {
+        "corr": 0.0049,
+        "p_value": 0.623925
+      },
+      "volume_accumulation": {
+        "corr": -0.0036,
+        "p_value": 0.719782
+      },
+      "volume_pressure": {
+        "corr": 0.0032,
+        "p_value": 0.748287
+      },
+      "di_spread": {
+        "corr": -0.0031,
+        "p_value": 0.759091
+      },
+      "usd_index_return": {
+        "corr": -0.002,
+        "p_value": 0.844703
+      },
+      "momentum_6": {
+        "corr": -0.0013,
+        "p_value": 0.895492
+      }
+    },
+    "n_significant": 9,
+    "verdict": "STRONG"
+  },
+  "permutation_test": {
+    "real_auc": 0.6112,
+    "shuffled_auc_mean": 0.5039,
+    "shuffled_auc_std": 0.0092,
+    "auc_drop": 0.1073,
+    "verdict": "INFORMATIVE"
+  },
+  "class_conditional_returns": {
+    "by_class": {
+      "hold": {
+        "n": 8166,
+        "mean_r": 0.0001,
+        "median_r": 0.0002,
+        "win_rate": 0.7191,
+        "std_r": 0.0004
+      },
+      "short": {
+        "n": 920,
+        "mean_r": -0.0005,
+        "median_r": -0.0005,
+        "win_rate": 0.0,
+        "std_r": 0.0002
+      },
+      "long": {
+        "n": 914,
+        "mean_r": 0.0005,
+        "median_r": 0.0005,
+        "win_rate": 1.0,
+        "std_r": 0.0002
+      }
+    },
+    "verdict": "ALIGNED"
+  },
+  "overall_verdict": "LEARNABLE",
+  "overall_score": 1.0,
+  "verdict_reasons": [],
+  "elapsed_seconds": 181.81
+}

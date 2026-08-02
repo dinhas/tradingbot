@@ -1,0 +1,149 @@
+{
+  "validation_samples": 103920,
+  "action_temperatures": [
+    0.5,
+    0.5
+  ],
+  "uncalibrated_brier": [
+    0.127208,
+    0.129297
+  ],
+  "calibrated_brier": [
+    0.109319,
+    0.112539
+  ],
+  "uncalibrated_ece": [
+    0.142242,
+    0.134489
+  ],
+  "calibrated_ece": [
+    0.047533,
+    0.046186
+  ],
+  "calibrated_reliability": {
+    "short": [
+      {
+        "bucket": "[0.00, 0.10)",
+        "n": 41202,
+        "mean_probability": 0.0289,
+        "observed_rate": 0.0389
+      },
+      {
+        "bucket": "[0.10, 0.20)",
+        "n": 20683,
+        "mean_probability": 0.1516,
+        "observed_rate": 0.1519
+      },
+      {
+        "bucket": "[0.20, 0.30)",
+        "n": 23281,
+        "mean_probability": 0.2487,
+        "observed_rate": 0.1769
+      },
+      {
+        "bucket": "[0.30, 0.40)",
+        "n": 13490,
+        "mean_probability": 0.3414,
+        "observed_rate": 0.2097
+      },
+      {
+        "bucket": "[0.40, 0.50)",
+        "n": 4330,
+        "mean_probability": 0.4422,
+        "observed_rate": 0.2487
+      },
+      {
+        "bucket": "[0.50, 0.60)",
+        "n": 934,
+        "mean_probability": 0.526,
+        "observed_rate": 0.2741
+      },
+      {
+        "bucket": "[0.60, 0.70)",
+        "n": 0,
+        "mean_probability": null,
+        "observed_rate": null
+      },
+      {
+        "bucket": "[0.70, 0.80)",
+        "n": 0,
+        "mean_probability": null,
+        "observed_rate": null
+      },
+      {
+        "bucket": "[0.80, 0.90)",
+        "n": 0,
+        "mean_probability": null,
+        "observed_rate": null
+      },
+      {
+        "bucket": "[0.90, 1.00]",
+        "n": 0,
+        "mean_probability": null,
+        "observed_rate": null
+      }
+    ],
+    "long": [
+      {
+        "bucket": "[0.00, 0.10)",
+        "n": 42033,
+        "mean_probability": 0.0295,
+        "observed_rate": 0.0453
+      },
+      {
+        "bucket": "[0.10, 0.20)",
+        "n": 19035,
+        "mean_probability": 0.1509,
+        "observed_rate": 0.1589
+      },
+      {
+        "bucket": "[0.20, 0.30)",
+        "n": 23780,
+        "mean_probability": 0.2518,
+        "observed_rate": 0.185
+      },
+      {
+        "bucket": "[0.30, 0.40)",
+        "n": 15989,
+        "mean_probability": 0.3411,
+        "observed_rate": 0.222
+      },
+      {
+        "bucket": "[0.40, 0.50)",
+        "n": 3055,
+        "mean_probability": 0.4296,
+        "observed_rate": 0.2714
+      },
+      {
+        "bucket": "[0.50, 0.60)",
+        "n": 28,
+        "mean_probability": 0.5071,
+        "observed_rate": 0.3214
+      },
+      {
+        "bucket": "[0.60, 0.70)",
+        "n": 0,
+        "mean_probability": null,
+        "observed_rate": null
+      },
+      {
+        "bucket": "[0.70, 0.80)",
+        "n": 0,
+        "mean_probability": null,
+        "observed_rate": null
+      },
+      {
+        "bucket": "[0.80, 0.90)",
+        "n": 0,
+        "mean_probability": null,
+        "observed_rate": null
+      },
+      {
+        "bucket": "[0.90, 1.00]",
+        "n": 0,
+        "mean_probability": null,
+        "observed_rate": null
+      }
+    ]
+  }
+}

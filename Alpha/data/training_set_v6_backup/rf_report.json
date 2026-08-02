@@ -1,0 +1,46 @@
+{
+  "train_accuracy": 0.973,
+  "test_accuracy": 0.882,
+  "oob_score": 0.8714,
+  "cv_accuracy_mean": 0.8955,
+  "cv_accuracy_std": 0.0076,
+  "classification_report": "              precision    recall  f1-score   support\n\n        hold       0.92      0.95      0.94      1836\n       short       0.04      0.04      0.04        75\n        long       0.07      0.03      0.04        80\n\n    accuracy                           0.88      1991\n   macro avg       0.35      0.34      0.34      1991\nweighted avg       0.86      0.88      0.87      1991\n",
+  "confusion_matrix": [
+    [
+      1751,
+      61,
+      24
+    ],
+    [
+      71,
+      3,
+      1
+    ],
+    [
+      73,
+      5,
+      2
+    ]
+  ],
+  "feature_importance": {
+    "bollinger_pB": 0.041853,
+    "volatility": 0.05712,
+    "atr_norm": 0.081776,
+    "hour": 0.040411,
+    "regime": 0.007054,
+    "htf_rsi": 0.051028,
+    "return_12_atr": 0.043765,
+    "ema_slope_atr": 0.045405,
+    "di_spread": 0.047354,
+    "breakout_position": 0.053849,
+    "momentum_6": 0.047709,
+    "bar_strength": 0.10388,
+    "intraday_position": 0.069976,
+    "adx_momentum": 0.046468,
+    "vol_percentile": 0.052057,
+    "activity_ratio": 0.057182,
+    "trend_momentum": 0.052584,
+    "breakout_conviction": 0.052891,
+    "htf_dist_strength": 0.047638
+  }
+}
