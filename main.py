@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from dotenv import load_dotenv
 from twisted.internet import reactor
+from twisted.web import server, resource  # <-- Added Twisted Web imports
 
 # Add project root to sys.path
 project_root = str(Path(__file__).resolve().parent)
@@ -17,6 +18,15 @@ from LiveExecution.src.features import FeatureManager
 from LiveExecution.src.models import ModelLoader
 from LiveExecution.src.orchestrator import Orchestrator
 from LiveExecution.dashboard.main import DashboardServer
+
+
+# 0. Simple HTTP Resource for Back4App Health Check
+class HealthCheckResource(resource.Resource):
+    isLeaf = True
+
+    def render_GET(self, request):
+        request.setHeader(b"content-type", b"text/plain; charset=utf-8")
+        return b"Trading Bot is live and running!"
 
 
 def main():
@@ -82,6 +92,12 @@ def main():
 
         # 6. Start Service
         client.start()
+
+        # 6.5 Bind HTTP Health Check for Back4App
+        port = int(os.getenv("PORT", 8080))
+        site = server.Site(HealthCheckResource())
+        reactor.listenTCP(port, site)
+        logger.info(f"Health check HTTP server listening on port {port}...")
 
         # 7. Run Event Loop
         logger.info("Entering main event loop...")
