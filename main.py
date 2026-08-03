@@ -1,10 +1,11 @@
 import os
 import sys
 import logging
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from dotenv import load_dotenv
 from twisted.internet import reactor
-from twisted.web import server, resource
 
 # Add project root to sys.path
 project_root = str(Path(__file__).resolve().parent)
@@ -20,35 +21,42 @@ from LiveExecution.src.orchestrator import Orchestrator
 from LiveExecution.dashboard.main import DashboardServer
 
 
-# HTTP Resource for Back4App Health Check
-class HealthCheckResource(resource.Resource):
-    isLeaf = True
+# Lightweight HTTP Health Check Server running on a separate thread
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
 
-    def render_GET(self, request):
-        request.setHeader(b"content-type", b"text/plain; charset=utf-8")
-        return b"Trading Bot is live and running!"
+    def log_message(self, format, *args):
+        # Silence HTTP logs to keep console clean
+        return
+
+
+def start_health_check_server(port):
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
 
 
 def main():
-    # 1. Setup Environment & Logging
+    # 1. INSTANT HEALTH CHECK START
+    # Start HTTP server on a background thread so Back4App passes immediately
+    port = int(os.getenv("PORT", 8080))
+    health_thread = threading.Thread(
+        target=start_health_check_server, args=(port,), daemon=True
+    )
+    health_thread.start()
+
+    # 2. Setup Environment & Logging
     load_dotenv()
     logger = setup_logger()
+    logger.info(f"Health check HTTP server active on port {port}...")
     logger.info("Starting Live Execution System...")
-
-    # 2. BIND HTTP HEALTH CHECK IMMEDIATELY
-    # Opens port 8080 instantly so Back4App passes health checks while models load in background
-    try:
-        port = int(os.getenv("PORT", 8080))
-        site = server.Site(HealthCheckResource())
-        reactor.listenTCP(port, site)
-        logger.info(f"Health check HTTP server listening on port {port}...")
-    except Exception as e:
-        logger.error(f"Could not bind health check port: {e}")
 
     # 3. Load Configuration
     try:
         config = load_config()
-        # Load Thresholds (Centralized)
         thresholds = get_thresholds(project_root)
         config["ALPHA_CONFIDENCE_THRESHOLD"] = thresholds["alpha_confidence_threshold"]
         config["FILTER_THRESHOLD"] = thresholds["filter_threshold"]
@@ -65,19 +73,18 @@ def main():
         logger.critical(f"Configuration Error: {e}")
         return
 
-    # 4. Initialize Components & Load Models
+    # 4. Initialize Components & Heavy Model Loading
     try:
-        # Core Components
         client = CTraderClient(config)
         feature_manager = FeatureManager()
         model_loader = ModelLoader()
 
-        # Load Models
+        # Load PyTorch / Scikit-Learn Models
         if not model_loader.load_all_models():
             logger.critical("Failed to load models. System cannot proceed.")
             return
 
-        # Wire thresholds from config into model loader
+        # Wire thresholds into model loader
         model_loader.alpha_threshold = config.get("ALPHA_CONFIDENCE_THRESHOLD", 0.60)
         model_loader.filter_threshold = config.get("FILTER_THRESHOLD", 0.72)
         model_loader.sl_multiplier = config.get("SL_MULTIPLIER", 2.0)
@@ -88,22 +95,21 @@ def main():
             client, feature_manager, model_loader, config=config
         )
 
-        # 4.5 Start Dashboard
+        # Start Dashboard
         dashboard = DashboardServer(orchestrator)
         dashboard.start()
         orchestrator.set_dashboard(dashboard)
 
-        # 5. Wiring
-        # Connect Client Events to Orchestrator
+        # Wiring
         client.on_authenticated = orchestrator.bootstrap
         client.on_candle_closed = orchestrator.on_m5_candle_close
         client.on_order_execution = orchestrator.on_order_execution
         client.on_order_error = orchestrator.on_order_error
 
-        # 6. Start Service
+        # Start Client
         client.start()
 
-        # 7. Run Event Loop
+        # 5. Run Twisted Event Loop
         logger.info("Entering main event loop...")
         reactor.run()
 
