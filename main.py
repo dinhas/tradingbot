@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from dotenv import load_dotenv
 from twisted.internet import reactor
-from twisted.web import server, resource  # <-- Added Twisted Web imports
+from twisted.web import server, resource
 
 # Add project root to sys.path
 project_root = str(Path(__file__).resolve().parent)
@@ -20,7 +20,7 @@ from LiveExecution.src.orchestrator import Orchestrator
 from LiveExecution.dashboard.main import DashboardServer
 
 
-# 0. Simple HTTP Resource for Back4App Health Check
+# HTTP Resource for Back4App Health Check
 class HealthCheckResource(resource.Resource):
     isLeaf = True
 
@@ -35,10 +35,20 @@ def main():
     logger = setup_logger()
     logger.info("Starting Live Execution System...")
 
-    # 2. Load Configuration
+    # 2. BIND HTTP HEALTH CHECK IMMEDIATELY
+    # Opens port 8080 instantly so Back4App passes health checks while models load in background
+    try:
+        port = int(os.getenv("PORT", 8080))
+        site = server.Site(HealthCheckResource())
+        reactor.listenTCP(port, site)
+        logger.info(f"Health check HTTP server listening on port {port}...")
+    except Exception as e:
+        logger.error(f"Could not bind health check port: {e}")
+
+    # 3. Load Configuration
     try:
         config = load_config()
-        # 3. Load Thresholds (Centralized)
+        # Load Thresholds (Centralized)
         thresholds = get_thresholds(project_root)
         config["ALPHA_CONFIDENCE_THRESHOLD"] = thresholds["alpha_confidence_threshold"]
         config["FILTER_THRESHOLD"] = thresholds["filter_threshold"]
@@ -55,7 +65,7 @@ def main():
         logger.critical(f"Configuration Error: {e}")
         return
 
-    # 4. Initialize Components
+    # 4. Initialize Components & Load Models
     try:
         # Core Components
         client = CTraderClient(config)
@@ -92,12 +102,6 @@ def main():
 
         # 6. Start Service
         client.start()
-
-        # 6.5 Bind HTTP Health Check for Back4App
-        port = int(os.getenv("PORT", 8080))
-        site = server.Site(HealthCheckResource())
-        reactor.listenTCP(port, site)
-        logger.info(f"Health check HTTP server listening on port {port}...")
 
         # 7. Run Event Loop
         logger.info("Entering main event loop...")
