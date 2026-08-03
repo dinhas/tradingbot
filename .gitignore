@@ -36,7 +36,6 @@ venv.bak/
 .ipynb_checkpoints/
 
 # Secrets
-.env
 config/credentials.yaml
 config/api_keys.yaml
 *.key
