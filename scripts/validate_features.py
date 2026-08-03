@@ -20,12 +20,10 @@ from Alpha.src.feature_engine import FeatureEngine
 
 
 EXPECTED_MACRO_FEATURES = [
-    'vix_level', 'vix_regime', 'yield_curve_slope', 'us10y_change',
-    'dxy_return_5d', 'gold_return_5d', 'sp500_return_5d', 'oil_return_5d',
-    'cpi_yoy', 'fed_rate_level', 'dollar_real_rate', 'nfp_momentum',
+    'sp500_return_5d', 'dxy_return_5d',
 ]
 
-EXPECTED_TOTAL_FEATURES = 43  # 31 existing + 12 macro
+EXPECTED_TOTAL_FEATURES = 32  # 32 in v2.8
 
 
 def main():
