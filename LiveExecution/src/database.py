@@ -49,7 +49,8 @@ class DatabaseManager:
                         sl REAL,
                         tp REAL,
                         relative_sl INTEGER,
-                        relative_tp INTEGER
+                        relative_tp INTEGER,
+                        confidence REAL
                     )
                 ''')
 
@@ -64,6 +65,8 @@ class DatabaseManager:
                     cursor.execute("ALTER TABLE trades ADD COLUMN relative_sl INTEGER")
                 if 'relative_tp' not in existing_cols:
                     cursor.execute("ALTER TABLE trades ADD COLUMN relative_tp INTEGER")
+                if 'confidence' not in existing_cols:
+                    cursor.execute("ALTER TABLE trades ADD COLUMN confidence REAL")
 
                 conn.commit()
                 self.logger.debug(f"Database initialized at {self.db_path}")
@@ -83,24 +86,25 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Database error logging account state: {e}")
 
-    def log_trade_opening(self, pos_id, symbol, action, size, entry_price, sl=None, tp=None, relative_sl=None, relative_tp=None):
-        """Logs a new trade opening with optional SL and TP levels."""
+    def log_trade_opening(self, pos_id, symbol, action, size, entry_price, sl=None, tp=None, relative_sl=None, relative_tp=None, confidence=None):
+        """Logs a new trade opening with optional SL, TP and model confidence levels."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 # Check if position already exists to avoid overwriting existing SL/TP with None
-                cursor.execute('SELECT sl, tp, relative_sl, relative_tp FROM trades WHERE pos_id = ?', (pos_id,))
+                cursor.execute('SELECT sl, tp, relative_sl, relative_tp, confidence FROM trades WHERE pos_id = ?', (pos_id,))
                 existing = cursor.fetchone()
                 if existing:
                     sl = sl if sl is not None else existing[0]
                     tp = tp if tp is not None else existing[1]
                     relative_sl = relative_sl if relative_sl is not None else existing[2]
                     relative_tp = relative_tp if relative_tp is not None else existing[3]
+                    confidence = confidence if confidence is not None else existing[4]
 
                 cursor.execute('''
-                    INSERT OR REPLACE INTO trades (pos_id, symbol, action, size, entry_price, entry_time, sl, tp, relative_sl, relative_tp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (pos_id, symbol, action, size, entry_price, datetime.now().isoformat(), sl, tp, relative_sl, relative_tp))
+                    INSERT OR REPLACE INTO trades (pos_id, symbol, action, size, entry_price, entry_time, sl, tp, relative_sl, relative_tp, confidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (pos_id, symbol, action, size, entry_price, datetime.now().isoformat(), sl, tp, relative_sl, relative_tp, confidence))
                 conn.commit()
         except Exception as e:
             self.logger.error(f"Database error logging trade opening: {e}")

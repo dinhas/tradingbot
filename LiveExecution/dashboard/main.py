@@ -25,12 +25,37 @@ class DashboardServer:
         self._setup_routes()
 
     def _setup_routes(self):
+        from fastapi.responses import FileResponse, PlainTextResponse
+
+        @self.app.get("/health", response_class=PlainTextResponse)
+        @self.app.get("/api/health", response_class=PlainTextResponse)
+        async def health():
+            return "OK"
+
         @self.app.get("/")
-        async def index(request: Request):
-            # ... (no changes to index)
+        async def index(request: Request, asset: str = None, status: str = None):
             try:
+                # Get the logs directory
+                log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
+                log_files = []
+                if log_dir.exists():
+                    for f in sorted(log_dir.glob("tradebot-*.log"), reverse=True):
+                        sz_bytes = f.stat().st_size
+                        # Convert to human readable format
+                        if sz_bytes >= 1024 * 1024:
+                            sz_str = f"{sz_bytes / (1024 * 1024):.1f} MB"
+                        else:
+                            sz_str = f"{sz_bytes / 1024:.1f} KB"
+                        # Extract date from filename
+                        date_part = f.name[len("tradebot-"):-4]
+                        log_files.append({
+                            "filename": f.name,
+                            "date": date_part,
+                            "size": sz_str
+                        })
+
                 # Use data from orchestrator
-                recent_trades = self.orchestrator.db.get_recent_trades(limit=10)
+                recent_trades = self.orchestrator.db.get_recent_trades(limit=100)
                 active_trades = self.orchestrator.db.get_active_trades()
                 state = self.orchestrator.portfolio_state
                 
@@ -59,17 +84,46 @@ class DashboardServer:
                     trade_copy['unrealized_pnl'] = pnl
                     enriched_active_trades.append(trade_copy)
 
-                return self.templates.TemplateResponse("index.html", {
-                    "request": request,
-                    "state": state,
-                    "recent_trades": recent_trades,
-                    "active_trades": enriched_active_trades,
-                    "daily_stats": daily_stats,
-                    "performance": performance_metrics
-                })
+                # Filter by asset
+                if asset:
+                    enriched_active_trades = [t for t in enriched_active_trades if t['symbol'] == asset]
+                    recent_trades = [t for t in recent_trades if t['symbol'] == asset]
+
+                # Filter by status
+                show_active = (status != 'closed')
+                show_recent = (status != 'open')
+
+                return self.templates.TemplateResponse(
+                    request=request,
+                    name="index.html",
+                    context={
+                        "state": state,
+                        "recent_trades": recent_trades if show_recent else [],
+                        "active_trades": enriched_active_trades if show_active else [],
+                        "daily_stats": daily_stats,
+                        "performance": performance_metrics,
+                        "log_files": log_files,
+                        "selected_asset": asset or "",
+                        "selected_status": status or ""
+                    }
+                )
             except Exception as e:
-                self.logger.error(f"Dashboard error: {e}")
+                self.logger.exception(f"Dashboard error: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/logs/{filename}")
+        async def download_log(filename: str):
+            log_dir = (Path(__file__).resolve().parent.parent.parent / "logs").resolve()
+            file_path = (log_dir / filename).resolve()
+
+            # Path traversal prevention check
+            if not str(file_path).startswith(str(log_dir)):
+                raise HTTPException(status_code=403, detail="Access denied: path traversal attempt detected.")
+
+            if not file_path.exists() or not file_path.is_file():
+                raise HTTPException(status_code=404, detail="Log file not found.")
+
+            return FileResponse(file_path, media_type="text/plain", filename=filename)
 
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
@@ -143,9 +197,11 @@ class DashboardServer:
 
     def start(self):
         """Starts the Uvicorn server in a background thread."""
-        config = uvicorn.Config(self.app, host="0.0.0.0", port=8000, log_level="warning")
+        import os
+        port = int(os.getenv("PORT", 8080))
+        config = uvicorn.Config(self.app, host="0.0.0.0", port=port, log_level="warning")
         server = uvicorn.Server(config)
 
         thread = threading.Thread(target=server.run, daemon=True, name="DashboardThread")
         thread.start()
-        self.logger.info("Web Dashboard started on http://0.0.0.0:8000")
+        self.logger.info(f"Web Dashboard started on http://0.0.0.0:{port}")

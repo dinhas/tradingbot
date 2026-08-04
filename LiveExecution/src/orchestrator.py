@@ -54,48 +54,94 @@ class Orchestrator:
     @inlineCallbacks
     def bootstrap(self):
         """Called after cTrader authentication. Loads history, subscribes, syncs positions."""
-        self.logger.info("Bootstrapping: loading historical data and subscribing...")
+        self.logger.info("--- STARTING ORCHESTRATOR BOOTSTRAP ---")
 
-        # 1. Fetch historical M5 candles for all assets
+        from twisted.internet import threads
+
+        # Stage 1: COT & Macro Data Fetch & Cache Warm-up (Off-reactor thread)
+        self.logger.info("[Bootstrap Stage 1/5] Starting COT and Macro data cache warm-up...")
+        try:
+            yield threads.deferToThread(self.fm.initialize_market_data)
+            self.logger.info("[Bootstrap Stage 1/5] COT and Macro data successfully loaded and validated.")
+        except Exception as e:
+            self.logger.exception(f"FATAL: [Bootstrap Stage 1/5] COT & Macro warm-up failed: {e}")
+            self.logger.critical("Orchestrator cannot proceed to live trading without valid market indicators. Stopping client.")
+            self.client.stop()
+            raise e
+
+        # Stage 2: Historical Candle Backfill per Asset
+        self.logger.info("[Bootstrap Stage 2/5] Starting historical M5 candle backfill...")
         symbol_ids = list(self.client.symbol_ids.values())
         try:
             for asset_name, symbol_id in self.client.symbol_ids.items():
+                self.logger.info(f"  Fetching historical candles for {asset_name}...")
                 res = yield self.client.fetch_ohlcv(symbol_id, count=300)
                 if hasattr(res, 'trendbar') and res.trendbar:
                     self.fm.update_data(symbol_id, res)
                     self.logger.info(
-                        f"Loaded {len(res.trendbar)} historical bars for {asset_name}"
+                        f"  Loaded {len(res.trendbar)} historical bars for {asset_name}"
                     )
+                else:
+                    raise ValueError(f"No historical candles returned for {asset_name}")
 
             self.logger.info(
-                f"History ready: { {a: len(self.fm.history[a]) for a in self.fm.assets} }"
+                f"[Bootstrap Stage 2/5] Historical backfill complete. Buffer sizes: { {a: len(self.fm.history[a]) for a in self.fm.assets} }"
             )
         except Exception as e:
-            self.logger.error(f"Failed to load historical data: {e}")
+            self.logger.exception(f"FATAL: [Bootstrap Stage 2/5] Historical backfill failed: {e}")
+            self.logger.critical("Orchestrator cannot trade without continuous historical bar history. Stopping client.")
+            self.client.stop()
+            raise e
 
-        # 2. Subscribe to live spots + M5 trendbars
+        # Stage 3: Subscribe to live spots + M5 trendbars
+        self.logger.info("[Bootstrap Stage 3/5] Subscribing to live spot events and M5 trendbars...")
         try:
             yield self.client.subscribe(symbol_ids)
-            self.logger.info("Subscribed to spot and M5 trendbar events.")
+            self.logger.info("[Bootstrap Stage 3/5] Subscriptions established successfully.")
         except Exception as e:
-            self.logger.error(f"Subscription failed: {e}")
+            self.logger.exception(f"FATAL: [Bootstrap Stage 3/5] Live subscription failed: {e}")
+            self.logger.critical("Orchestrator cannot receive real-time ticks. Stopping client.")
+            self.client.stop()
+            raise e
 
-        # 3. Sync account and open positions
+        # Stage 4: Sync account and open positions
+        self.logger.info("[Bootstrap Stage 4/5] Synchronizing account balance and open positions...")
         try:
             acct = yield self.client.fetch_account_summary()
             self.update_account_state(acct)
             yield self.sync_active_positions()
             self.logger.info(
-                f"Account synced. Balance={self.portfolio_state.get('balance', '?')}, "
+                f"[Bootstrap Stage 4/5] Account synchronized. Balance={self.portfolio_state.get('balance', '?')}, "
                 f"Open positions={len(self.active_positions)}"
             )
         except Exception as e:
-            self.logger.error(f"Account sync failed: {e}")
+            self.logger.exception(f"FATAL: [Bootstrap Stage 4/5] Account sync failed: {e}")
+            self.logger.critical("Orchestrator could not determine risk boundaries. Stopping client.")
+            self.client.stop()
+            raise e
 
-        # 4. Start daily macro/COT refresh
+        # Stage 5: Feature Buffer Warm-up and Validation
+        self.logger.info("[Bootstrap Stage 5/5] Performing feature buffer warm-up & validation...")
+        try:
+            for asset in self.fm.assets:
+                # Attempt sequence calculation to verify no exceptions
+                seq = self.fm.get_alpha_sequence(asset, self.ml.alpha_sequence_length)
+                if seq is None:
+                    raise ValueError(f"Failed to generate alpha sequence for {asset}. Insufficient bar history.")
+                self.logger.info(f"  Warm-up validation passed for {asset}: sequence shape={seq.shape}")
+
+            self.logger.info("[Bootstrap Stage 5/5] Feature buffer verification passed.")
+        except Exception as e:
+            self.logger.exception(f"FATAL: [Bootstrap Stage 5/5] Warm-up verification failed: {e}")
+            self.logger.critical("Feature engine failed to build a valid starting observation matrix. Stopping client.")
+            self.client.stop()
+            raise e
+
+        # Start daily macro/COT refresh
         self.fm.start_daily_refresh()
 
-        self.logger.info("Bootstrap complete.")
+        self.logger.info("system ready, entering live loop")
+        self.logger.info("--- ORCHESTRATOR BOOTSTRAP COMPLETE ---")
 
     def on_m5_candle_close(self, symbol_id, bar):
         """Called by ctrader_client when a new M5 candle closes."""
@@ -182,8 +228,9 @@ class Orchestrator:
                         tp_val = pending.get('tp')
                         rel_sl = pending.get('relative_sl')
                         rel_tp = pending.get('relative_tp')
+                        conf_val = pending.get('confidence')
 
-                        self.db.log_trade_opening(pos_id, asset_name, 'BUY' if pos.tradeData.tradeSide == 1 else 'SELL', lots, pos.price, sl=sl_val, tp=tp_val, relative_sl=rel_sl, relative_tp=rel_tp)
+                        self.db.log_trade_opening(pos_id, asset_name, 'BUY' if pos.tradeData.tradeSide == 1 else 'SELL', lots, pos.price, sl=sl_val, tp=tp_val, relative_sl=rel_sl, relative_tp=rel_tp, confidence=conf_val)
 
                         has_sl = bool(hasattr(pos, 'stopLoss') and pos.stopLoss and pos.stopLoss > 0)
                         has_tp = bool(hasattr(pos, 'takeProfit') and pos.takeProfit and pos.takeProfit > 0)
@@ -363,7 +410,7 @@ class Orchestrator:
 
                 # Ensure DB has SL/TP recorded
                 lots = pos.tradeData.volume / (contract_size * 100) if hasattr(pos, 'tradeData') else decision['lots']
-                self.db.log_trade_opening(_pos_id, asset_name, 'BUY' if side == ProtoOATradeSide.BUY else 'SELL', lots, pos.price, sl=decision['sl'], tp=decision['tp'], relative_sl=decision.get('relative_sl'), relative_tp=decision.get('relative_tp'))
+                self.db.log_trade_opening(_pos_id, asset_name, 'BUY' if side == ProtoOATradeSide.BUY else 'SELL', lots, pos.price, sl=decision['sl'], tp=decision['tp'], relative_sl=decision.get('relative_sl'), relative_tp=decision.get('relative_tp'), confidence=decision.get('confidence'))
 
                 # Reconcile to get real SL/TP (new order response may have empty fields)
                 has_sl = False
@@ -503,6 +550,7 @@ class Orchestrator:
                 'tp': float(tp_price),
                 'relative_sl': relative_sl,
                 'relative_tp': relative_tp,
+                'confidence': float(confidence),
             }
         except Exception as e:
             self.logger.error(f"Inference error for {asset_name}: {e}")
