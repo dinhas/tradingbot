@@ -22,3 +22,4 @@ PyWavelets
 fredapi
 yfinance
 imbalanced-learn>=0.11.0
+setuptools==83.0.0
