@@ -2,19 +2,7 @@
 name = "tradingbot"
 python_version = "3.12"
 disable_auth = false
-include = [
-    "*.py",
-    "*.txt",
-    "*.parquet",
-    "Alpha/**/*",
-    "Risklayer/**/*", 
-    "LiveExecution/**/*",
-    "backtest/**/*",
-    "data/**/*",
-    "models/**/*",
-    "scripts/**/*",
-    ".env*"
-]
+include = ["**/*"]
 exclude = [
     ".*",
     "__pycache__/**/*",
@@ -31,7 +19,7 @@ use_uv = false
 deployment_initialization_timeout = 600
 
 [cerebrium.runtime.custom]
-port = 8000
+port = 8080
 entrypoint = ["python", "main.py"]
 
 [cerebrium.hardware]
@@ -54,7 +42,7 @@ evaluation_interval = 30
 roll_out_duration_seconds = 0
 
 [cerebrium.dependencies.pip]
-setuptools = "latest"
+setuptools = "<81"
 ctrader-open-api = "latest"
 twisted = "latest"
 pandas = "latest"
@@ -75,6 +63,10 @@ uvicorn = "latest"
 jinja2 = "latest"
 aiohttp = "latest"
 joblib = "latest"
+PyWavelets = "latest"
+fredapi = "latest"
+yfinance = "latest"
+imbalanced-learn = ">=0.11.0"
 
 [cerebrium.dependencies.apt]
 ffmpeg = "latest"
