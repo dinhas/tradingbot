@@ -63,13 +63,17 @@ class ModelLoader:
             # 2. RF Filter Ensemble
             filter_path = self.project_root / "Filter" / "models" / "filter_rf_ensemble.joblib"
             if filter_path.exists():
-                self.logger.info(f"Loading RF Filter ensemble from {filter_path}...")
-                self.filter_ensemble = joblib.load(filter_path)
-                # Override threshold from ensemble if saved, else use default
-                saved_threshold = self.filter_ensemble.get("threshold", self.filter_threshold)
-                if saved_threshold:
-                    self.filter_threshold = float(saved_threshold)
-                self.logger.info(f"Filter ensemble loaded. Threshold={self.filter_threshold:.3f}")
+                try:
+                    self.logger.info(f"Loading RF Filter ensemble from {filter_path}...")
+                    self.filter_ensemble = joblib.load(filter_path)
+                    # Override threshold from ensemble if saved, else use default
+                    saved_threshold = self.filter_ensemble.get("threshold", self.filter_threshold)
+                    if saved_threshold:
+                        self.filter_threshold = float(saved_threshold)
+                    self.logger.info(f"Filter ensemble loaded. Threshold={self.filter_threshold:.3f}")
+                except Exception as fe:
+                    self.logger.warning(f"Could not load RF Filter ensemble from {filter_path} due to serialization/version incompatibility: {fe}. Filter gate will be disabled.")
+                    self.filter_ensemble = None
             else:
                 self.logger.warning(f"Filter ensemble not found at {filter_path}. Filter gate disabled.")
 
