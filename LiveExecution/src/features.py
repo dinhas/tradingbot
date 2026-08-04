@@ -45,6 +45,18 @@ class FeatureManager:
         # Daily macro/COT refresh scheduler
         self._refresh_loop = None
 
+    def initialize_market_data(self):
+        """
+        Initializes market data by validating and syncing cache, then reloading it.
+        Runs off the main reactor thread to avoid blocking.
+        """
+        self.logger.info("MarketDataCache: Starting cache sync and data warm-up...")
+        from LiveExecution.src.market_data_cache import MarketDataCacheManager
+        manager = MarketDataCacheManager(data_dir=self._data_dir)
+        manager.sync()
+        self.logger.info("MarketDataCache: Sync complete. Reloading cache into memory...")
+        self._load_macro_cot_data()
+
     def _load_macro_cot_data(self):
         """Load macro and COT data from disk."""
         try:
@@ -66,22 +78,11 @@ class FeatureManager:
             return
 
         def _do_refresh():
-            self.logger.info("Daily refresh: downloading fresh market data...")
-            try:
-                script_path = str(Path(__file__).resolve().parent.parent.parent / "scripts" / "refresh_market_data.py")
-                result = subprocess.run(
-                    [sys.executable, script_path],
-                    capture_output=True, text=True, timeout=300
-                )
-                if result.returncode == 0:
-                    self.logger.info("Market data download completed successfully")
-                else:
-                    self.logger.warning(f"Market data download had errors: {result.stderr[:500]}")
-            except Exception as e:
-                self.logger.error(f"Market data download failed: {e}")
-
-            self.logger.info("Reloading macro/COT data into memory...")
-            self._load_macro_cot_data()
+            self.logger.info("Daily refresh: Triggering off-thread market data sync...")
+            from twisted.internet import threads
+            d = threads.deferToThread(self.initialize_market_data)
+            d.addCallback(lambda _: self.logger.info("Daily refresh complete."))
+            d.addErrback(lambda f: self.logger.error(f"Daily refresh failed: {f.getErrorMessage()}"))
 
         def _schedule_next():
             now = datetime.now()

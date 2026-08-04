@@ -47,17 +47,17 @@
                 <span class="text-lg font-bold tracking-wide">TradeGuard <span class="text-xs align-top text-gray-500">PRO</span></span>
             </div>
             <nav class="p-4 space-y-1">
-                <a href="#" class="flex items-center px-4 py-3 bg-brand-600/10 text-brand-500 rounded-lg">
+                <a href="/" class="flex items-center px-4 py-3 bg-brand-600/10 text-brand-500 rounded-lg">
                     <i class="fa-solid fa-chart-line w-6"></i>
                     <span class="font-medium">Dashboard</span>
                 </a>
-                <a href="#" class="flex items-center px-4 py-3 text-gray-400 hover:text-gray-100 hover:bg-dark-700 rounded-lg transition">
+                <a href="#trades-log-section" class="flex items-center px-4 py-3 text-gray-400 hover:text-gray-100 hover:bg-dark-700 rounded-lg transition">
                     <i class="fa-solid fa-list w-6"></i>
                     <span class="font-medium">Trades Log</span>
                 </a>
-                <a href="#" class="flex items-center px-4 py-3 text-gray-400 hover:text-gray-100 hover:bg-dark-700 rounded-lg transition">
-                    <i class="fa-solid fa-sliders w-6"></i>
-                    <span class="font-medium">Settings</span>
+                <a href="#daily-logs-section" class="flex items-center px-4 py-3 text-gray-400 hover:text-gray-100 hover:bg-dark-700 rounded-lg transition">
+                    <i class="fa-solid fa-file-invoice w-6"></i>
+                    <span class="font-medium">Daily Logs</span>
                 </a>
             </nav>
         </div>
@@ -160,16 +160,17 @@
                             <i class="fa-solid fa-trophy"></i>
                         </div>
                     </div>
-                    <div class="text-xs text-gray-500">
-                        Total Trades: <span class="text-gray-200 font-mono">{{ performance.get('total_trades', 0) }}</span>
+                    <div class="flex items-center justify-between text-xs">
+                        <span class="text-gray-400">Total Trades: <span class="text-gray-200 font-mono font-bold">{{ performance.get('total_trades', 0) }}</span></span>
+                        <span class="px-2 py-0.5 rounded bg-dark-700 text-gray-300">{{ "{:.0f}".format(performance.get('win_rate', 0)) }}% WR</span>
                     </div>
                 </div>
             </div>
 
             <!-- Charts & Active Positions -->
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 h-96">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 <!-- Main Chart -->
-                <div class="lg:col-span-2 glass-panel rounded-xl p-5 border border-dark-700 flex flex-col">
+                <div class="lg:col-span-2 glass-panel rounded-xl p-5 border border-dark-700 flex flex-col h-96">
                     <h2 class="text-lg font-semibold mb-4 text-gray-100 flex items-center gap-2">
                         <i class="fa-solid fa-arrow-trend-up text-brand-500"></i> Equity Curve
                     </h2>
@@ -179,7 +180,7 @@
                 </div>
 
                 <!-- Active Positions List -->
-                <div class="glass-panel rounded-xl p-0 border border-dark-700 flex flex-col overflow-hidden">
+                <div class="glass-panel rounded-xl p-0 border border-dark-700 flex flex-col overflow-hidden h-96">
                     <div class="p-5 border-b border-dark-700 flex justify-between items-center bg-dark-800/50">
                         <h2 class="text-lg font-semibold text-gray-100">Active Positions</h2>
                         <span class="px-2 py-1 bg-brand-900/50 text-brand-300 text-xs rounded-full border border-brand-500/20">{{ active_trades|length }} / 5</span>
@@ -200,9 +201,16 @@
                                         {{ "{:+.2f}".format(trade.unrealized_pnl) }}
                                     </span>
                                 </div>
-                                <div class="flex justify-between items-center text-xs text-gray-500 mb-2">
+                                <div class="flex justify-between items-center text-xs text-gray-400 mb-2">
                                     <span>Entry: {{ trade.entry_price }}</span>
                                     <span>Cur: {{ trade.current_price }}</span>
+                                </div>
+                                <div class="flex justify-between items-center text-xs text-gray-500 mb-2">
+                                    <span>SL: {{ "{:.5f}".format(trade.sl) if trade.sl else '--' }}</span>
+                                    <span>TP: {{ "{:.5f}".format(trade.tp) if trade.tp else '--' }}</span>
+                                    {% if trade.confidence %}
+                                        <span class="bg-blue-900/40 text-blue-300 px-1 rounded text-[10px]">Conf: {{ "{:.0%}".format(trade.confidence) }}</span>
+                                    {% endif %}
                                 </div>
                                 <div class="flex justify-between items-center">
                                     <span class="text-xs text-gray-600">{{ "{:.2f}".format(trade.size) }} lots</span>
@@ -223,51 +231,198 @@
                 </div>
             </div>
 
-            <!-- Recent Trades Table -->
-            <div class="glass-panel rounded-xl border border-dark-700 overflow-hidden">
-                <div class="p-5 border-b border-dark-700 bg-dark-800/50">
-                    <h2 class="text-lg font-semibold text-gray-100">Recent History</h2>
+            <!-- Trades Filtering & Table View -->
+            <div id="trades-log-section" class="glass-panel rounded-xl border border-dark-700 overflow-hidden scroll-mt-6">
+                <!-- Filtering Header -->
+                <div class="p-5 border-b border-dark-700 bg-dark-800/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <h2 class="text-lg font-semibold text-gray-100 flex items-center gap-2">
+                        <i class="fa-solid fa-table-list text-brand-500"></i> Unified Trades Log
+                    </h2>
+
+                    <form method="GET" class="flex flex-wrap items-center gap-3">
+                        <!-- Asset Filter -->
+                        <div>
+                            <select name="asset" class="bg-dark-700 border border-dark-600 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-brand-500">
+                                <option value="" {% if not selected_asset %}selected{% endif %}>All Assets</option>
+                                <option value="EURUSD" {% if selected_asset == 'EURUSD' %}selected{% endif %}>EURUSD</option>
+                                <option value="GBPUSD" {% if selected_asset == 'GBPUSD' %}selected{% endif %}>GBPUSD</option>
+                                <option value="USDJPY" {% if selected_asset == 'USDJPY' %}selected{% endif %}>USDJPY</option>
+                                <option value="USDCHF" {% if selected_asset == 'USDCHF' %}selected{% endif %}>USDCHF</option>
+                            </select>
+                        </div>
+
+                        <!-- Status Filter -->
+                        <div>
+                            <select name="status" class="bg-dark-700 border border-dark-600 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-brand-500">
+                                <option value="" {% if not selected_status %}selected{% endif %}>All Statuses</option>
+                                <option value="open" {% if selected_status == 'open' %}selected{% endif %}>Open Positions</option>
+                                <option value="closed" {% if selected_status == 'closed' %}selected{% endif %}>Closed Trades</option>
+                            </select>
+                        </div>
+
+                        <button type="submit" class="bg-brand-600 hover:bg-brand-500 text-white text-sm px-4 py-1.5 rounded font-medium transition">
+                            Apply
+                        </button>
+                        {% if selected_asset or selected_status %}
+                        <a href="/" class="bg-dark-700 hover:bg-dark-600 text-gray-400 text-sm px-3 py-1.5 rounded font-medium transition">
+                            Clear
+                        </a>
+                        {% endif %}
+                    </form>
                 </div>
+
+                <!-- Unified Table -->
                 <div class="overflow-x-auto">
                     <table class="w-full text-left text-sm">
-                        <thead class="bg-dark-800 text-gray-400 text-xs uppercase font-semibold">
+                        <thead class="bg-dark-800 text-gray-400 text-xs uppercase font-semibold border-b border-dark-700">
                             <tr>
-                                <th class="p-4">Symbol</th>
-                                <th class="p-4">Type</th>
-                                <th class="p-4 text-right">Net PnL</th>
-                                <th class="p-4">Duration</th>
+                                <th class="p-4">Asset</th>
+                                <th class="p-4">Dir/Status</th>
+                                <th class="p-4">Size (Lots)</th>
+                                <th class="p-4">Entry (Time/Price)</th>
+                                <th class="p-4">Exit (Time/Price)</th>
+                                <th class="p-4">SL / TP</th>
+                                <th class="p-4 text-center">Confidence</th>
                                 <th class="p-4">Reason</th>
-                                <th class="p-4 text-right">Time</th>
+                                <th class="p-4 text-right">PnL / %</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-dark-700 text-gray-300">
+                            <!-- Render Active Trades First -->
+                            {% for trade in active_trades %}
+                            <tr class="hover:bg-dark-700/20 bg-brand-500/5 transition">
+                                <td class="p-4 font-bold text-white">{{ trade.symbol }}</td>
+                                <td class="p-4">
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="px-1.5 py-0.5 rounded text-[10px] font-extrabold {{ 'bg-green-500/20 text-green-400' if trade.action == 'BUY' else 'bg-red-500/20 text-red-400' }}">
+                                            {{ trade.action }}
+                                        </span>
+                                        <span class="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400 uppercase font-bold animate-pulse">
+                                            ACTIVE
+                                        </span>
+                                    </div>
+                                </td>
+                                <td class="p-4 font-mono">{{ "{:.2f}".format(trade.size) }}</td>
+                                <td class="p-4 text-xs">
+                                    <div class="font-semibold text-gray-200">${{ "{:.5f}".format(trade.entry_price) }}</div>
+                                    <div class="text-gray-500 mt-0.5">{{ trade.entry_time.split('T')[0] }} {{ trade.entry_time.split('T')[1][:8] if 'T' in trade.entry_time else '' }}</div>
+                                </td>
+                                <td class="p-4 text-xs text-gray-500">
+                                    <div class="italic">Currently Open</div>
+                                    <div class="mt-0.5 font-semibold text-gray-300">Cur: ${{ "{:.5f}".format(trade.current_price) }}</div>
+                                </td>
+                                <td class="p-4 text-xs text-gray-400 font-mono">
+                                    <div>SL: {{ "{:.5f}".format(trade.sl) if trade.sl else '--' }}</div>
+                                    <div class="mt-0.5">TP: {{ "{:.5f}".format(trade.tp) if trade.tp else '--' }}</div>
+                                </td>
+                                <td class="p-4 text-center font-mono text-xs">
+                                    {% if trade.confidence %}
+                                        <span class="px-2 py-0.5 bg-blue-900/30 text-blue-300 rounded-full font-bold border border-blue-500/10">
+                                            {{ "{:.1%}".format(trade.confidence) }}
+                                        </span>
+                                    {% else %}
+                                        <span class="text-gray-600">--</span>
+                                    {% endif %}
+                                </td>
+                                <td class="p-4 text-xs text-gray-500">--</td>
+                                <td class="p-4 text-right font-mono font-bold text-sm {{ 'text-green-400' if trade.unrealized_pnl >= 0 else 'text-red-400' }}">
+                                    {% set direction = 1 if trade.action == 'BUY' else -1 %}
+                                    {% set pnl_pct = (trade.current_price - trade.entry_price) / trade.entry_price * direction * 100 %}
+                                    <div>{{ "{:+.2f}".format(trade.unrealized_pnl) }}</div>
+                                    <div class="text-xs font-medium mt-0.5 opacity-80">{{ "{:+.2f}%".format(pnl_pct) }}</div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+
+                            <!-- Render Completed Trades -->
                             {% for trade in recent_trades %}
                             <tr class="hover:bg-dark-700/30 transition">
-                                <td class="p-4 font-medium">{{ trade.symbol }}</td>
+                                <td class="p-4 font-bold text-white">{{ trade.symbol }}</td>
                                 <td class="p-4">
-                                    <span class="px-2 py-1 rounded text-xs font-bold {{ 'text-green-400' if trade.net_pnl > 0 else 'text-red-400' }}">
-                                        {{ 'WIN' if trade.net_pnl > 0 else 'LOSS' }}
-                                    </span>
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="px-1.5 py-0.5 rounded text-[10px] font-extrabold {{ 'bg-green-500/20 text-green-400' if trade.action == 'BUY' else 'bg-red-500/20 text-red-400' }}">
+                                            {{ trade.action }}
+                                        </span>
+                                        <span class="px-1.5 py-0.5 rounded text-[10px] bg-dark-700 text-gray-400 uppercase font-medium">
+                                            CLOSED
+                                        </span>
+                                    </div>
                                 </td>
-                                <td class="p-4 text-right font-mono font-medium {{ 'text-green-400' if trade.net_pnl > 0 else 'text-red-400' }}">
-                                    {{ "{:+.2f}".format(trade.net_pnl) }}
-                                </td>
-                                <td class="p-4 text-gray-500 text-xs">
-                                    <!-- Simple duration calc placeholder -->
-                                    --
+                                <td class="p-4 font-mono">{{ "{:.2f}".format(trade.size) }}</td>
+                                <td class="p-4 text-xs">
+                                    <div class="font-semibold text-gray-200">${{ "{:.5f}".format(trade.entry_price) }}</div>
+                                    <div class="text-gray-500 mt-0.5">{{ trade.entry_time.split('T')[0] if trade.entry_time else '' }} {{ trade.entry_time.split('T')[1][:8] if trade.entry_time and 'T' in trade.entry_time else '' }}</div>
                                 </td>
                                 <td class="p-4 text-xs">
-                                    <span class="px-2 py-1 bg-dark-700 rounded text-gray-400">{{ trade.reason }}</span>
+                                    <div class="font-semibold text-gray-200">${{ "{:.5f}".format(trade.exit_price) if trade.exit_price else '' }}</div>
+                                    <div class="text-gray-500 mt-0.5">{{ trade.exit_time.split('T')[0] if trade.exit_time else '' }} {{ trade.exit_time.split('T')[1][:8] if trade.exit_time and 'T' in trade.exit_time else '' }}</div>
                                 </td>
-                                <td class="p-4 text-right text-xs text-gray-500 font-mono">{{ trade.exit_time.split('T')[1][:8] if trade.exit_time else '' }}</td>
+                                <td class="p-4 text-xs text-gray-400 font-mono">
+                                    <div>SL: {{ "{:.5f}".format(trade.sl) if trade.sl else '--' }}</div>
+                                    <div class="mt-0.5">TP: {{ "{:.5f}".format(trade.tp) if trade.tp else '--' }}</div>
+                                </td>
+                                <td class="p-4 text-center font-mono text-xs">
+                                    {% if trade.confidence %}
+                                        <span class="px-2 py-0.5 bg-gray-800 text-gray-300 rounded-full border border-dark-600">
+                                            {{ "{:.1%}".format(trade.confidence) }}
+                                        </span>
+                                    {% else %}
+                                        <span class="text-gray-600">--</span>
+                                    {% endif %}
+                                </td>
+                                <td class="p-4 text-xs">
+                                    <span class="px-2 py-0.5 bg-dark-700 rounded text-gray-400 uppercase font-semibold text-[10px] border border-dark-600">{{ trade.reason }}</span>
+                                </td>
+                                <td class="p-4 text-right font-mono font-bold text-sm {{ 'text-green-400' if trade.net_pnl > 0 else 'text-red-400' }}">
+                                    {% set direction = 1 if trade.action == 'BUY' else -1 %}
+                                    {% set pnl_pct = ((trade.exit_price - trade.entry_price) / trade.entry_price * direction * 100) if trade.exit_price and trade.entry_price else 0 %}
+                                    <div>{{ "{:+.2f}".format(trade.net_pnl) }}</div>
+                                    <div class="text-xs font-medium mt-0.5 opacity-80">{{ "{:+.2f}%".format(pnl_pct) }}</div>
+                                </td>
                             </tr>
                             {% else %}
+                            {% if not active_trades %}
                             <tr>
-                                <td colspan="6" class="p-8 text-center text-gray-500">No trade history available</td>
+                                <td colspan="9" class="p-8 text-center text-gray-500">No trades match your criteria</td>
                             </tr>
+                            {% endif %}
                             {% endfor %}
                         </tbody>
                     </table>
+                </div>
+            </div>
+
+            <!-- Daily Log Files Section -->
+            <div id="daily-logs-section" class="glass-panel rounded-xl border border-dark-700 overflow-hidden scroll-mt-6">
+                <div class="p-5 border-b border-dark-700 bg-dark-800/50">
+                    <h2 class="text-lg font-semibold text-gray-100 flex items-center gap-2">
+                        <i class="fa-solid fa-file-invoice text-brand-500"></i> Daily System Logs
+                    </h2>
+                </div>
+                <div class="divide-y divide-dark-700">
+                    {% if log_files %}
+                        {% for log_file in log_files %}
+                        <div class="p-4 flex items-center justify-between hover:bg-dark-700/30 transition">
+                            <div class="flex items-center gap-3">
+                                <div class="p-2 bg-dark-700 rounded text-gray-400">
+                                    <i class="fa-solid fa-file-lines text-lg"></i>
+                                </div>
+                                <div>
+                                    <div class="font-bold text-sm text-gray-200">{{ log_file.filename }}</div>
+                                    <div class="text-xs text-gray-500 mt-0.5">Date: {{ log_file.date }} | Size: {{ log_file.size }}</div>
+                                </div>
+                            </div>
+                            <a href="/api/logs/{{ log_file.filename }}" target="_blank" class="px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs font-bold rounded flex items-center gap-2 transition shadow-md">
+                                <i class="fa-solid fa-download"></i> Download / View
+                            </a>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="p-8 text-center text-gray-500 flex flex-col items-center gap-2">
+                            <i class="fa-solid fa-folder-open text-3xl opacity-40"></i>
+                            <div class="text-sm">No daily log files found in logs/ directory.</div>
+                        </div>
+                    {% endif %}
                 </div>
             </div>
 
@@ -444,8 +599,13 @@
         setInterval(updateSystemHealth, 10000);
         updateSystemHealth();
 
-        // Auto-refresh logic (every 30s)
-        setTimeout(() => window.location.reload(), 30000);
+        // Auto-refresh the entire dashboard page every 30 seconds to fetch up-to-date trades
+        setInterval(() => {
+            // Only auto-reload if the user is not actively interacting with forms/dropdowns
+            if (document.activeElement.tagName !== 'SELECT' && document.activeElement.tagName !== 'INPUT') {
+                window.location.reload();
+            }
+        }, 30000);
     </script>
 </body>
 </html>

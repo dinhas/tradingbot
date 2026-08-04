@@ -90,12 +90,21 @@ class CTraderClient:
             self.logger.info("Account Authenticated.")
             
             if self.on_authenticated:
-                self.on_authenticated()
+                self.logger.info("Triggering on_authenticated bootstrap callback...")
+                d = defer.maybeDeferred(self.on_authenticated)
+                def on_success(res):
+                    self.logger.info("on_authenticated bootstrap callback completed successfully.")
+                def on_failure(fail):
+                    self.logger.critical(f"FATAL: on_authenticated bootstrap callback failed: {fail.getErrorMessage()}")
+                    self.logger.critical(fail.getTraceback())
+                    self.stop()
+                d.addCallbacks(on_success, on_failure)
+                yield d
             
             self._start_heartbeat()
             
         except Exception as e:
-            self.logger.error(f"Authentication failed: {e}")
+            self.logger.exception(f"Authentication / Handshake failed: {e}")
             self.stop()
         
     def _on_disconnected(self, client, reason):

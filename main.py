@@ -2,7 +2,6 @@ import os
 import sys
 import logging
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from dotenv import load_dotenv
 from twisted.internet import reactor
@@ -21,40 +20,14 @@ from LiveExecution.src.orchestrator import Orchestrator
 from LiveExecution.dashboard.main import DashboardServer
 
 
-# Lightweight HTTP Health Check Server running on a separate thread
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"OK")
-
-    def log_message(self, format, *args):
-        # Silence HTTP logs to keep console clean
-        return
-
-
-def start_health_check_server(port):
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
-
-
 def main():
-    # 1. INSTANT HEALTH CHECK START
-    # Start HTTP server on a background thread so Back4App passes immediately
-    port = int(os.getenv("PORT", 8080))
-    health_thread = threading.Thread(
-        target=start_health_check_server, args=(port,), daemon=True
-    )
-    health_thread.start()
-
-    # 2. Setup Environment & Logging
+    # 1. Setup Environment & Logging
     load_dotenv()
     logger = setup_logger()
-    logger.info(f"Health check HTTP server active on port {port}...")
+    port = int(os.getenv("PORT", 8080))
     logger.info("Starting Live Execution System...")
 
-    # 3. Load Configuration
+    # 2. Load Configuration
     try:
         config = load_config()
         thresholds = get_thresholds(project_root)
@@ -73,7 +46,7 @@ def main():
         logger.critical(f"Configuration Error: {e}")
         return
 
-    # 4. Initialize Components & Heavy Model Loading
+    # 3. Initialize Components & Heavy Model Loading
     try:
         client = CTraderClient(config)
         feature_manager = FeatureManager()
@@ -109,7 +82,7 @@ def main():
         # Start Client
         client.start()
 
-        # 5. Run Twisted Event Loop
+        # 4. Run Twisted Event Loop
         logger.info("Entering main event loop...")
         reactor.run()
 
