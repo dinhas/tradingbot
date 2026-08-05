@@ -58,11 +58,25 @@ class CTraderClient:
         self.host = EndPoints.PROTOBUF_LIVE_HOST if config["CT_HOST_TYPE"] == "live" else EndPoints.PROTOBUF_DEMO_HOST
         self.port = EndPoints.PROTOBUF_PORT
         
-        # Initialize client
-        self.client = Client(self.host, self.port, TcpProtocol)
+        # Define the custom retry policy with exponential backoff and jitter
+        def custom_retry_policy(failedAttempts):
+            import random
+            delay = min(5.0 * (2 ** failedAttempts), 60.0)
+            jitter = random.uniform(-1.0, 1.0)
+            final_delay = max(1.0, delay + jitter)
+            self.logger.info(f"[RetryPolicy] Reconnection attempt {failedAttempts + 1} scheduled in {final_delay:.2f}s (exponential backoff + jitter).")
+            return final_delay
+
+        # Initialize client with the custom retryPolicy
+        self.client = Client(self.host, self.port, TcpProtocol, retryPolicy=custom_retry_policy)
+        self.is_started = False
         
     def start(self):
         """Starts the Twisted client service and sets callbacks."""
+        if self.is_started:
+            self.logger.warning("cTraderClient.start() called but client is already started. Ignoring.")
+            return
+        self.is_started = True
         self.client.setConnectedCallback(self._on_connected)
         self.client.setDisconnectedCallback(self._on_disconnected)
         self.client.setMessageReceivedCallback(self._on_message)
@@ -72,21 +86,44 @@ class CTraderClient:
     @inlineCallbacks
     def _on_connected(self, client):
         self.logger.info("Connected to cTrader. Authenticating...")
-        self.retry_count = 0 # Reset retry count on successful connection
         
         try:
             # 1. Application Auth
             auth_req = ProtoOAApplicationAuthReq()
             auth_req.clientId = self.app_id
             auth_req.clientSecret = self.app_secret
-            yield self.client.send(auth_req)
-            self.logger.debug("App Auth Success.")
+
+            self.logger.info(f"Sending ProtoOAApplicationAuthReq (clientId={self.app_id[:8]}...)...")
+            res = yield self.client.send(auth_req, responseTimeoutInSeconds=15)
+            payload = Protobuf.extract(res)
+            self.logger.info(f"Received App Auth response: {payload.DESCRIPTOR.name}")
+
+            if payload.DESCRIPTOR.name in ['ProtoOAErrorRes', 'ProtoErrorRes']:
+                error_code = getattr(payload, 'errorCode', 'UNKNOWN')
+                desc = getattr(payload, 'description', 'No description')
+                raise RuntimeError(f"Application Authentication failed: [{error_code}] {desc}")
+            elif payload.DESCRIPTOR.name != "ProtoOAApplicationAuthRes":
+                raise RuntimeError(f"Unexpected response type to App Auth: {payload.DESCRIPTOR.name}")
+
+            self.logger.info("App Auth Success.")
 
             # 2. Account Auth
             acc_auth_req = ProtoOAAccountAuthReq()
             acc_auth_req.ctidTraderAccountId = self.account_id
             acc_auth_req.accessToken = self.access_token
-            yield self.client.send(acc_auth_req)
+
+            self.logger.info(f"Sending ProtoOAAccountAuthReq (accountId={self.account_id})...")
+            acc_res = yield self.client.send(acc_auth_req, responseTimeoutInSeconds=15)
+            acc_payload = Protobuf.extract(acc_res)
+            self.logger.info(f"Received Account Auth response: {acc_payload.DESCRIPTOR.name}")
+
+            if acc_payload.DESCRIPTOR.name in ['ProtoOAErrorRes', 'ProtoErrorRes']:
+                error_code = getattr(acc_payload, 'errorCode', 'UNKNOWN')
+                desc = getattr(acc_payload, 'description', 'No description')
+                raise RuntimeError(f"Account Authentication failed: [{error_code}] {desc}")
+            elif acc_payload.DESCRIPTOR.name != "ProtoOAAccountAuthRes":
+                raise RuntimeError(f"Unexpected response type to Account Auth: {acc_payload.DESCRIPTOR.name}")
+
             self.logger.info("Account Authenticated.")
             
             if self.on_authenticated:
@@ -110,16 +147,8 @@ class CTraderClient:
     def _on_disconnected(self, client, reason):
         self.logger.warning(f"Disconnected from cTrader: {reason}")
         self._stop_heartbeat()
-        
-        if self.retry_count < self.max_retries:
-            self.retry_count += 1
-            delay = self.base_delay * (2 ** (self.retry_count - 1))
-            self.logger.info(f"Reconnecting in {delay}s (Attempt {self.retry_count}/{self.max_retries})...")
-            reactor.callLater(delay, self.start)
-        else:
-            self.logger.error("Max reconnection retries reached. Stopping system.")
-            # In a real scenario, we might want to trigger a notification here
-            self.stop()
+        # Reconnection is handled automatically by ClientService using our retryPolicy.
+        # No need to manually call reactor.callLater or start()!
         
     def _on_message(self, client, message):
         """Handles incoming messages from cTrader."""
