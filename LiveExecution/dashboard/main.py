@@ -27,10 +27,10 @@ class DashboardServer:
     def _setup_routes(self):
         from fastapi.responses import FileResponse, PlainTextResponse
 
-        @self.app.get("/health", response_class=PlainTextResponse)
-        @self.app.get("/api/health", response_class=PlainTextResponse)
+        @self.app.get("/health")
+        @self.app.get("/api/health")
         async def health():
-            return "OK"
+            return {"status": "healthy"}
 
         @self.app.get("/")
         async def index(request: Request, asset: str = None, status: str = None):
@@ -53,6 +53,23 @@ class DashboardServer:
                             "date": date_part,
                             "size": sz_str
                         })
+
+                # Check if orchestrator is initialized yet
+                if self.orchestrator is None:
+                    return self.templates.TemplateResponse(
+                        request=request,
+                        name="index.html",
+                        context={
+                            "state": {"balance": 0.0, "equity": 0.0, "initial_equity": 1.0, "peak_equity": 0.0},
+                            "recent_trades": [],
+                            "active_trades": [],
+                            "daily_stats": {"count": 0, "pnl": 0.0, "win_rate": 0.0},
+                            "performance": {"total_trades": 0, "total_pnl": 0.0, "win_rate": 0.0},
+                            "log_files": log_files,
+                            "selected_asset": asset or "",
+                            "selected_status": status or ""
+                        }
+                    )
 
                 # Use data from orchestrator
                 recent_trades = self.orchestrator.db.get_recent_trades(limit=100)
@@ -141,10 +158,19 @@ class DashboardServer:
 
         @self.app.get("/api/equity_history")
         async def equity_history():
+            if self.orchestrator is None:
+                return []
             return self.orchestrator.db.get_equity_history(limit=200)
 
         @self.app.get("/api/system_health")
         async def system_health():
+            if self.orchestrator is None:
+                return {
+                    "uptime": 0.0,
+                    "last_inference": "System Starting...",
+                    "connection_status": "Disconnected",
+                    "active_assets": 0
+                }
             import time
             uptime = time.time() - self.orchestrator.start_time
             last_inference = "Never"
@@ -160,6 +186,8 @@ class DashboardServer:
 
         @self.app.post("/api/close/{pos_id}")
         async def close_position(pos_id: int):
+            if self.orchestrator is None:
+                raise HTTPException(status_code=503, detail="System is starting up")
             symbol_id = None
             for sid, pid in self.orchestrator.active_positions.items():
                 if pid == pos_id:
@@ -175,6 +203,8 @@ class DashboardServer:
 
         @self.app.post("/api/kill")
         async def kill_switch():
+            if self.orchestrator is None:
+                raise HTTPException(status_code=503, detail="System is starting up")
             # Schedule kill switch in Twisted thread
             reactor.callFromThread(self.orchestrator.kill_switch)
             return {"status": "kill switch activated"}

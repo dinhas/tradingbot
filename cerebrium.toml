@@ -21,6 +21,8 @@ deployment_initialization_timeout = 600
 [cerebrium.runtime.custom]
 port = 8080
 entrypoint = ["python", "main.py"]
+healthcheck_endpoint = "/health"
+readycheck_endpoint = "/health"
 
 [cerebrium.hardware]
 cpu = 1
