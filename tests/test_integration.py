@@ -103,22 +103,15 @@ def test_telegram_bot_not_instantiated_in_main():
     assert "TelegramNotifier" not in content
 
 def test_on_order_execution_yield_bug_without_inline_callbacks():
-    """Verify on_order_execution uses yield but method is not decorated with @inlineCallbacks.
+    """Verify on_order_execution has been fixed and is now decorated with @inlineCallbacks.
 
-    This means calling on_order_execution returns a generator instead of a Deferred,
-    which is a known bug that prevents asynchronous code from executing properly as Twisted expects.
+    This means calling on_order_execution returns a Deferred, not a generator.
     """
-    from twisted.internet.defer import inlineCallbacks
+    from twisted.internet.defer import inlineCallbacks, Deferred
 
     # Get the function object of on_order_execution
     method = Orchestrator.on_order_execution
 
-    # An inlineCallbacks method usually has specific wrapper attributes, but wait,
-    # let's verify if the function returns a generator.
-    # In Python, calling a generator function returns a generator iterator.
-    # If it is decorated with @inlineCallbacks, calling it will run the generator and return a Deferred.
-    # So we can assert that calling it returns a generator iterator or is not decorated.
-    # Let's inspect the decorators or verify if calling it returns a generator.
     client = MagicMock()
     fm = MagicMock()
     fm.assets = ["EURUSD"]
@@ -131,9 +124,8 @@ def test_on_order_execution_yield_bug_without_inline_callbacks():
         event.order = None
 
         res = orchestrator.on_order_execution(event)
-        # Verify it returns a generator iterator (since it is a generator but not decorated with inlineCallbacks)
-        import types
-        assert isinstance(res, types.GeneratorType)
+        # Verify it returns a Deferred (since it is now decorated with inlineCallbacks)
+        assert isinstance(res, Deferred)
 
 def test_dashboard_unimplemented_close_position_by_id():
     """Verify close_position_by_id is called by dashboard but NOT implemented on orchestrator.

@@ -175,12 +175,29 @@ class FeatureManager:
         self.push_candle(asset, row)
 
     def _get_asset_name_from_id(self, symbol_id):
+        if hasattr(self, 'client') and self.client:
+            if hasattr(self.client, 'broker_symbol_map') and symbol_id in self.client.broker_symbol_map:
+                raw_name = self.client.broker_symbol_map[symbol_id]
+                for asset in ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF']:
+                    if asset in raw_name:
+                        return asset
+                return raw_name
+            if hasattr(self.client, 'symbol_ids'):
+                inv_map = {v: k for k, v in self.client.symbol_ids.items()}
+                if symbol_id in inv_map:
+                    raw_name = inv_map[symbol_id]
+                    for asset in ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF']:
+                        if asset in raw_name:
+                            return asset
+                    return raw_name
+
+        # Fallback to hardcoded mapping
         mapping = {1: 'EURUSD', 2: 'GBPUSD', 6: 'USDCHF', 4: 'USDJPY'}
         return mapping.get(symbol_id)
 
     def get_atr(self, asset):
         """Calculates the current 14-period ATR for the given asset."""
-        if len(self.history[asset]) < 15:
+        if asset not in self.history or self.history[asset].empty or len(self.history[asset]) < 15:
             return 0.0
 
         from ta.volatility import AverageTrueRange
