@@ -476,46 +476,75 @@ class Orchestrator:
             asset_name = self._get_symbol_name(symbol_id)
 
             # --- Step 2: Filter (RF ensemble) ---
+            filter_conf = 1.0
+            filter_passed = True
             if self.ml.filter_ensemble is not None:
                 filter_features = self.fm.get_filter_features()
                 if filter_features is None or len(filter_features) == 0:
-                    self.logger.debug(f"No filter features for {asset_name}. Skipping.")
+                    self.logger.info(f"[CANDLE CLOSE] Asset: {asset_name} | No filter features available. Skipping.")
                     return {'action': 0}
 
                 # Use the last bar's features for the current decision
                 last_bar = filter_features[-1:]
                 filter_out = self.ml.get_filter_signal(last_bar)
-
-                if not filter_out['should_trade']:
-                    self.logger.debug(
-                        f"Filter REJECTED {asset_name}: "
-                        f"conf={filter_out['confidence']:.3f} < {self.ml.filter_threshold:.3f}"
-                    )
-                    return {'action': 0}
-
-                self.logger.debug(
-                    f"Filter PASSED {asset_name}: conf={filter_out['confidence']:.3f}"
-                )
+                try:
+                    filter_conf = float(filter_out['confidence'])
+                except Exception:
+                    filter_conf = 1.0
+                filter_passed = filter_out['should_trade']
 
             # --- Step 3: Alpha model (LSTM/V7) ---
             alpha_seq = self.fm.get_alpha_sequence(asset_name, self.ml.alpha_sequence_length)
             if alpha_seq is None:
-                self.logger.debug(f"Not enough Alpha sequence history for {asset_name}. Skipping.")
+                self.logger.info(
+                    f"[CANDLE CLOSE] Asset: {asset_name} | "
+                    f"Filter Ensemble: {'PASSED' if filter_passed else 'REJECTED'} (conf: {filter_conf:.3f}) | "
+                    f"Alpha Model: Insufficient sequence history. Skipping."
+                )
                 return {'action': 0}
 
             alpha_out = self.ml.get_alpha_signal(alpha_seq, threshold=self.ml.alpha_threshold)
-            trade_direction = int(alpha_out['direction'][0])
-            confidence = float(alpha_out['confidence'][0])
+            try:
+                trade_direction = int(alpha_out['direction'][0])
+            except Exception:
+                trade_direction = 0
+            try:
+                confidence = float(alpha_out['confidence'][0])
+            except Exception:
+                confidence = 0.0
+            try:
+                buy_p = float(alpha_out['buy_prob'][0])
+            except Exception:
+                buy_p = 0.0
+            try:
+                filter_thresh = float(self.ml.filter_threshold)
+            except Exception:
+                filter_thresh = 0.72
+            try:
+                alpha_thresh = float(self.ml.alpha_threshold)
+            except Exception:
+                alpha_thresh = 0.60
 
-            self.logger.debug(
-                f"Alpha for {asset_name}: direction={trade_direction}, "
-                f"buy_p={alpha_out['buy_prob'][0]:.3f}, conf={confidence:.3f}"
+            alpha_direction = "BUY" if trade_direction == 1 else "SELL"
+            alpha_passed = confidence >= alpha_thresh
+
+            try:
+                close_price = float(self.fm.history[asset_name].iloc[-1]['close']) if not self.fm.history[asset_name].empty else 0.0
+            except Exception:
+                close_price = 0.0
+
+            # Log candle close event with predictions
+            self.logger.info(
+                f"[CANDLE CLOSE] Asset: {asset_name} | Close Price: {close_price:.5f} | "
+                f"Filter Ensemble: {'PASSED' if filter_passed else 'REJECTED'} (conf: {filter_conf:.3f}, thresh: {filter_thresh:.3f}) | "
+                f"Alpha Model: Direction={alpha_direction} (buy_prob: {buy_p:.3f}, conf: {confidence:.3f}, thresh: {alpha_thresh:.3f}, {'PASSED' if alpha_passed else 'REJECTED'})"
             )
 
-            if confidence < self.ml.alpha_threshold:
-                self.logger.debug(
-                    f"Alpha confidence {confidence:.3f} < {self.ml.alpha_threshold:.3f}. Skipping."
-                )
+            # Check gating decisions
+            if not filter_passed:
+                return {'action': 0}
+
+            if not alpha_passed:
                 return {'action': 0}
 
             # --- Step 4: SL/TP — fixed ATR multipliers ---
