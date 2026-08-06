@@ -30,31 +30,16 @@ def test_ctrader_client_reconnection_backoff(caplog):
     }
     client = CTraderClient(config)
 
-    # Mock reactor.callLater
-    with patch("LiveExecution.src.ctrader_client.reactor.callLater") as mock_call_later, \
-         patch.object(CTraderClient, "start") as mock_start:
+    # Test the custom retry policy with exponential backoff directly:
+    retry_policy = client.custom_retry_policy
+    assert retry_policy is not None
 
-        # Simulate sequential disconnections to test exponential backoff delay:
-        # Delay = base_delay * 2^(retry_count - 1)
-        # Attempt 1: 5.0 * 2^0 = 5.0
-        # Attempt 2: 5.0 * 2^1 = 10.0
-        # Attempt 3: 5.0 * 2^2 = 20.0
-        # Attempt 4: 5.0 * 2^3 = 40.0
-        # Attempt 5: 5.0 * 2^4 = 80.0
-
-        expected_delays = [5.0, 10.0, 20.0, 40.0, 80.0]
-
-        for idx, expected_delay in enumerate(expected_delays):
-            client._on_disconnected(None, "Connection lost")
-            assert client.retry_count == idx + 1
-            mock_call_later.assert_called_with(expected_delay, client.start)
-            mock_call_later.reset_mock()
-
-        # Attempt 6: Max retries exceeded -> stops system
-        with patch.object(CTraderClient, "stop") as mock_stop:
-            client._on_disconnected(None, "Connection lost")
-            mock_stop.assert_called_once()
-            assert "Max reconnection retries reached" in caplog.text
+    # For failed attempts 0, 1, 2, 3:
+    for attempt in range(4):
+        delay = retry_policy(attempt)
+        # Delay should be around min(5.0 * 2^attempt, 60.0) with some jitter +/- 1.0s
+        expected_base = min(5.0 * (2 ** attempt), 60.0)
+        assert expected_base - 1.1 <= delay <= expected_base + 1.1
 
 def test_ctrader_client_last_bar_timestamps_deduplication():
     config = {

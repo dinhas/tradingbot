@@ -44,6 +44,7 @@ class CTraderClient:
             'USDJPY': 4
         }
         self.symbol_ids = {asset: all_symbol_ids[asset] for asset in FX_ALPHA_ASSETS}
+        self.broker_symbol_map = {}
         
         # Reconnection parameters
         self.max_retries = 5
@@ -66,6 +67,8 @@ class CTraderClient:
             final_delay = max(1.0, delay + jitter)
             self.logger.info(f"[RetryPolicy] Reconnection attempt {failedAttempts + 1} scheduled in {final_delay:.2f}s (exponential backoff + jitter).")
             return final_delay
+
+        self.custom_retry_policy = custom_retry_policy
 
         # Initialize client with the custom retryPolicy
         self.client = Client(self.host, self.port, TcpProtocol, retryPolicy=custom_retry_policy)
@@ -126,6 +129,33 @@ class CTraderClient:
 
             self.logger.info("Account Authenticated.")
             
+            # 3. Dynamic Symbol Resolution
+            self.logger.info("Fetching symbols list from broker for dynamic mapping...")
+            try:
+                symbols_res = yield self.fetch_symbols_list()
+                self.broker_symbol_map = {}
+                for light_symbol in getattr(symbols_res, 'symbol', []):
+                    sid = light_symbol.symbolId
+                    sname = light_symbol.symbolName
+                    self.broker_symbol_map[sid] = sname
+
+                # Dynamically update self.symbol_ids for FX_ALPHA_ASSETS
+                resolved_ids = {}
+                for sname_target in FX_ALPHA_ASSETS:
+                    # Look for exact match or suffix (e.g. 'EURUSD.i' or 'EURUSD.pro')
+                    for sid, sname in self.broker_symbol_map.items():
+                        if sname == sname_target or sname.startswith(sname_target):
+                            resolved_ids[sname_target] = sid
+                            break
+
+                if resolved_ids:
+                    self.logger.info(f"Dynamically resolved symbols from broker: {resolved_ids}")
+                    self.symbol_ids.update(resolved_ids)
+                else:
+                    self.logger.warning("Could not dynamically resolve symbol IDs. Using default mapping.")
+            except Exception as se:
+                self.logger.error(f"Failed to fetch symbols list dynamically: {se}. Using default symbol IDs.")
+
             if self.on_authenticated:
                 self.logger.info("Triggering on_authenticated bootstrap callback...")
                 d = defer.maybeDeferred(self.on_authenticated)
@@ -159,7 +189,8 @@ class CTraderClient:
                 self._handle_spot_event(payload)
             elif isinstance(payload, ProtoOAExecutionEvent):
                 if self.on_order_execution:
-                    self.on_order_execution(payload)
+                    d = defer.maybeDeferred(self.on_order_execution, payload)
+                    d.addErrback(lambda f: self.logger.error(f"Error in on_order_execution callback: {f.getErrorMessage()}\nTraceback: {f.getTraceback()}"))
             elif isinstance(payload, ProtoOAOrderErrorEvent):
                 if self.on_order_error:
                     self.on_order_error(payload)
@@ -277,6 +308,15 @@ class CTraderClient:
     def fetch_open_positions(self):
         """Fetches currently open positions for the account."""
         req = ProtoOAReconcileReq()
+        req.ctidTraderAccountId = self.account_id
+        res_msg = yield self.send_request(req)
+        return Protobuf.extract(res_msg)
+
+    @inlineCallbacks
+    def fetch_symbols_list(self):
+        """Fetches all symbols list for the account from the broker."""
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASymbolsListReq
+        req = ProtoOASymbolsListReq()
         req.ctidTraderAccountId = self.account_id
         res_msg = yield self.send_request(req)
         return Protobuf.extract(res_msg)

@@ -36,7 +36,8 @@ def test_dashboard_routes(tmp_path):
         assert resp.status_code == 200
         assert resp.text == "Rendered Template"
         mock_template_resp.assert_called_once()
-        context = mock_template_resp.call_args[0][1]
+        call_args = mock_template_resp.call_args
+        context = call_args[1].get("context") if "context" in call_args[1] else call_args[0][2]
         assert context["state"] == {"balance": 10000.0, "equity": 10050.0}
         assert context["recent_trades"][0]["pos_id"] == 1
         assert context["active_trades"][0]["pos_id"] == 2

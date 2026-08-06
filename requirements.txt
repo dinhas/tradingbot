@@ -10,7 +10,7 @@ shimmy>=0.2.1
 matplotlib
 tqdm
 lightgbm
-scikit-learn
+scikit-learn==1.8.0
 python-dotenv
 torch
 pyarrow

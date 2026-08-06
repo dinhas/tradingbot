@@ -22,6 +22,7 @@ class Orchestrator:
         self.logger = logging.getLogger("LiveExecution")
         self.client = client
         self.fm = feature_manager
+        self.fm.client = client
         self.ml = model_loader
         self.config = config
         self.dashboard = None
@@ -158,9 +159,9 @@ class Orchestrator:
             if self.fm.is_ready():
                 decision = self.run_inference_chain(symbol_id)
                 if decision and decision.get('action', 0) != 0:
-                    from twisted.internet import threads
-                    d = threads.deferToThread(self.execute_decision, decision, symbol_id)
-                    d.addErrback(lambda f: self.logger.error(f"Execution errback: {f}"))
+                    self.logger.info(f"Triggering execution for {asset} on the main reactor thread...")
+                    d = self.execute_decision(decision, symbol_id)
+                    d.addErrback(lambda f: self.logger.error(f"Execution failed with error: {f.getErrorMessage()}\nTraceback: {f.getTraceback()}"))
         except Exception as e:
             self.logger.error(f"on_m5_candle_close error for {symbol_id}: {e}")
 
@@ -172,6 +173,7 @@ class Orchestrator:
         self.portfolio_state['initial_equity'] = self.portfolio_state.get('initial_equity', self.portfolio_state['equity'])
         self.portfolio_state['peak_equity'] = max(self.portfolio_state.get('peak_equity', 0), self.portfolio_state['equity'])
 
+    @inlineCallbacks
     def on_order_execution(self, event):
         """Handles order execution events from cTrader."""
         try:
@@ -557,5 +559,18 @@ class Orchestrator:
             return None
 
     def _get_symbol_name(self, symbol_id):
+        # 1. Lookup in broker_symbol_map if populated
+        if hasattr(self.client, 'broker_symbol_map') and symbol_id in self.client.broker_symbol_map:
+            raw_name = self.client.broker_symbol_map[symbol_id]
+            for asset in ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF']:
+                if asset in raw_name:
+                    return asset
+            return raw_name
+
+        # 2. Lookup in hardcoded/default symbol_ids map
         inv_map = {v: k for k, v in self.client.symbol_ids.items()}
-        return inv_map.get(symbol_id, "Unknown")
+        raw_name = inv_map.get(symbol_id, "Unknown")
+        for asset in ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF']:
+            if asset in raw_name:
+                return asset
+        return raw_name
