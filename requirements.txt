@@ -13,6 +13,7 @@ lightgbm
 scikit-learn
 python-dotenv
 torch
+pyarrow
 python-telegram-bot
 fastapi
 uvicorn
