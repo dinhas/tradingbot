@@ -131,7 +131,7 @@ class FeatureManager:
         """
         Updates internal history from cTrader trendbars response.
         """
-        from datetime import datetime as dt
+        from datetime import datetime as dt, timezone
 
         asset = self._get_asset_name_from_id(symbol_id)
         if not asset:
@@ -143,7 +143,7 @@ class FeatureManager:
             divisor = 100000.0
             low = bar.low / divisor
             new_rows.append({
-                'timestamp': dt.fromtimestamp(bar.utcTimestampInMinutes * 60),
+                'timestamp': dt.fromtimestamp(bar.utcTimestampInMinutes * 60, tz=timezone.utc).replace(tzinfo=None),
                 'open': low + (bar.deltaOpen / divisor),
                 'high': low + (bar.deltaHigh / divisor),
                 'low': low,
@@ -160,12 +160,12 @@ class FeatureManager:
         """
         Updates history from a single Protobuf Trendbar object.
         """
-        from datetime import datetime as dt
+        from datetime import datetime as dt, timezone
 
         divisor = 100000.0
         low = bar.low / divisor
         row = {
-            'timestamp': dt.fromtimestamp(bar.utcTimestampInMinutes * 60),
+            'timestamp': dt.fromtimestamp(bar.utcTimestampInMinutes * 60, tz=timezone.utc).replace(tzinfo=None),
             'open': low + (bar.deltaOpen / divisor),
             'high': low + (bar.deltaHigh / divisor),
             'low': low,
