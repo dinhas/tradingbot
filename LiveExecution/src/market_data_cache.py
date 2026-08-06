@@ -194,19 +194,6 @@ class MarketDataCacheManager:
         self.fred_dir.mkdir(parents=True, exist_ok=True)
         self.yf_dir.mkdir(parents=True, exist_ok=True)
 
-        # First copy existing backtest data if there's no data directory, to avoid complete blank startup
-        backtest_data_dir = PROJECT_ROOT / 'backtest' / 'data'
-        if backtest_data_dir.exists():
-            import shutil
-            for sub in ['cot', 'fred', 'yfinance']:
-                src_sub = backtest_data_dir / sub
-                dest_sub = self.data_dir / sub
-                if src_sub.exists() and not any(dest_sub.glob('*.parquet')):
-                    logger.info(f"Copying historical baseline from backtest/data/{sub} to data/{sub}...")
-                    dest_sub.mkdir(parents=True, exist_ok=True)
-                    for src_file in src_sub.glob('*.parquet'):
-                        shutil.copy(src_file, dest_sub / src_file.name)
-
         status = self.check_cache_status()
 
         if not status['has_cache']:
