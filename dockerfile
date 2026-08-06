@@ -6,6 +6,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Prevent Python from writing .pyc files
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV FRED_API_KEY=b30c77a87d01838e84f6760b17d5070b
 
 # Set workspace directory
 WORKDIR /app
